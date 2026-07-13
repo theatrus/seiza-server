@@ -1,0 +1,35 @@
+[Unit]
+Description=Seiza Server plate-solving API
+Documentation=https://github.com/theatrus/seiza-server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=seiza-server
+Group=seiza-server
+StateDirectory=seiza-server
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/seiza-server
+EnvironmentFile=-/etc/seiza-server/seiza-server.env
+ExecStart=/usr/bin/seiza-server serve
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+LimitNOFILE=65536
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/seiza-server
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

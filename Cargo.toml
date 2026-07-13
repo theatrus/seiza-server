@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Queued HTTP plate-solving service built on Seiza"
+publish = false
+repository = "https://github.com/theatrus/seiza-server"
+readme = "README.md"
+keywords = ["astronomy", "astrometry", "plate-solving", "server"]
+categories = ["science", "web-programming::http-server"]
 
 [features]
 default = []

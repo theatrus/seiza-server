@@ -1,0 +1,30 @@
+# Install this as an nginx server block after setting the TLS directives and
+# server_name for your deployment. Seiza Server remains loopback-only.
+upstream seiza_server {
+    server 127.0.0.1:8080;
+    keepalive 16;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name solve.example.com;
+
+    # ssl_certificate /etc/pki/tls/certs/solve.example.com.crt;
+    # ssl_certificate_key /etc/pki/tls/private/solve.example.com.key;
+
+    # This matches the 100 MiB Seiza upload limit with small multipart headroom.
+    client_max_body_size 110m;
+
+    location / {
+        proxy_pass http://seiza_server;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 90s;
+    }
+}

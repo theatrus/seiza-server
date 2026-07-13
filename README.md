@@ -203,6 +203,23 @@ run one process. The supplied [Dockerfile](Dockerfile) produces an image with
 the compiled UI served by Axum. The lightweight [docker-compose.yml](docker-compose.yml)
 is the local reference setup.
 
+### Native RPM service packages
+
+The repository can build target-native RPMs for Amazon Linux 2023 and Fedora
+44. Each RPM includes the Rust server (with S3/SQS/DynamoDB support), built
+React UI, systemd unit, default loopback-only configuration, and an nginx
+example. It deliberately excludes the star catalog, which should be installed
+and versioned separately on the host.
+
+```bash
+make rpm-al2023
+make rpm-f44
+```
+
+Artifacts are written to `dist/rpm/al2023/` and `dist/rpm/f44/`. See
+[the production RPM guide](docs/production-rpm.md) for installation, nginx,
+catalog, and worker guidance.
+
 ### AWS / SQS workers
 
 Build with AWS support and use a task role that can only `GetObject` and
