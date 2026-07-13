@@ -28,10 +28,13 @@ the server binary with AWS S3, SQS, and DynamoDB adapters enabled.
 %build
 npm ci --prefix frontend
 npm run build --prefix frontend
-cargo build --locked --release --features aws
+# aws-lc-sys runs an x86 compiler probe that intentionally ignores CFLAGS but
+# retains LDFLAGS. Distro hardening specs force that probe to link as PIE, so
+# supply the matching compile flag while preserving every RPM linker flag.
+LDFLAGS="${LDFLAGS:-} -fPIE" cargo build --locked --release --features aws
 
 %check
-cargo test --locked --features aws
+LDFLAGS="${LDFLAGS:-} -fPIE" cargo test --locked --features aws
 
 %install
 install -Dpm 0755 "${CARGO_TARGET_DIR:-target}/release/seiza-server" %{buildroot}%{_bindir}/seiza-server
