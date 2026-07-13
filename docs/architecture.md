@@ -79,8 +79,10 @@ use a matching lifecycle rule to cover interrupted cleanup processes.
 
 Preview PNGs and annotated SVGs are generated on demand rather than stored as
 additional durable objects. The SVG embeds its preview and marker geometry in
-one response. Once the original expires, visual artifacts return HTTP 410
-while the standards-facing WCS download remains available.
+one response. Clients independently select catalog objects and a true
+WCS-projected RA/Dec graticule through query parameters. Once the original
+expires, visual artifacts return HTTP 410 while the standards-facing WCS
+download remains available.
 
 ## API compatibility boundary
 

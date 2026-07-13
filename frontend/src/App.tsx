@@ -215,7 +215,9 @@ function titleForStatus(status: Job['status']) {
 }
 
 function SolutionContent({ job }: { job: Job }) {
+  const [overlayMode, setOverlayMode] = useState<'objects' | 'grid' | 'both'>('both')
   const solution = job.solution
+  const overlayImageUrl = job.overlay_url ? overlayUrl(job.overlay_url, overlayMode) : null
   return <>
     <section className="job-meta">
       <div><span>File</span><strong>{job.original_filename}</strong></div>
@@ -225,9 +227,14 @@ function SolutionContent({ job }: { job: Job }) {
     {job.error && <p className="error">{job.error}</p>}
     {pending.has(job.status) && <section className="panel waiting"><div className="orbit" aria-hidden="true"><span /></div><p>This durable page refreshes automatically. You can bookmark it or come back later.</p></section>}
     {solution && <>
-      {job.overlay_url ? <section className="overlay-card">
-        <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Catalog objects in the solved field</h2></div><a href={job.overlay_url}>Open SVG <span aria-hidden="true">↗</span></a></div>
-        <div className="image-stage"><img src={job.overlay_url} alt="Solved image with WCS reticle and labeled catalog objects" /></div>
+      {overlayImageUrl ? <section className="overlay-card">
+        <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Coordinates and objects in the solved field</h2></div><a href={overlayImageUrl}>Open SVG <span aria-hidden="true">↗</span></a></div>
+        <div className="overlay-options" role="group" aria-label="Overlay content">
+          <button type="button" aria-pressed={overlayMode === 'objects'} onClick={() => setOverlayMode('objects')}>Objects</button>
+          <button type="button" aria-pressed={overlayMode === 'grid'} onClick={() => setOverlayMode('grid')}>RA / Dec grid</button>
+          <button type="button" aria-pressed={overlayMode === 'both'} onClick={() => setOverlayMode('both')}>Both</button>
+        </div>
+        <div className="image-stage"><img src={overlayImageUrl} alt={`Solved image with ${overlayMode === 'objects' ? 'catalog objects' : overlayMode === 'grid' ? 'an RA and Dec coordinate grid' : 'an RA and Dec coordinate grid and catalog objects'}`} /></div>
         <p className="retention-note">This generated view uses the temporary upload and expires with it. WCS metadata below remains available.</p>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
       <section className="metric-grid">
@@ -239,6 +246,12 @@ function SolutionContent({ job }: { job: Job }) {
       <WcsDetails job={job} />
     </>}
   </>
+}
+
+function overlayUrl(base: string, mode: 'objects' | 'grid' | 'both') {
+  const objects = mode !== 'grid'
+  const grid = mode !== 'objects'
+  return `${base}?objects=${objects}&grid=${grid}`
 }
 
 function WcsDetails({ job }: { job: Job }) {

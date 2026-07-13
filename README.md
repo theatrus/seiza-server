@@ -133,6 +133,20 @@ curl -o overlay.svg http://127.0.0.1:8080/api/v1/solves/1/overlay.svg
 curl -OJ http://127.0.0.1:8080/api/v1/solves/1/wcs
 ```
 
+The SVG image output accepts independent overlay options. Object annotations
+remain enabled by default; add the WCS-projected RA/Dec graticule, request only
+the coordinate grid, or combine both explicitly:
+
+```bash
+curl -o grid-and-objects.svg 'http://127.0.0.1:8080/api/v1/solves/1/overlay.svg?grid=true'
+curl -o grid-only.svg 'http://127.0.0.1:8080/api/v1/solves/1/overlay.svg?grid=true&objects=false'
+```
+
+The grid is projected through the solved TAN WCS rather than drawn in image
+coordinates, so its meridians and parallels reflect field curvature, rotation,
+parity, and RA wraparound. The solution page exposes Objects, RA / Dec grid,
+and Both controls for the same output.
+
 The JSON solution includes the full TAN/ICRS WCS (`CTYPE`, `CUNIT`, `CRVAL`,
 zero-indexed internal `CRPIX`, CD matrix, `RADESYS`, and `EQUINOX`), the four
 ICRS footprint corners, and projected catalog objects when

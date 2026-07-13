@@ -75,6 +75,10 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 @keyframes spin { to { transform: rotate(360deg); } }
 .overlay-card { margin-top: 1.5rem; }
 .section-heading h2 { margin-bottom: .4rem; font-size: clamp(1.7rem, 3vw, 2.5rem); }
+.overlay-options { display: flex; width: fit-content; margin-top: 1.2rem; padding: 3px; border: 1px solid #31515b; border-radius: 5px; background: #071319; }
+.overlay-options button { padding: .5rem .75rem; border: 0; border-radius: 3px; color: #7f9ca5; background: transparent; font: inherit; font-size: .75rem; font-weight: 800; cursor: pointer; }
+.overlay-options button[aria-pressed="true"] { color: #071018; background: #83dce5; }
+.overlay-options button:focus-visible { outline: 2px solid #e9c46a; outline-offset: 2px; }
 .image-stage { display: grid; place-items: center; margin-top: 1.5rem; min-height: 280px; overflow: hidden; border: 1px solid #1d353d; background: #03070a; }
 .image-stage img { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 .retention-note { margin: 1rem 0 0; }

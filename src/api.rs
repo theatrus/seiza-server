@@ -4,7 +4,7 @@ use crate::{
         JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse, SolveOptions,
         WorkerCompletion,
     },
-    overlay::render_svg,
+    overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
     solver::{SolverEngine, dimensions_from_bytes, preview_png},
@@ -13,7 +13,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Form, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -439,6 +439,7 @@ async fn get_solve_preview(
 async fn get_solve_overlay(
     State(state): State<AppState>,
     Path(job_id): Path<JobId>,
+    Query(query): Query<OverlayQuery>,
 ) -> Result<Response, ApiError> {
     let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
@@ -454,7 +455,14 @@ async fn get_solve_overlay(
     let preview = preview_png(content, job.original_filename)
         .await
         .map_err(ApiError::bad_request)?;
-    let svg = render_svg(solution, &preview);
+    let svg = render_svg(
+        solution,
+        &preview,
+        OverlayOptions {
+            objects: query.objects,
+            grid: query.grid,
+        },
+    );
     Ok((
         [
             (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
@@ -467,6 +475,18 @@ async fn get_solve_overlay(
         svg,
     )
         .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct OverlayQuery {
+    #[serde(default = "default_true")]
+    objects: bool,
+    #[serde(default)]
+    grid: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 async fn get_solve_wcs(
