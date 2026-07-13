@@ -1,23 +1,26 @@
-use crate::models::{SolutionResponse, SolveOptions, WcsResponse};
+use crate::models::{OverlayObject, SolutionResponse, SolveOptions, WcsResponse};
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
+use image::ImageFormat;
 use seiza::{
     DetectConfig,
     blind::{BlindIndex, BlindParams, solve_blind},
     catalog::TileCatalog,
     detect_stars,
+    objects::ObjectCatalog,
     solve::{SolveHint, solve},
 };
-use std::{path::Path, sync::Arc};
+use std::{io::Cursor, path::Path, sync::Arc};
 
 #[derive(Clone)]
 pub struct SolverEngine {
     catalog: Option<Arc<TileCatalog>>,
+    objects: Option<Arc<ObjectCatalog>>,
 }
 
 impl SolverEngine {
-    pub fn from_catalog_path(path: Option<&Path>) -> Self {
-        let catalog = path.and_then(|path| match TileCatalog::open(path) {
+    pub fn from_catalog_paths(star_path: Option<&Path>, object_path: Option<&Path>) -> Self {
+        let catalog = star_path.and_then(|path| match TileCatalog::open(path) {
             Ok(catalog) => {
                 tracing::info!(path = %path.display(), stars = catalog.star_count(), "opened Seiza star catalog");
                 Some(Arc::new(catalog))
@@ -27,7 +30,17 @@ impl SolverEngine {
                 None
             }
         });
-        Self { catalog }
+        let objects = object_path.and_then(|path| match ObjectCatalog::open(path) {
+            Ok(objects) => {
+                tracing::info!(path = %path.display(), objects = objects.len(), "opened Seiza object catalog");
+                Some(Arc::new(objects))
+            }
+            Err(error) => {
+                tracing::error!(path = %path.display(), %error, "could not open Seiza object catalog");
+                None
+            }
+        });
+        Self { catalog, objects }
     }
 
     pub fn is_ready(&self) -> bool {
@@ -43,10 +56,27 @@ impl SolverEngine {
         let catalog = self.catalog.clone().context(
             "solver is not configured: set SEIZA_STAR_DATA to a Seiza star tile catalog",
         )?;
-        tokio::task::spawn_blocking(move || solve_bytes(&catalog, &bytes, &filename, &options))
-            .await
-            .context("solver worker panicked")?
+        let objects = self.objects.clone();
+        tokio::task::spawn_blocking(move || {
+            solve_bytes(&catalog, objects.as_deref(), &bytes, &filename, &options)
+        })
+        .await
+        .context("solver worker panicked")?
     }
+}
+
+pub async fn preview_png(bytes: Bytes, filename: String) -> Result<Bytes> {
+    tokio::task::spawn_blocking(move || {
+        let image = decode_image(&bytes, &filename)?;
+        let preview = image.thumbnail(1_800, 1_800);
+        let mut output = Cursor::new(Vec::new());
+        preview
+            .write_to(&mut output, ImageFormat::Png)
+            .context("encoding preview PNG")?;
+        Ok(Bytes::from(output.into_inner()))
+    })
+    .await
+    .context("preview worker panicked")?
 }
 
 pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)> {
@@ -56,6 +86,7 @@ pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)>
 
 fn solve_bytes(
     catalog: &TileCatalog,
+    objects: Option<&ObjectCatalog>,
     bytes: &[u8],
     filename: &str,
     options: &SolveOptions,
@@ -116,6 +147,26 @@ fn solve_bytes(
     let (center_ra_deg, center_dec_deg) = solution
         .wcs
         .pixel_to_world(dimensions.0 as f64 / 2.0, dimensions.1 as f64 / 2.0);
+    let footprint = solution
+        .wcs
+        .footprint(dimensions.0, dimensions.1)
+        .map(|(ra, dec)| [ra, dec]);
+    let objects = objects
+        .map(|catalog| catalog.objects_in_footprint(&solution.wcs, dimensions))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|placed| OverlayObject {
+            name: placed.object.name,
+            common_name: placed.object.common_name,
+            kind: placed.object.kind.as_str().to_owned(),
+            mag: placed.object.mag,
+            x: placed.x,
+            y: placed.y,
+            semi_major_px: placed.semi_major_px,
+            semi_minor_px: placed.semi_minor_px,
+            angle_deg: placed.angle_deg,
+        })
+        .collect();
     Ok(SolutionResponse {
         center_ra_deg,
         center_dec_deg,
@@ -128,7 +179,13 @@ fn solve_bytes(
             crval: [solution.wcs.crval.0, solution.wcs.crval.1],
             crpix: [solution.wcs.crpix.0, solution.wcs.crpix.1],
             cd: solution.wcs.cd,
+            ctype: ["RA---TAN".into(), "DEC--TAN".into()],
+            cunit: ["deg".into(), "deg".into()],
+            radesys: "ICRS".into(),
+            equinox: 2000.0,
         },
+        footprint,
+        objects,
     })
 }
 

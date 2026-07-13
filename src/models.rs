@@ -118,6 +118,43 @@ pub struct WcsResponse {
     pub crval: [f64; 2],
     pub crpix: [f64; 2],
     pub cd: [[f64; 2]; 2],
+    #[serde(default = "default_ctype")]
+    pub ctype: [String; 2],
+    #[serde(default = "default_cunit")]
+    pub cunit: [String; 2],
+    #[serde(default = "default_radesys")]
+    pub radesys: String,
+    #[serde(default = "default_equinox")]
+    pub equinox: f64,
+}
+
+fn default_ctype() -> [String; 2] {
+    ["RA---TAN".into(), "DEC--TAN".into()]
+}
+
+fn default_cunit() -> [String; 2] {
+    ["deg".into(), "deg".into()]
+}
+
+fn default_radesys() -> String {
+    "ICRS".into()
+}
+
+const fn default_equinox() -> f64 {
+    2000.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayObject {
+    pub name: String,
+    pub common_name: String,
+    pub kind: String,
+    pub mag: Option<f32>,
+    pub x: f64,
+    pub y: f64,
+    pub semi_major_px: f64,
+    pub semi_minor_px: f64,
+    pub angle_deg: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +167,60 @@ pub struct SolutionResponse {
     pub image_width: u32,
     pub image_height: u32,
     pub wcs: WcsResponse,
+    #[serde(default)]
+    pub footprint: [[f64; 2]; 4],
+    #[serde(default)]
+    pub objects: Vec<OverlayObject>,
+}
+
+impl SolutionResponse {
+    pub fn fits_wcs_header(&self) -> String {
+        let wcs = &self.wcs;
+        let cards = [
+            "WCSAXES =                    2 / Number of WCS axes".into(),
+            "NAXIS    =                    2 / Number of image axes".into(),
+            format!("NAXIS1   = {:>20} / Image width", self.image_width),
+            format!("NAXIS2   = {:>20} / Image height", self.image_height),
+            format!("CTYPE1   = '{:<18}' / Axis 1 projection", wcs.ctype[0]),
+            format!("CTYPE2   = '{:<18}' / Axis 2 projection", wcs.ctype[1]),
+            format!("CUNIT1   = '{:<18}' / Axis 1 unit", wcs.cunit[0]),
+            format!("CUNIT2   = '{:<18}' / Axis 2 unit", wcs.cunit[1]),
+            format!(
+                "CRVAL1   = {:>20.12} / Reference right ascension",
+                wcs.crval[0]
+            ),
+            format!("CRVAL2   = {:>20.12} / Reference declination", wcs.crval[1]),
+            // Seiza uses zero-indexed pixel coordinates internally. FITS CRPIX
+            // is one-indexed, so add one only in this standards-facing file.
+            format!(
+                "CRPIX1   = {:>20.12} / Reference pixel, FITS convention",
+                wcs.crpix[0] + 1.0
+            ),
+            format!(
+                "CRPIX2   = {:>20.12} / Reference pixel, FITS convention",
+                wcs.crpix[1] + 1.0
+            ),
+            format!("CD1_1    = {:>20.12E} / Degrees per pixel", wcs.cd[0][0]),
+            format!("CD1_2    = {:>20.12E} / Degrees per pixel", wcs.cd[0][1]),
+            format!("CD2_1    = {:>20.12E} / Degrees per pixel", wcs.cd[1][0]),
+            format!("CD2_2    = {:>20.12E} / Degrees per pixel", wcs.cd[1][1]),
+            format!(
+                "RADESYS  = '{:<18}' / Celestial reference frame",
+                wcs.radesys
+            ),
+            format!("EQUINOX  = {:>20.8} / Equinox of coordinates", wcs.equinox),
+            "END".into(),
+        ];
+        cards
+            .into_iter()
+            .map(|mut card| {
+                card.truncate(80);
+                format!("{card:<80}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,23 +248,13 @@ pub struct JobResponse {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub original_filename: String,
+    pub input_expires_at: DateTime<Utc>,
+    pub input_available: bool,
+    pub preview_url: Option<String>,
+    pub overlay_url: Option<String>,
+    pub wcs_url: Option<String>,
     pub solution: Option<SolutionResponse>,
     pub error: Option<String>,
-}
-
-impl From<&JobRecord> for JobResponse {
-    fn from(job: &JobRecord) -> Self {
-        Self {
-            id: job.id,
-            status: job.status,
-            created_at: job.created_at,
-            started_at: job.started_at,
-            completed_at: job.completed_at,
-            original_filename: job.original_filename.clone(),
-            solution: job.solution.clone(),
-            error: job.error.clone(),
-        }
-    }
 }
 
 /// A short-lived, exclusive worker reservation. The lease token is required
@@ -193,4 +274,39 @@ pub struct WorkerCompletion {
     pub lease_token: String,
     pub solution: Option<SolutionResponse>,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wcs_download_uses_fits_pixel_convention_and_eighty_column_cards() {
+        let solution = SolutionResponse {
+            center_ra_deg: 10.0,
+            center_dec_deg: 20.0,
+            pixel_scale_arcsec_per_pixel: 1.0,
+            matched_stars: 12,
+            rms_arcsec: 0.2,
+            image_width: 100,
+            image_height: 80,
+            wcs: WcsResponse {
+                crval: [10.0, 20.0],
+                crpix: [49.0, 39.0],
+                cd: [[0.001, 0.0], [0.0, 0.001]],
+                ctype: default_ctype(),
+                cunit: default_cunit(),
+                radesys: default_radesys(),
+                equinox: default_equinox(),
+            },
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+        };
+
+        let header = solution.fits_wcs_header();
+
+        assert!(header.contains("CRPIX1   =      50.000000000000"));
+        assert!(header.contains("CRPIX2   =      40.000000000000"));
+        assert!(header.lines().all(|line| line.len() == 80));
+    }
 }

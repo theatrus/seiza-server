@@ -16,7 +16,8 @@ disappears on a process restart.
 ## What is implemented
 
 - Native JSON API: multipart uploads, job polling, explicit WCS/quality output,
-  100 MB default body limit, structured errors, and CORS.
+  downloadable FITS-style WCS headers, annotated SVG overlays, a 100 MB
+  default body limit, structured errors, and CORS.
 - Astrometry.net-compatible API subset: `POST /api/login`, `POST /api/upload`,
   `GET /api/submissions/:id`, `GET /api/jobs/:id`,
   `GET /api/jobs/:id/calibration`, and `GET /api/jobs/:id/info`.
@@ -34,6 +35,9 @@ disappears on a process restart.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
+- Every solve has a durable `/solutions/:id` web page. Uploaded originals and
+  derived visual previews expire after one day by default, while the job and
+  its complete WCS metadata remain available.
 
 ## Quick start
 
@@ -114,12 +118,26 @@ curl -X POST http://127.0.0.1:8080/api/v1/solves \
   -F 'options={"min_scale_arcsec_per_pixel":0.5,"max_scale_arcsec_per_pixel":15}'
 ```
 
-The response is `202 Accepted` with an ID. Poll it until `status` becomes
-`succeeded` or `failed`:
+The response is `202 Accepted` with an ID and artifact URLs. Poll it until
+`status` becomes `succeeded` or `failed`:
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/solves/1
 ```
+
+Successful jobs expose an on-demand PNG preview and annotated SVG while the
+uploaded image is retained, plus a persistent FITS-compatible WCS header:
+
+```bash
+curl -o overlay.svg http://127.0.0.1:8080/api/v1/solves/1/overlay.svg
+curl -OJ http://127.0.0.1:8080/api/v1/solves/1/wcs
+```
+
+The JSON solution includes the full TAN/ICRS WCS (`CTYPE`, `CUNIT`, `CRVAL`,
+zero-indexed internal `CRPIX`, CD matrix, `RADESYS`, and `EQUINOX`), the four
+ICRS footprint corners, and projected catalog objects when
+`SEIZA_OBJECT_DATA` is configured. The downloadable `.wcs` converts `CRPIX`
+to FITS' one-indexed convention.
 
 A position hint avoids the whole-sky path:
 
@@ -156,8 +174,9 @@ curl -sS -X POST http://127.0.0.1:8080/api/upload \
 
 This is deliberately a focused interoperability surface, not a clone of every
 Astrometry.net endpoint. URL uploads are not exposed, avoiding an SSRF-capable
-server fetch path. Tags, annotations, generated FITS/WCS downloads, durable
-sessions, and API-key verification are future additions.
+server fetch path. Tags, generated FITS images, durable sessions, and API-key
+verification are future additions. The canonical native API already provides
+annotations and a downloadable WCS header.
 
 The endpoint shapes and multipart encoding follow the
 [Astrometry.net API documentation](https://astrometry.net/doc/net/api.html).
@@ -171,6 +190,7 @@ are currently supported:
 | --- | --- | --- |
 | `SEIZA_BIND_ADDR` | `127.0.0.1:8080` | Axum listen address |
 | `SEIZA_STAR_DATA` | unset | Seiza tile catalog path |
+| `SEIZA_OBJECT_DATA` | unset | Optional Seiza object catalog for named overlay annotations |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |
@@ -183,6 +203,8 @@ are currently supported:
 | `SEIZA_WORKER_TOKEN` | unset | Required shared secret for separate workers |
 | `SEIZA_LEASE_SECONDS` | `900` | Exclusive worker-lease duration |
 | `SEIZA_MAX_UPLOAD_BYTES` | `104857600` | Request/file size ceiling |
+| `SEIZA_UPLOAD_RETENTION_SECONDS` | `86400` | Age after which uploaded image objects and visual previews are unavailable |
+| `SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS` | `3600` | Local/S3 expired-object sweep interval |
 | `SEIZA_RATE_LIMIT_PER_MINUTE` | `6` | Per-client submission refill rate |
 | `SEIZA_RATE_LIMIT_BURST` | `3` | Per-client initial burst size |
 | `SEIZA_AUTH_MODE` | `public` | `public` or `stub-api-key` |
@@ -222,9 +244,10 @@ catalog, and worker guidance.
 
 ### AWS / SQS workers
 
-Build with AWS support and use a task role that can only `GetObject` and
-`PutObject` under the chosen S3 prefix, `SendMessage`, `ReceiveMessage`, and
-`DeleteMessage` on the configured SQS queue, plus `GetItem`, `PutItem`,
+Build with AWS support and use a task role that can only `GetObject`,
+`PutObject`, and `DeleteObject` under the chosen S3 prefix plus `ListBucket`
+restricted to that prefix; `SendMessage`, `ReceiveMessage`, and `DeleteMessage`
+on the configured SQS queue; plus `GetItem`, `PutItem`,
 `UpdateItem`, `Scan`, and `TransactWriteItems` on the DynamoDB table when that
 job backend is selected. The AWS client is explicitly configured to use the
 AWS-LC-RS Rustls crypto provider rather than the legacy Ring connector:
@@ -258,8 +281,10 @@ job store, then deletes the SQS message only after completion is accepted.
 Duplicate messages and expired leases are safe by design. The AWS SDK uses the
 standard credential provider chain, so ECS task roles work without application
 secrets.
-Put `SEIZA_STAR_DATA` on a read-only EFS mount or bake/version it into a
-dedicated solver image.
+Put `SEIZA_STAR_DATA` and optional `SEIZA_OBJECT_DATA` on a read-only EFS mount
+or bake/version them into a dedicated solver image. The server sweeps expired
+S3 uploads itself; configure a matching bucket lifecycle rule as
+defense-in-depth.
 
 For the supplied container build, enable the adapter explicitly:
 

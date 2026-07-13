@@ -51,7 +51,7 @@ Admission is separate and uses a token bucket per client/IP. It returns HTTP
 
 | Concern | Local baseline | AWS deployment | Horizontal production step |
 | --- | --- | --- | --- |
-| Original image | `SEIZA_DATA_DIR/objects` | S3 | Retention policy/lifecycle rule |
+| Original image | `SEIZA_DATA_DIR/objects` | S3 | Server sweep plus lifecycle defense-in-depth |
 | Catalog | local readonly path | EFS or immutable image layer | Versioned catalog release |
 | Job record | SQLx SQLite file | DynamoDB or SQLx PostgreSQL | DynamoDB or SQLx PostgreSQL |
 | Scheduler | SQLx transaction | job store + SQS notification outbox | durable job store plus queue outbox |
@@ -66,6 +66,21 @@ a single table with a string `pk` partition key. For direct cloud delivery, the
 durable outbox publishes only job IDs to SQS; the API remains the lease
 authority and protects worker operations with a shared token. This makes
 duplicate SQS messages and worker crashes safe.
+
+Uploaded objects have a deliberately short lifecycle independent of job
+durability. The API reports `input_expires_at`, denies preview/overlay access
+after the configured retention window, and periodically deletes old objects
+by filesystem modification time or S3 `LastModified`. The default is 24 hours
+with an hourly sweep. Job rows, solution JSON, footprints, projected object
+metadata, and downloadable WCS headers remain in the selected durable job
+store. No schema-specific expiration process is required, so the same policy
+works with SQLite, PostgreSQL, and DynamoDB. Production S3 buckets should also
+use a matching lifecycle rule to cover interrupted cleanup processes.
+
+Preview PNGs and annotated SVGs are generated on demand rather than stored as
+additional durable objects. The SVG embeds its preview and marker geometry in
+one response. Once the original expires, visual artifacts return HTTP 410
+while the standards-facing WCS download remains available.
 
 ## API compatibility boundary
 
