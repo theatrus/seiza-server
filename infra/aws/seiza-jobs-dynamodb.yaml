@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Durable Seiza Server job store. Set SEIZA_DYNAMODB_TABLE to this table name.
+
+Resources:
+  SeizaJobs:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+Outputs:
+  TableName:
+    Value: !Ref SeizaJobs
+  TableArn:
+    Value: !GetAtt SeizaJobs.Arn

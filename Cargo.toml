@@ -1,0 +1,41 @@
+[package]
+name = "seiza-server"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Queued HTTP plate-solving service built on Seiza"
+
+[features]
+default = []
+aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:aws-sdk-s3", "dep:aws-sdk-sqs"]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["multipart"] }
+aws-config = { version = "1", optional = true, default-features = false, features = ["credentials-process", "default-https-client", "rt-tokio", "sso"] }
+aws-sdk-dynamodb = { version = "1", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", optional = true, default-features = false, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"] }
+aws-sdk-sqs = { version = "1", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+http = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots-no-provider"] }
+# Select AWS-LC-RS for every Rustls user in the process. The AWS SDK's
+# `default-https-client` feature also selects its AWS-LC provider directly.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+sqlx = { version = "0.8", default-features = false, features = ["any", "chrono", "postgres", "runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs"] }
+seiza = "0.2.2"
+seiza-fits = "0.1.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "limit", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
