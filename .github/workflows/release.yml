@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Cargo package version to release (without the v prefix)
+        description: Seiza Server version to release (without the v prefix)
         required: true
         type: string
 
@@ -22,7 +22,6 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      published: ${{ steps.registry.outputs.published }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,19 +51,6 @@ jobs:
 
           echo "version=${manifest_version}" >> "${GITHUB_OUTPUT}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-      - name: Verify the crates.io package
-        run: cargo publish --dry-run --locked
-      - name: Check whether the version is already published
-        id: registry
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if cargo info --registry crates-io "seiza-server@${VERSION}" >/dev/null 2>&1; then
-            echo "published=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "published=false" >> "${GITHUB_OUTPUT}"
-          fi
-
   package:
     name: ${{ matrix.target }} release RPM
     needs: preflight
@@ -91,34 +77,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish-crate:
-    name: Publish crate
-    needs: [preflight, package]
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-      - name: Authenticate to crates.io
-        id: auth
-        if: needs.preflight.outputs.published != 'true'
-        uses: rust-lang/crates-io-auth-action@v1.0.5
-      - name: Publish to crates.io
-        if: needs.preflight.outputs.published != 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --locked
-      - name: Confirm an existing publication
-        if: needs.preflight.outputs.published == 'true'
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: echo "seiza-server ${VERSION} is already published; continuing the synchronized release"
-
   github-release:
     name: Create GitHub release
-    needs: [preflight, package, publish-crate]
+    needs: [preflight, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write

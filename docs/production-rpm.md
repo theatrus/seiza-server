@@ -121,25 +121,12 @@ unversioned mutable download. Sign both the RPMs and repository metadata for
 production use. The source RPM is emitted alongside the binary RPM so the
 release can be rebuilt and audited later.
 
-The Cargo manifest is the version source of truth for the crate, git tag,
+The Cargo manifest is the version source of truth for the server's git tag,
 GitHub release, and RPMs. After merging a version bump to `main`, dispatch the
-`Release` workflow with that exact version (without a `v` prefix). It performs
-a crates.io dry run, rebuilds and clean-installs both x86_64 RPM targets,
-publishes the crate, creates the matching `v<version>` tag and GitHub release,
-and attaches all binary, debuginfo, and source RPMs.
+`Release` workflow with that exact version (without a `v` prefix). It rebuilds
+and clean-installs both x86_64 RPM targets, creates the matching `v<version>`
+tag and GitHub release, and attaches all binary, debuginfo, and source RPMs.
 
-The first `seiza-server` version must be bootstrapped manually because
-crates.io only allows trusted publishers after a crate exists:
-
-```bash
-git switch main
-git pull --ff-only
-cargo publish --locked
-```
-
-Then configure the crate's crates.io trusted publisher with repository owner
-`theatrus`, repository `seiza-server`, workflow `release.yml`, and environment
-`release`. Dispatch the release workflow for the already-published first
-version; it detects the existing crate and still creates the synchronized tag,
-GitHub release, and RPM assets. Later versions publish through short-lived OIDC
-credentials and require no stored crates.io token.
+`seiza-server` is an application and is intentionally marked `publish = false`;
+it is not published to crates.io. The reusable `seiza` library is versioned and
+published independently from the `theatrus/seiza` repository.
