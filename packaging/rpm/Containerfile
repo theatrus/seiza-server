@@ -1,0 +1,42 @@
+ARG BASE
+FROM ${BASE}
+
+ARG TARGET
+
+RUN dnf install -y \
+        bash \
+        ca-certificates \
+        cmake \
+        findutils \
+        gcc \
+        gcc-c++ \
+        git \
+        gzip \
+        make \
+        perl \
+        pkgconf-pkg-config \
+        rpm-build \
+        tar \
+        which \
+    && dnf clean all
+
+# Vite 8 requires a current Node release. AL2023 provides namespaced Node.js
+# packages, while Fedora exposes the unversioned current package.
+RUN if [ "${TARGET}" = "al2023" ]; then \
+        dnf install -y nodejs22 nodejs22-npm && \
+        alternatives --set node /usr/bin/node-22 && \
+        ln -s /usr/bin/npm-22 /usr/local/bin/npm; \
+    else \
+        dnf install -y nodejs npm; \
+    fi \
+    && dnf clean all
+
+# AL2023's system Rust can lag the edition/toolchain required by the server.
+# Install one current toolchain in a world-readable location so the container
+# can build as the host user rather than leaving root-owned artifacts behind.
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:${PATH}
+RUN mkdir -p "${RUSTUP_HOME}" "${CARGO_HOME}" \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && chmod -R a+rX "${RUSTUP_HOME}" "${CARGO_HOME}"
