@@ -59,12 +59,41 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [al2023, f44]
+        include:
+          - target: al2023
+            base: public.ecr.aws/amazonlinux/amazonlinux:2023
+          - target: f44
+            base: registry.fedoraproject.org/fedora:44
     steps:
       - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build cached RPM builder image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packaging/rpm/Containerfile
+          load: true
+          tags: seiza-server-rpm-builder:${{ matrix.target }}
+          build-args: |
+            BASE=${{ matrix.base }}
+            TARGET=${{ matrix.target }}
+          cache-from: type=gha,scope=rpm-builder-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=rpm-builder-${{ matrix.target }}
+      - name: Restore RPM compiler caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            .rpm-cache/${{ matrix.target }}/cargo
+            .rpm-cache/${{ matrix.target }}/npm
+            .rpm-cache/${{ matrix.target }}/target
+          key: rpm-v1-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'frontend/package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            rpm-v1-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'frontend/package-lock.json') }}-
+            rpm-v1-${{ runner.os }}-${{ matrix.target }}-
       - name: Build target-native RPM
         env:
           CONTAINER_ENGINE: docker
+          SEIZA_SKIP_CONTAINER_BUILD: 1
         run: ./packaging/rpm/build-in-container.sh ${{ matrix.target }}
       - name: Verify package installation
         env:
