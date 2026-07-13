@@ -10,6 +10,18 @@ export interface SolveOptions {
   max_scale_arcsec_per_pixel?: number
 }
 
+export interface OverlayObject {
+  name: string
+  common_name: string
+  kind: string
+  mag: number | null
+  x: number
+  y: number
+  semi_major_px: number
+  semi_minor_px: number
+  angle_deg: number
+}
+
 export interface Solution {
   center_ra_deg: number
   center_dec_deg: number
@@ -18,7 +30,17 @@ export interface Solution {
   rms_arcsec: number
   image_width: number
   image_height: number
-  wcs: { crval: [number, number]; crpix: [number, number]; cd: [[number, number], [number, number]] }
+  wcs: {
+    crval: [number, number]
+    crpix: [number, number]
+    cd: [[number, number], [number, number]]
+    ctype: [string, string]
+    cunit: [string, string]
+    radesys: string
+    equinox: number
+  }
+  footprint: [[number, number], [number, number], [number, number], [number, number]]
+  objects: OverlayObject[]
 }
 
 export interface Job {
@@ -28,6 +50,11 @@ export interface Job {
   started_at: string | null
   completed_at: string | null
   original_filename: string
+  input_expires_at: string
+  input_available: boolean
+  preview_url: string | null
+  overlay_url: string | null
+  wcs_url: string | null
   solution: Solution | null
   error: string | null
 }

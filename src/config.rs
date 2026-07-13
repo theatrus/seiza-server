@@ -79,6 +79,7 @@ pub struct Config {
     pub frontend_dir: PathBuf,
     pub data_dir: PathBuf,
     pub catalog_path: Option<PathBuf>,
+    pub object_catalog_path: Option<PathBuf>,
     pub job_backend: JobBackend,
     pub sql_database_url: String,
     pub dynamodb_table: Option<String>,
@@ -89,6 +90,8 @@ pub struct Config {
     pub lease_seconds: u64,
     pub worker_count: usize,
     pub max_upload_bytes: usize,
+    pub upload_retention_seconds: u64,
+    pub upload_cleanup_interval_seconds: u64,
     pub rate_limit_per_minute: f64,
     pub rate_limit_burst: f64,
     pub auth_mode: AuthMode,
@@ -107,6 +110,9 @@ impl Config {
             bail!("SEIZA_WORKER_COUNT must be at least 1");
         }
         let max_upload_bytes = parse_env("SEIZA_MAX_UPLOAD_BYTES", 100 * 1024 * 1024usize)?;
+        let upload_retention_seconds = parse_env("SEIZA_UPLOAD_RETENTION_SECONDS", 86_400u64)?;
+        let upload_cleanup_interval_seconds =
+            parse_env("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS", 3_600u64)?;
         let rate_limit_per_minute = parse_env("SEIZA_RATE_LIMIT_PER_MINUTE", 6.0f64)?;
         let rate_limit_burst = parse_env("SEIZA_RATE_LIMIT_BURST", 3.0f64)?;
         let embedded_workers = parse_env("SEIZA_EMBEDDED_WORKERS", true)?;
@@ -116,6 +122,12 @@ impl Config {
         }
         if lease_seconds == 0 {
             bail!("SEIZA_LEASE_SECONDS must be at least 1");
+        }
+        if upload_retention_seconds == 0 || upload_retention_seconds > i64::MAX as u64 {
+            bail!("SEIZA_UPLOAD_RETENTION_SECONDS must be between 1 and i64::MAX");
+        }
+        if upload_cleanup_interval_seconds == 0 {
+            bail!("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS must be at least 1");
         }
         let data_dir = PathBuf::from(env_or("SEIZA_DATA_DIR", "data"));
         let queue_database = env::var_os("SEIZA_QUEUE_DATABASE")
@@ -129,6 +141,7 @@ impl Config {
             frontend_dir: PathBuf::from(env_or("SEIZA_FRONTEND_DIR", "frontend/dist")),
             data_dir,
             catalog_path: env::var_os("SEIZA_STAR_DATA").map(PathBuf::from),
+            object_catalog_path: env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
             job_backend: env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")
@@ -150,6 +163,8 @@ impl Config {
             lease_seconds,
             worker_count,
             max_upload_bytes,
+            upload_retention_seconds,
+            upload_cleanup_interval_seconds,
             rate_limit_per_minute,
             rate_limit_burst,
             auth_mode: env_or("SEIZA_AUTH_MODE", "public").parse()?,

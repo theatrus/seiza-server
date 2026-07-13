@@ -2567,9 +2567,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04eaad50f14c1ce9e78e7490406f74cc3b2b7284713daf795f90eed05366aaff"
+checksum = "43d2d9ee1ce5cbc9a5e0e81eee0d6e96ec00da1b348d4d2b4fc1063720f32727"
 dependencies = [
  "image",
  "memmap2",
@@ -2597,6 +2597,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-sqs",
  "axum",
+ "base64",
  "bytes",
  "chrono",
  "http 1.4.2",

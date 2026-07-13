@@ -24,11 +24,11 @@ The package combines everything needed to run the service:
 - an nginx configuration example at
   `/usr/share/doc/seiza-server/nginx.conf.example`.
 
-The Seiza star catalog is not packaged. It is much larger and changes on a
-different cadence than the server; install it on durable storage such as
-`/srv/seiza/catalog/`, point `SEIZA_STAR_DATA` at it, and make it readable by
-the systemd service. This also keeps an application upgrade from silently
-changing solver results.
+The Seiza star and optional object catalogs are not packaged. They are larger
+and change on a different cadence than the server; install them on durable
+storage such as `/srv/seiza/catalog/`, point `SEIZA_STAR_DATA` and optional
+`SEIZA_OBJECT_DATA` at them, and make them readable by the systemd service.
+This also keeps an application upgrade from silently changing solver results.
 
 ## Build
 
@@ -74,17 +74,21 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Set `SEIZA_STAR_DATA` before starting the service. The default configuration
-uses a SQLite database and local uploaded-object storage under
-`/var/lib/seiza-server/`; systemd creates and owns that state directory for the
-restricted `seiza-server` system account. Keep that path on persistent local
-storage. The environment file is packaged as `root:seiza-server` mode `0640`,
-so it is the correct place for a worker token on a single host.
+Set `SEIZA_STAR_DATA` before starting the service. Configure
+`SEIZA_OBJECT_DATA` as well when named-object annotations are desired. The
+default configuration uses a SQLite database and local uploaded-object storage
+under `/var/lib/seiza-server/`; systemd creates and owns that state directory
+for the restricted `seiza-server` system account. Keep that path on persistent
+local storage. The environment file is packaged as `root:seiza-server` mode
+`0640`, so it is the correct place for a worker token on a single host.
 
 For a multi-host deployment, move originals to S3 and choose DynamoDB or a
 PostgreSQL SQLx URL. The installed binary includes all of those adapters; only
 the environment file changes. Keep the worker token in the protected local
 environment file or in your secret manager; never commit it to the repository.
+
+Originals are swept after 24 hours by default; add a matching S3 lifecycle rule
+as defense-in-depth. Job records and WCS results do not expire with the image.
 
 ```ini
 SEIZA_STORAGE_BACKEND=s3

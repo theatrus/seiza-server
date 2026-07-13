@@ -4,32 +4,33 @@ use crate::{
         JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse, SolveOptions,
         WorkerCompletion,
     },
+    overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
-    solver::{SolverEngine, dimensions_from_bytes},
+    solver::{SolverEngine, dimensions_from_bytes, preview_png},
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Form, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     hash::{Hash, Hasher},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
-    services::ServeDir,
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 use uuid::Uuid;
@@ -49,7 +50,10 @@ impl AppState {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
         let transport = queue_transport(&config).await?;
-        let solver = SolverEngine::from_catalog_path(config.catalog_path.as_deref());
+        let solver = SolverEngine::from_catalog_paths(
+            config.catalog_path.as_deref(),
+            config.object_catalog_path.as_deref(),
+        );
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
             config: Arc::new(config),
@@ -61,6 +65,8 @@ impl AppState {
     }
 
     pub fn start_background_tasks(&self) {
+        let state = self.clone();
+        tokio::spawn(async move { state.cleanup_expired_uploads().await });
         if self.transport.uses_external_queue() {
             let state = self.clone();
             tokio::spawn(async move { state.dispatch_outbox().await });
@@ -88,6 +94,25 @@ impl AppState {
                     }
                 }
             });
+        }
+    }
+
+    async fn cleanup_expired_uploads(&self) {
+        let mut interval = tokio::time::interval(Duration::from_secs(
+            self.config.upload_cleanup_interval_seconds,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let retention = Duration::from_secs(self.config.upload_retention_seconds);
+            let cutoff = SystemTime::now()
+                .checked_sub(retention)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            match self.store.delete_older_than(cutoff).await {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "deleted expired uploaded images"),
+                Err(error) => tracing::error!(%error, "failed to clean expired uploaded images"),
+            }
         }
     }
 
@@ -185,6 +210,37 @@ impl AppState {
             .map_err(ApiError::internal)
     }
 
+    fn input_expires_at(&self, job: &JobRecord) -> chrono::DateTime<Utc> {
+        job.created_at + ChronoDuration::seconds(self.config.upload_retention_seconds as i64)
+    }
+
+    fn input_available(&self, job: &JobRecord) -> bool {
+        Utc::now() < self.input_expires_at(job)
+    }
+
+    fn job_response(&self, job: &JobRecord) -> JobResponse {
+        let input_available = self.input_available(job);
+        JobResponse {
+            id: job.id,
+            status: job.status,
+            created_at: job.created_at,
+            started_at: job.started_at,
+            completed_at: job.completed_at,
+            original_filename: job.original_filename.clone(),
+            input_expires_at: self.input_expires_at(job),
+            input_available,
+            preview_url: input_available.then(|| format!("/api/v1/solves/{}/preview", job.id)),
+            overlay_url: (input_available && job.solution.is_some())
+                .then(|| format!("/api/v1/solves/{}/overlay.svg", job.id)),
+            wcs_url: job
+                .solution
+                .as_ref()
+                .map(|_| format!("/api/v1/solves/{}/wcs", job.id)),
+            solution: job.solution.clone(),
+            error: job.error.clone(),
+        }
+    }
+
     async fn submit(
         &self,
         client: Client,
@@ -240,7 +296,7 @@ impl AppState {
                 }
             }
         }
-        Ok(JobResponse::from(&job))
+        Ok(self.job_response(&job))
     }
 }
 
@@ -250,6 +306,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/solves", post(post_solve))
         .route("/api/v1/solves/{job_id}", get(get_solve))
+        .route("/api/v1/solves/{job_id}/preview", get(get_solve_preview))
+        .route(
+            "/api/v1/solves/{job_id}/overlay.svg",
+            get(get_solve_overlay),
+        )
+        .route("/api/v1/solves/{job_id}/wcs", get(get_solve_wcs))
         .route("/api/v1/internal/worker/claim", post(worker_claim_next))
         .route(
             "/api/v1/internal/worker/claim/{job_id}",
@@ -283,7 +345,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/jobs/{job_id}/info", get(astrometry_info))
         .route("/api/jobs/{job_id}/info/", get(astrometry_info))
-        .fallback_service(ServeDir::new(frontend_dir))
+        .fallback_service(
+            ServeDir::new(&frontend_dir)
+                .not_found_service(ServeFile::new(frontend_dir.join("index.html"))),
+        )
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .layer(RequestBodyLimitLayer::new(state.config.max_upload_bytes))
@@ -343,8 +408,118 @@ async fn get_solve(
     state
         .job(job_id)
         .await?
-        .map(|job| Json(JobResponse::from(&job)))
+        .map(|job| Json(state.job_response(&job)))
         .ok_or_else(ApiError::not_found)
+}
+
+async fn get_solve_preview(
+    State(state): State<AppState>,
+    Path(job_id): Path<JobId>,
+) -> Result<Response, ApiError> {
+    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    ensure_input_available(&state, &job)?;
+    let content = state
+        .store
+        .get(&job.object_key)
+        .await
+        .map_err(ApiError::internal)?;
+    let preview = preview_png(content, job.original_filename)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "private, max-age=300"),
+        ],
+        preview,
+    )
+        .into_response())
+}
+
+async fn get_solve_overlay(
+    State(state): State<AppState>,
+    Path(job_id): Path<JobId>,
+    Query(query): Query<OverlayQuery>,
+) -> Result<Response, ApiError> {
+    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    ensure_input_available(&state, &job)?;
+    let solution = job
+        .solution
+        .as_ref()
+        .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced an overlay yet"))?;
+    let content = state
+        .store
+        .get(&job.object_key)
+        .await
+        .map_err(ApiError::internal)?;
+    let preview = preview_png(content, job.original_filename)
+        .await
+        .map_err(ApiError::bad_request)?;
+    let svg = render_svg(
+        solution,
+        &preview,
+        OverlayOptions {
+            objects: query.objects,
+            grid: query.grid,
+        },
+    );
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+            (header::CACHE_CONTROL, "private, max-age=300"),
+            (
+                header::CONTENT_DISPOSITION,
+                "inline; filename=seiza-overlay.svg",
+            ),
+        ],
+        svg,
+    )
+        .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct OverlayQuery {
+    #[serde(default = "default_true")]
+    objects: bool,
+    #[serde(default)]
+    grid: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+async fn get_solve_wcs(
+    State(state): State<AppState>,
+    Path(job_id): Path<JobId>,
+) -> Result<Response, ApiError> {
+    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let solution = job
+        .solution
+        .as_ref()
+        .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced WCS data yet"))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=seiza-solution.wcs",
+            ),
+        ],
+        solution.fits_wcs_header(),
+    )
+        .into_response())
+}
+
+fn ensure_input_available(state: &AppState, job: &JobRecord) -> Result<(), ApiError> {
+    if state.input_available(job) {
+        Ok(())
+    } else {
+        Err(ApiError::gone(
+            "the uploaded image and generated preview expired; WCS metadata remains available",
+        ))
+    }
 }
 
 async fn worker_claim_next(
@@ -842,6 +1017,22 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             code: "lease_conflict",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
+    fn artifact_not_ready(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "artifact_not_ready",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
+    fn gone(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            code: "input_expired",
             message: message.into(),
             retry_after: None,
         }
