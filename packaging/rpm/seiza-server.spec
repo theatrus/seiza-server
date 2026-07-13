@@ -71,7 +71,7 @@ fi
 
 %files
 %license LICENSE
-%doc README.md docs/architecture.md docs/production-rpm.md
+%doc README.md CHANGELOG.md docs/architecture.md docs/production-rpm.md
 %doc %{_docdir}/%{name}/nginx.conf.example
 %{_bindir}/seiza-server
 %{_libexecdir}/seiza-server
