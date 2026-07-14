@@ -1,13 +1,14 @@
 use crate::{
+    annotations::{AnnotationEngine, AnnotationOptions},
     config::{AuthMode, Config},
     models::{
-        JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse, SolveOptions,
-        WorkerCompletion,
+        AnnotationResponse, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
+        SolveOptions, WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
-    solver::{SolverEngine, dimensions_from_bytes, preview_png},
+    solver::{SolverEngine, capture_time_from_bytes, dimensions_from_bytes, full_png, preview_png},
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
 };
@@ -43,6 +44,7 @@ pub struct AppState {
     limiter: RateLimiter,
     store: Arc<dyn ObjectStore>,
     solver: SolverEngine,
+    annotations: AnnotationEngine,
 }
 
 impl AppState {
@@ -50,9 +52,13 @@ impl AppState {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
         let transport = queue_transport(&config).await?;
-        let solver = SolverEngine::from_catalog_paths(
+        let solver = SolverEngine::from_catalog_path(config.catalog_path.as_deref());
+        let annotations = AnnotationEngine::new(
+            solver.catalog(),
             config.catalog_path.as_deref(),
             config.object_catalog_path.as_deref(),
+            config.transient_catalog_path.as_deref(),
+            config.minor_body_catalog_path.as_deref(),
         );
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
@@ -61,6 +67,7 @@ impl AppState {
             transport,
             store,
             solver,
+            annotations,
         })
     }
 
@@ -210,6 +217,16 @@ impl AppState {
             .map_err(ApiError::internal)
     }
 
+    async fn public_job(&self, public_id: &str) -> Result<Option<JobRecord>, ApiError> {
+        let Some(job_id) = public_job_sequence(public_id) else {
+            return Ok(None);
+        };
+        let Some(job) = self.job(job_id).await? else {
+            return Ok(None);
+        };
+        Ok(public_id_matches_job(public_id, job.id, &job.object_key).then_some(job))
+    }
+
     fn input_expires_at(&self, job: &JobRecord) -> chrono::DateTime<Utc> {
         job.created_at + ChronoDuration::seconds(self.config.upload_retention_seconds as i64)
     }
@@ -218,10 +235,27 @@ impl AppState {
         Utc::now() < self.input_expires_at(job)
     }
 
-    fn job_response(&self, job: &JobRecord) -> JobResponse {
+    fn job_response(&self, job: &JobRecord) -> Result<JobResponse, ApiError> {
+        let public_id = public_job_id(job)
+            .ok_or_else(|| ApiError::internal("job object key has no public UUID"))?;
         let input_available = self.input_available(job);
-        JobResponse {
-            id: job.id,
+        let solution = job.solution.as_ref().map(|solution| {
+            let mut solution = solution.clone();
+            let annotations = self.annotations.annotate(
+                &public_id,
+                &solution,
+                job.options.capture_time,
+                &AnnotationOptions::default(),
+            );
+            if self.annotations.is_configured() {
+                solution.objects = annotations.objects;
+            }
+            solution.catalog_version = Some(annotations.catalog_version);
+            solution.capture_time = job.options.capture_time;
+            solution
+        });
+        Ok(JobResponse {
+            id: public_id.clone(),
             status: job.status,
             created_at: job.created_at,
             started_at: job.started_at,
@@ -229,24 +263,30 @@ impl AppState {
             original_filename: job.original_filename.clone(),
             input_expires_at: self.input_expires_at(job),
             input_available,
-            preview_url: input_available.then(|| format!("/api/v1/solves/{}/preview", job.id)),
-            overlay_url: (input_available && job.solution.is_some())
-                .then(|| format!("/api/v1/solves/{}/overlay.svg", job.id)),
+            preview_url: input_available.then(|| format!("/api/v1/solves/{public_id}/preview")),
+            overlay_url: (input_available && solution.is_some())
+                .then(|| format!("/api/v1/solves/{public_id}/overlay.svg")),
+            annotations_url: solution
+                .as_ref()
+                .map(|_| format!("/api/v1/solves/{public_id}/annotations")),
             wcs_url: job
                 .solution
                 .as_ref()
-                .map(|_| format!("/api/v1/solves/{}/wcs", job.id)),
-            solution: job.solution.clone(),
+                .map(|_| format!("/api/v1/solves/{public_id}/wcs")),
+            solution,
             error: job.error.clone(),
-        }
+        })
     }
 
     async fn submit(
         &self,
         client: Client,
         upload: UploadedFile,
-        options: SolveOptions,
+        mut options: SolveOptions,
     ) -> Result<JobResponse, ApiError> {
+        if options.capture_time.is_none() {
+            options.capture_time = capture_time_from_bytes(&upload.data, &upload.filename);
+        }
         options.validate().map_err(ApiError::bad_request)?;
         self.limiter
             .check(&client.id)
@@ -254,10 +294,12 @@ impl AppState {
             .map_err(ApiError::rate_limited)?;
         let extension = safe_extension(&upload.filename);
         let prefix = self.config.s3_prefix.trim_matches('/');
+        let public_token = Uuid::new_v4();
+        let storage_token = Uuid::now_v7();
         let object_key = if prefix.is_empty() {
-            format!("{}.{}", Uuid::now_v7(), extension)
+            format!("public-{public_token}/{storage_token}.{extension}")
         } else {
-            format!("{prefix}/{}.{}", Uuid::now_v7(), extension)
+            format!("{prefix}/public-{public_token}/{storage_token}.{extension}")
         };
         self.store
             .put(&object_key, upload.data, upload.content_type.as_deref())
@@ -296,7 +338,7 @@ impl AppState {
                 }
             }
         }
-        Ok(self.job_response(&job))
+        self.job_response(&job)
     }
 }
 
@@ -306,6 +348,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/solves", post(post_solve))
         .route("/api/v1/solves/{job_id}", get(get_solve))
+        .route(
+            "/api/v1/solves/{job_id}/annotations",
+            get(get_solve_annotations),
+        )
         .route("/api/v1/solves/{job_id}/preview", get(get_solve_preview))
         .route(
             "/api/v1/solves/{job_id}/overlay.svg",
@@ -403,29 +449,36 @@ async fn post_solve(
 
 async fn get_solve(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
 ) -> Result<Json<JobResponse>, ApiError> {
-    state
-        .job(job_id)
+    let job = state
+        .public_job(&public_id)
         .await?
-        .map(|job| Json(state.job_response(&job)))
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(state.job_response(&job)?))
 }
 
 async fn get_solve_preview(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
+    Query(query): Query<PreviewQuery>,
 ) -> Result<Response, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
     let content = state
         .store
         .get(&job.object_key)
         .await
         .map_err(ApiError::internal)?;
-    let preview = preview_png(content, job.original_filename)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let preview = if query.full {
+        full_png(content, job.original_filename).await
+    } else {
+        preview_png(content, job.original_filename).await
+    }
+    .map_err(ApiError::bad_request)?;
     Ok((
         [
             (header::CONTENT_TYPE, "image/png"),
@@ -436,17 +489,58 @@ async fn get_solve_preview(
         .into_response())
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct PreviewQuery {
+    #[serde(default)]
+    full: bool,
+}
+
+async fn get_solve_annotations(
+    State(state): State<AppState>,
+    Path(public_id): Path<String>,
+    Query(query): Query<AnnotationQuery>,
+) -> Result<Json<AnnotationResponse>, ApiError> {
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let solution = job.solution.as_ref().ok_or_else(|| {
+        ApiError::artifact_not_ready("the solve has not produced annotations yet")
+    })?;
+    Ok(Json(state.annotations.annotate(
+        &public_id,
+        solution,
+        job.options.capture_time,
+        &query.options(),
+    )))
+}
+
 async fn get_solve_overlay(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
     Query(query): Query<OverlayQuery>,
 ) -> Result<Response, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
-    let solution = job
+    let stored_solution = job
         .solution
         .as_ref()
         .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced an overlay yet"))?;
+    let mut solution = stored_solution.clone();
+    if query.objects {
+        solution.objects = state
+            .annotations
+            .annotate(
+                &public_id,
+                stored_solution,
+                job.options.capture_time,
+                &query.annotations.options(),
+            )
+            .objects;
+    }
     let content = state
         .store
         .get(&job.object_key)
@@ -456,7 +550,7 @@ async fn get_solve_overlay(
         .await
         .map_err(ApiError::bad_request)?;
     let svg = render_svg(
-        solution,
+        &solution,
         &preview,
         OverlayOptions {
             objects: query.objects,
@@ -483,6 +577,51 @@ struct OverlayQuery {
     objects: bool,
     #[serde(default)]
     grid: bool,
+    #[serde(flatten)]
+    annotations: AnnotationQuery,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnnotationQuery {
+    #[serde(default = "default_true")]
+    deep_sky: bool,
+    #[serde(default = "default_true")]
+    named_stars: bool,
+    #[serde(default)]
+    field_stars: bool,
+    #[serde(default = "default_true")]
+    transients: bool,
+    #[serde(default = "default_true")]
+    minor_bodies: bool,
+    #[serde(default)]
+    historical_transients: bool,
+    #[serde(default = "default_field_star_magnitude")]
+    field_star_mag_limit: f32,
+    #[serde(default = "default_field_star_limit")]
+    max_field_stars: usize,
+}
+
+impl AnnotationQuery {
+    fn options(&self) -> AnnotationOptions {
+        AnnotationOptions {
+            deep_sky: self.deep_sky,
+            named_stars: self.named_stars,
+            field_stars: self.field_stars,
+            transients: self.transients,
+            minor_bodies: self.minor_bodies,
+            historical_transients: self.historical_transients,
+            field_star_mag_limit: self.field_star_mag_limit.clamp(-2.0, 20.0),
+            max_field_stars: self.max_field_stars.clamp(1, 2_000),
+        }
+    }
+}
+
+fn default_field_star_magnitude() -> f32 {
+    10.0
+}
+
+fn default_field_star_limit() -> usize {
+    300
 }
 
 fn default_true() -> bool {
@@ -491,9 +630,12 @@ fn default_true() -> bool {
 
 async fn get_solve_wcs(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let solution = job
         .solution
         .as_ref()
@@ -738,12 +880,37 @@ async fn astrometry_info(
     Path(job_id): Path<JobId>,
 ) -> Result<Json<Value>, ApiError> {
     let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let objects_in_field = job
+        .solution
+        .as_ref()
+        .map(|solution| {
+            state
+                .annotations
+                .annotate(
+                    job.id,
+                    solution,
+                    job.options.capture_time,
+                    &AnnotationOptions::default(),
+                )
+                .objects
+                .into_iter()
+                .filter(|object| object.kind != "field-star")
+                .map(|object| {
+                    if object.common_name.trim().is_empty() {
+                        object.name
+                    } else {
+                        format!("{} ({})", object.common_name, object.name)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut result = json!({
         "status": astro_status(job.status),
         "original_filename": job.original_filename,
         "machine_tags": [],
         "tags": [],
-        "objects_in_field": [],
+        "objects_in_field": objects_in_field,
     });
     if let Some(solution) = job.solution {
         result["calibration"] = calibration_json(&solution);
@@ -891,6 +1058,37 @@ fn safe_filename(filename: &str) -> String {
     } else {
         filename
     }
+}
+
+fn public_job_id(job: &JobRecord) -> Option<String> {
+    public_token_from_object_key(&job.object_key).map(|token| format!("{}-{token}", job.id))
+}
+
+fn public_id_matches_job(public_id: &str, job_id: JobId, object_key: &str) -> bool {
+    public_job_sequence(public_id) == Some(job_id)
+        && public_token_from_object_key(object_key)
+            .map(|token| format!("{job_id}-{token}"))
+            .as_deref()
+            == Some(public_id)
+}
+
+fn public_job_sequence(public_id: &str) -> Option<JobId> {
+    let (sequence, token) = public_id.split_once('-')?;
+    Uuid::parse_str(token).ok()?;
+    sequence.parse().ok()
+}
+
+fn public_token_from_object_key(object_key: &str) -> Option<Uuid> {
+    let mut components = object_key.rsplit('/');
+    let filename = components.next()?;
+    let tagged_parent = components
+        .next()
+        .and_then(|value| value.strip_prefix("public-"))
+        .and_then(|value| Uuid::parse_str(value).ok());
+    tagged_parent.or_else(|| {
+        let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+        Uuid::parse_str(stem).ok()
+    })
 }
 
 fn safe_extension(filename: &str) -> &'static str {
@@ -1077,5 +1275,36 @@ impl IntoResponse for ApiError {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_solution_locators_require_the_random_upload_token() {
+        let public_token = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let legacy_token = Uuid::parse_str("019f5c5d-af6b-7930-b0ca-371b62e32bc0").unwrap();
+        let storage_token = Uuid::parse_str("019f5c5d-af6b-7930-b0ca-371b62e32bc1").unwrap();
+        let new_key = format!("uploads/public-{public_token}/{storage_token}.fits");
+        let legacy_key = format!("uploads/{legacy_token}.fits");
+        let locator = format!("42-{public_token}");
+
+        assert_eq!(public_token_from_object_key(&new_key), Some(public_token));
+        assert_eq!(
+            public_token_from_object_key(&legacy_key),
+            Some(legacy_token)
+        );
+        assert_eq!(public_job_sequence(&locator), Some(42));
+        assert!(public_id_matches_job(&locator, 42, &new_key));
+        assert!(!public_id_matches_job(
+            &format!("42-{storage_token}"),
+            42,
+            &new_key
+        ));
+        assert!(!public_id_matches_job(&locator, 43, &new_key));
+        assert_eq!(public_job_sequence("42"), None);
+        assert_eq!(public_job_sequence("42-not-a-token"), None);
     }
 }

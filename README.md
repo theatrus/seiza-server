@@ -16,8 +16,9 @@ disappears on a process restart.
 ## What is implemented
 
 - Native JSON API: multipart uploads, job polling, explicit WCS/quality output,
-  downloadable FITS-style WCS headers, annotated SVG overlays, a 100 MB
-  default body limit, structured errors, and CORS.
+  refreshable catalog annotations, downloadable FITS-style WCS headers, an
+  optional composite overlay endpoint, a 100 MB default body limit,
+  structured errors, and CORS.
 - Astrometry.net-compatible API subset: `POST /api/login`, `POST /api/upload`,
   `GET /api/submissions/:id`, `GET /api/jobs/:id`,
   `GET /api/jobs/:id/calibration`, and `GET /api/jobs/:id/info`.
@@ -35,9 +36,12 @@ disappears on a process restart.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
-- Every solve has a durable `/solutions/:id` web page. Uploaded originals and
-  derived visual previews expire after one day by default, while the job and
-  its complete WCS metadata remain available.
+- Every solve has a durable `/solutions/:public_id` web page. Its public ID
+  includes a random UUID and cannot be discovered by incrementing the internal
+  queue sequence. Uploaded originals and derived visual previews expire after
+  one day by default, while the job and its complete WCS and annotation
+  metadata remain available. The React UI renders an interactive SVG layer over
+  the retained image preview.
 
 ## Quick start
 
@@ -118,40 +122,47 @@ curl -X POST http://127.0.0.1:8080/api/v1/solves \
   -F 'options={"min_scale_arcsec_per_pixel":0.5,"max_scale_arcsec_per_pixel":15}'
 ```
 
-The response is `202 Accepted` with an ID and artifact URLs. Poll it until
+The response is `202 Accepted` with an opaque ID and artifact URLs. Poll it until
 `status` becomes `succeeded` or `failed`:
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/solves/1
+PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
+curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID"
 ```
 
-Successful jobs expose an on-demand PNG preview and annotated SVG while the
-uploaded image is retained, plus a persistent FITS-compatible WCS header:
+Successful jobs expose an on-demand PNG preview while the uploaded image is
+retained, plus persistent annotations and a FITS-compatible WCS header:
 
 ```bash
-curl -o overlay.svg http://127.0.0.1:8080/api/v1/solves/1/overlay.svg
-curl -OJ http://127.0.0.1:8080/api/v1/solves/1/wcs
-```
-
-The SVG image output accepts independent overlay options. Object annotations
-remain enabled by default; add the WCS-projected RA/Dec graticule, request only
-the coordinate grid, or combine both explicitly:
-
-```bash
-curl -o grid-and-objects.svg 'http://127.0.0.1:8080/api/v1/solves/1/overlay.svg?grid=true'
-curl -o grid-only.svg 'http://127.0.0.1:8080/api/v1/solves/1/overlay.svg?grid=true&objects=false'
+curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/annotations?field_stars=true&historical_transients=true"
+curl -OJ "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/wcs"
 ```
 
 The grid is projected through the solved TAN WCS rather than drawn in image
 coordinates, so its meridians and parallels reflect field curvature, rotation,
-parity, and RA wraparound. The solution page exposes Objects, RA / Dec grid,
-and Both controls for the same output.
+parity, and RA wraparound. The solution page draws that grid and catalog
+markers as a transparent React SVG over the preview, with independent controls
+for deep-sky objects, named stars, field stars, transients, minor bodies, and
+historical transients. **Download rendered PNG** fetches the retained image at
+full resolution and composites the currently selected layers into a PNG in the
+browser. The exported image carries a small Seiza logo, “Solved with Seiza,”
+and `seiza.fyi` mark; it does not download an SVG.
+
+`GET /api/v1/solves/:public_id/overlay.svg` remains as an optional self-contained
+image output for API clients. Its query supports `objects`, `grid`,
+`deep_sky`, `named_stars`, `field_stars`, `transients`, `minor_bodies`,
+`historical_transients`, `field_star_mag_limit`, and `max_field_stars`.
 
 The JSON solution includes the full TAN/ICRS WCS (`CTYPE`, `CUNIT`, `CRVAL`,
 zero-indexed internal `CRPIX`, CD matrix, `RADESYS`, and `EQUINOX`), the four
-ICRS footprint corners, and projected catalog objects when
-`SEIZA_OBJECT_DATA` is configured. The downloadable `.wcs` converts `CRPIX`
-to FITS' one-indexed convention.
+ICRS footprint corners, and current projected catalog objects when annotation
+catalogs are configured. Static catalog changes are detected and reprojected
+through the stored WCS without rerunning the solver. The downloadable `.wcs`
+converts `CRPIX` to FITS' one-indexed convention.
+
+FITS `DATE-OBS` is captured automatically. Non-FITS API clients can provide a
+RFC 3339 `capture_time` in the options JSON. Capture time scopes transient
+events and propagates comets and asteroids to the acquisition instant.
 
 A position hint avoids the whole-sky path:
 
@@ -205,6 +216,8 @@ are currently supported:
 | `SEIZA_BIND_ADDR` | `127.0.0.1:8080` | Axum listen address |
 | `SEIZA_STAR_DATA` | unset | Seiza tile catalog path |
 | `SEIZA_OBJECT_DATA` | unset | Optional Seiza object catalog for named overlay annotations |
+| `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |
+| `SEIZA_MINOR_BODY_DATA` | unset | Optional reloadable Seiza minor-body orbital-elements catalog |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |
@@ -295,8 +308,9 @@ job store, then deletes the SQS message only after completion is accepted.
 Duplicate messages and expired leases are safe by design. The AWS SDK uses the
 standard credential provider chain, so ECS task roles work without application
 secrets.
-Put `SEIZA_STAR_DATA` and optional `SEIZA_OBJECT_DATA` on a read-only EFS mount
-or bake/version them into a dedicated solver image. The server sweeps expired
+Put `SEIZA_STAR_DATA` and optional annotation catalogs on a read-only EFS mount
+or bake/version them into a dedicated server image. Workers need only
+`SEIZA_STAR_DATA`; annotation catalogs are loaded by the API server. The server sweeps expired
 S3 uploads itself; configure a matching bucket lifecycle rule as
 defense-in-depth.
 

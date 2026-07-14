@@ -18,12 +18,15 @@ flowchart LR
     Embedded --> Catalog["Read-only Seiza catalog"]
     Remote --> Catalog
     Direct --> Catalog
+    API --> Annotations["Annotation engine\nDSO, stars, transients, minor bodies"]
+    Annotations --> Catalog
 ```
 
 The request path stops at enqueue. It does not invoke Seiza, build blind
 indices, or hold the upload socket while detecting stars. That split is the
-core behavior for a shared service: a client always receives a job ID quickly,
-and workers are the only place expensive CPU/memory work can occur.
+core behavior for a shared service: a client always receives an opaque public
+solve ID quickly, and workers are the only place expensive CPU/memory work can
+occur.
 
 ## Queue policy
 
@@ -71,18 +74,44 @@ Uploaded objects have a deliberately short lifecycle independent of job
 durability. The API reports `input_expires_at`, denies preview/overlay access
 after the configured retention window, and periodically deletes old objects
 by filesystem modification time or S3 `LastModified`. The default is 24 hours
-with an hourly sweep. Job rows, solution JSON, footprints, projected object
-metadata, and downloadable WCS headers remain in the selected durable job
-store. No schema-specific expiration process is required, so the same policy
-works with SQLite, PostgreSQL, and DynamoDB. Production S3 buckets should also
-use a matching lifecycle rule to cover interrupted cleanup processes.
+with an hourly sweep. Job rows, calibration JSON, capture time, footprints,
+and downloadable WCS headers remain in the selected durable job store.
+Catalog annotations are regenerated from that WCS, so catalog upgrades do not
+require a new solve. No schema-specific expiration process is required, so the
+same policy works with SQLite, PostgreSQL, and DynamoDB. Production S3 buckets
+should also use a matching lifecycle rule to cover interrupted cleanup.
 
-Preview PNGs and annotated SVGs are generated on demand rather than stored as
-additional durable objects. The SVG embeds its preview and marker geometry in
-one response. Clients independently select catalog objects and a true
-WCS-projected RA/Dec graticule through query parameters. Once the original
-expires, visual artifacts return HTTP 410 while the standards-facing WCS
-download remains available.
+Preview PNGs are generated on demand rather than stored as additional durable
+objects. The web client renders the preview as the base image and places a
+responsive React SVG over it, independently toggling catalog categories and a
+true WCS-projected RA/Dec graticule. PNG export fetches a full-resolution base
+image and rasterizes the currently selected React overlay into one browser-side
+PNG, then adds the Seiza logo and `seiza.fyi` attribution plaque; users never
+need to download an SVG. The optional composite SVG API is generated on demand
+for machine clients. Once the original expires,
+image-backed visual artifacts return HTTP 410 while annotation JSON and the
+standards-facing WCS download remain available.
+
+## Calibration and annotation boundary
+
+Workers persist only solve calibration: dimensions, WCS, footprint, matched
+stars, and RMS. They do not need object, transient, or minor-body catalogs.
+The API-side annotation engine projects those catalogs through the durable WCS
+when a solution or `/annotations` endpoint is read. Deep-sky and transient
+catalog files are checked for replacement and reloaded without a server
+restart. Minor bodies are propagated to the capture time; FITS `DATE-OBS` is
+captured during submission and non-FITS clients can provide it explicitly.
+
+This boundary keeps HTTP and cloud-queue workers interchangeable while catalog
+updates immediately improve old solution pages. Named stars come from the
+object catalog; an optional field-star layer projects the solve tile catalog
+with a magnitude threshold and result cap.
+
+Native result URLs use `<internal sequence>-<random UUID>`. The sequence keeps
+repository lookups efficient, while the UUID must match the random token stored
+in the private upload key. Sequential `/solutions/1`-style guesses therefore
+do not resolve. Internal workers and queue transports continue to use compact
+numeric IDs; the native result API never accepts those IDs on their own.
 
 ## API compatibility boundary
 

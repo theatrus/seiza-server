@@ -1,7 +1,18 @@
-import { FormEvent, ReactNode, useEffect, useState } from 'react'
-import { Job, SolveOptions, getSolve, submitSolve } from './api'
+import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
+import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve, submitSolve } from './api'
+import { AstroOverlay, OverlayControls } from './AstroOverlay'
+import type { OverlayLayers } from './AstroOverlay'
 
 const pending = new Set(['queued', 'solving'])
+const defaultOverlayLayers: OverlayLayers = {
+  deepSky: true,
+  namedStars: true,
+  fieldStars: false,
+  transients: true,
+  minorBodies: true,
+  historicalTransients: false,
+  grid: true,
+}
 
 function numberOrUndefined(value: FormDataEntryValue | null): number | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined
@@ -30,13 +41,13 @@ export default function App() {
     window.addEventListener('popstate', updatePath)
     return () => window.removeEventListener('popstate', updatePath)
   }, [])
-  const solutionMatch = path.match(/^\/solutions\/(\d+)$/)
+  const solutionMatch = path.match(/^\/solutions\/(\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
 
   return <div className="site-shell">
     <SiteHeader />
     {path === '/' && <HomePage />}
     {path === '/solve' && <SolvePage />}
-    {solutionMatch && <SolutionPage jobId={Number(solutionMatch[1])} />}
+    {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
     {path !== '/' && path !== '/solve' && !solutionMatch && <NotFoundPage />}
     <SiteFooter />
   </div>
@@ -131,6 +142,15 @@ function SolvePage() {
       min_scale_arcsec_per_pixel: numberOrUndefined(form.get('min_scale')),
       max_scale_arcsec_per_pixel: numberOrUndefined(form.get('max_scale')),
     }
+    const captureTime = form.get('capture_time')
+    if (typeof captureTime === 'string' && captureTime !== '') {
+      const parsed = new Date(captureTime)
+      if (Number.isNaN(parsed.getTime())) {
+        setError('Capture time is not a valid date and time.')
+        return
+      }
+      options.capture_time = parsed.toISOString()
+    }
     setSubmitting(true)
     setError(null)
     try {
@@ -146,7 +166,7 @@ function SolvePage() {
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Queue a new image.</h1>
-      <p className="intro">Your solve runs in a background worker. The result gets its own durable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="intro">Your solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -160,6 +180,11 @@ function SolvePage() {
             <label>Pixel scale (arcsec/px)<input name="scale_arcsec_per_pixel" type="number" min="0.01" step="any" placeholder="1.24" /></label>
             <label>Search radius (degrees)<input name="radius_deg" type="number" min="0.1" step="any" placeholder="2" /></label>
           </div>
+        </fieldset>
+        <fieldset>
+          <legend>Acquisition time</legend>
+          <p>FITS DATE-OBS is used automatically. For other images, provide the local capture time to position comets and asteroids and scope transient events.</p>
+          <label>Capture time<input name="capture_time" type="datetime-local" step="1" /></label>
         </fieldset>
         <details>
           <summary>Blind solve settings</summary>
@@ -176,7 +201,7 @@ function SolvePage() {
   </main>
 }
 
-function SolutionPage({ jobId }: { jobId: number }) {
+function SolutionPage({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -199,7 +224,7 @@ function SolutionPage({ jobId }: { jobId: number }) {
 
   return <main className="solution-page">
     <header className="solution-heading">
-      <div><p className="eyebrow">SOLUTION #{jobId}</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
+      <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
       {job && <span className={`status ${job.status}`}>{job.status}</span>}
     </header>
     {error && <p className="error" role="alert">{error}</p>}
@@ -215,9 +240,46 @@ function titleForStatus(status: Job['status']) {
 }
 
 function SolutionContent({ job }: { job: Job }) {
-  const [overlayMode, setOverlayMode] = useState<'objects' | 'grid' | 'both'>('both')
+  const [annotations, setAnnotations] = useState<Annotations | null>(null)
+  const [annotationError, setAnnotationError] = useState<string | null>(null)
+  const [layers, setLayers] = useState(defaultOverlayLayers)
+  const [expanded, setExpanded] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let active = true
+    if (!job.annotations_url) {
+      return () => { active = false }
+    }
+    getAnnotations(job.annotations_url)
+      .then((result) => {
+        if (active) {
+          setAnnotations(result)
+          setAnnotationError(null)
+        }
+      })
+      .catch((reason) => {
+        if (active) setAnnotationError(reason instanceof Error ? reason.message : String(reason))
+      })
+    return () => { active = false }
+  }, [job.annotations_url])
   const solution = job.solution
-  const overlayImageUrl = job.overlay_url ? overlayUrl(job.overlay_url, overlayMode) : null
+  const currentAnnotations = annotations?.job_id === job.id ? annotations : null
+  const overlayObjects = currentAnnotations?.objects ?? solution?.objects ?? []
+  const overlayCounts = currentAnnotations?.counts ?? countObjects(overlayObjects)
+  const downloadPng = async () => {
+    if (!job.preview_url || !solution || !frameRef.current) return
+    setDownloading(true)
+    setExportError(null)
+    try {
+      await downloadRenderedPng(job.preview_url, frameRef.current, solution, job.id)
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDownloading(false)
+    }
+  }
   return <>
     <section className="job-meta">
       <div><span>File</span><strong>{job.original_filename}</strong></div>
@@ -227,15 +289,19 @@ function SolutionContent({ job }: { job: Job }) {
     {job.error && <p className="error">{job.error}</p>}
     {pending.has(job.status) && <section className="panel waiting"><div className="orbit" aria-hidden="true"><span /></div><p>This durable page refreshes automatically. You can bookmark it or come back later.</p></section>}
     {solution && <>
-      {overlayImageUrl ? <section className="overlay-card">
-        <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Coordinates and objects in the solved field</h2></div><a href={overlayImageUrl}>Open SVG <span aria-hidden="true">↗</span></a></div>
-        <div className="overlay-options" role="group" aria-label="Overlay content">
-          <button type="button" aria-pressed={overlayMode === 'objects'} onClick={() => setOverlayMode('objects')}>Objects</button>
-          <button type="button" aria-pressed={overlayMode === 'grid'} onClick={() => setOverlayMode('grid')}>RA / Dec grid</button>
-          <button type="button" aria-pressed={overlayMode === 'both'} onClick={() => setOverlayMode('both')}>Both</button>
+      {job.preview_url ? <section className="overlay-card">
+        <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Explore the solved field</h2></div><div className="overlay-actions"><button className="button small secondary" type="button" onClick={() => setExpanded(true)}>Expand image</button><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div></div>
+        <OverlayControls layers={layers} counts={overlayCounts} onChange={setLayers} />
+        {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
+        {exportError && <p className="overlay-warning">PNG rendering failed: {exportError}</p>}
+        <div className={`image-stage${expanded ? ' expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label={expanded ? 'Expanded astronomical image overlay' : undefined}>
+          {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
+          <div className="sky-frame" ref={frameRef}>
+            <img src={job.preview_url} alt="Uploaded astronomical image" />
+            <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} />
+          </div>
         </div>
-        <div className="image-stage"><img src={overlayImageUrl} alt={`Solved image with ${overlayMode === 'objects' ? 'catalog objects' : overlayMode === 'grid' ? 'an RA and Dec coordinate grid' : 'an RA and Dec coordinate grid and catalog objects'}`} /></div>
-        <p className="retention-note">This generated view uses the temporary upload and expires with it. WCS metadata below remains available.</p>
+        <p className="retention-note">The SVG annotations are rendered interactively over the image. The temporary image expires after one day; WCS and catalog metadata remain available.</p>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
       <section className="metric-grid">
         <Metric label="Center RA" value={`${solution.center_ra_deg.toFixed(8)}°`} />
@@ -248,10 +314,128 @@ function SolutionContent({ job }: { job: Job }) {
   </>
 }
 
-function overlayUrl(base: string, mode: 'objects' | 'grid' | 'both') {
-  const objects = mode !== 'grid'
-  const grid = mode !== 'objects'
-  return `${base}?objects=${objects}&grid=${grid}`
+async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, solution: NonNullable<Job['solution']>, jobId: string) {
+  const separator = previewUrl.includes('?') ? '&' : '?'
+  const response = await fetch(`${previewUrl}${separator}full=true`)
+  if (!response.ok) throw new Error(`full-resolution image request failed (${response.status})`)
+  const sourceUrl = URL.createObjectURL(await response.blob())
+  const overlay = frame.querySelector('svg')
+  if (!overlay) {
+    URL.revokeObjectURL(sourceUrl)
+    throw new Error('the overlay is not ready')
+  }
+  const serialized = overlay.cloneNode(true) as SVGSVGElement
+  serialized.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  serialized.setAttribute('width', String(solution.image_width))
+  serialized.setAttribute('height', String(solution.image_height))
+  const overlayUrl = URL.createObjectURL(new Blob(
+    [new XMLSerializer().serializeToString(serialized)],
+    { type: 'image/svg+xml;charset=utf-8' },
+  ))
+  try {
+    const [sourceImage, overlayImage, seizaMark] = await Promise.all([
+      loadImage(sourceUrl),
+      loadImage(overlayUrl),
+      loadImage('/seiza-mark.png?watermark=1'),
+    ])
+    const canvas = document.createElement('canvas')
+    canvas.width = solution.image_width
+    canvas.height = solution.image_height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('this browser does not provide a 2D canvas')
+    context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
+    context.drawImage(overlayImage, 0, 0, canvas.width, canvas.height)
+    drawSeizaWatermark(context, seizaMark, canvas.width, canvas.height)
+    const png = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
+      (value) => value ? resolve(value) : reject(new Error('the browser could not encode the PNG')),
+      'image/png',
+    ))
+    const downloadUrl = URL.createObjectURL(png)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = `seiza-solution-${jobId}.png`
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0)
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+    URL.revokeObjectURL(overlayUrl)
+  }
+}
+
+function drawSeizaWatermark(
+  context: CanvasRenderingContext2D,
+  logo: HTMLImageElement,
+  width: number,
+  height: number,
+) {
+  let scale = Math.max(0.4, Math.min(width / 1_600, height / 1_200, 3.5))
+  const measure = () => {
+    context.font = `700 ${Math.round(27 * scale)}px ui-sans-serif, system-ui, sans-serif`
+    const titleWidth = context.measureText('Solved with Seiza').width
+    context.font = `600 ${Math.round(20 * scale)}px ui-sans-serif, system-ui, sans-serif`
+    const urlWidth = context.measureText('seiza.fyi').width
+    return Math.max(titleWidth, urlWidth)
+  }
+  const naturalWidth = () => 22 * scale + 64 * scale + 18 * scale + measure() + 24 * scale
+  if (naturalWidth() > width * 0.92) scale *= width * 0.92 / naturalWidth()
+
+  const padding = 18 * scale
+  const logoSize = 64 * scale
+  const gap = 16 * scale
+  const textWidth = measure()
+  const plaqueWidth = padding + logoSize + gap + textWidth + padding
+  const plaqueHeight = Math.max(logoSize + padding * 1.2, 94 * scale)
+  const margin = Math.max(8, Math.min(width, height) * 0.018)
+  const x = width - plaqueWidth - margin
+  const y = height - plaqueHeight - margin
+  const radius = 13 * scale
+
+  context.save()
+  context.beginPath()
+  context.roundRect(x, y, plaqueWidth, plaqueHeight, radius)
+  context.fillStyle = 'rgba(4, 12, 18, .84)'
+  context.fill()
+  context.strokeStyle = 'rgba(125, 219, 232, .72)'
+  context.lineWidth = Math.max(1, 1.5 * scale)
+  context.stroke()
+  context.drawImage(logo, x + padding, y + (plaqueHeight - logoSize) / 2, logoSize, logoSize)
+
+  const textX = x + padding + logoSize + gap
+  context.textBaseline = 'alphabetic'
+  context.font = `700 ${Math.round(27 * scale)}px ui-sans-serif, system-ui, sans-serif`
+  context.fillStyle = '#f5f8f7'
+  context.fillText('Solved with Seiza', textX, y + plaqueHeight * 0.48)
+  context.font = `600 ${Math.round(20 * scale)}px ui-sans-serif, system-ui, sans-serif`
+  context.fillStyle = '#f2c66d'
+  context.fillText('seiza.fyi', textX, y + plaqueHeight * 0.75)
+  context.restore()
+}
+
+function loadImage(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('the browser could not decode a rendered image layer'))
+    image.src = url
+  })
+}
+
+function countObjects(objects: OverlayObject[]) {
+  const counts: Record<string, number> = {}
+  for (const object of objects) {
+    const layer = object.kind === 'field-star'
+      ? 'field_stars'
+      : object.kind === 'star' || object.kind === 'double-star'
+        ? 'named_stars'
+        : object.kind === 'transient'
+          ? 'transients'
+          : object.kind === 'comet' || object.kind === 'asteroid'
+            ? 'minor_bodies'
+            : 'deep_sky'
+    counts[layer] = (counts[layer] ?? 0) + 1
+  }
+  counts.historical_transients = objects.filter((object) => object.kind === 'transient' && object.near_capture === false).length
+  return counts
 }
 
 function WcsDetails({ job }: { job: Job }) {
@@ -266,6 +450,8 @@ function WcsDetails({ job }: { job: Job }) {
       <DataPair label="CRPIX (zero-indexed)" value={`${format(wcs.crpix[0])}, ${format(wcs.crpix[1])} px`} />
       <DataPair label="Image dimensions" value={`${solution.image_width} × ${solution.image_height} px`} />
       <DataPair label="Units" value={`${wcs.cunit[0]} / ${wcs.cunit[1]}`} />
+      <DataPair label="Capture time" value={solution.capture_time ? new Date(solution.capture_time).toLocaleString() : 'Not recorded'} />
+      <DataPair label="Annotation catalog" value={solution.catalog_version ?? 'Not configured'} />
     </div>
     <div className="matrix-wrap">
       <h3>CD matrix <small>degrees per pixel</small></h3>

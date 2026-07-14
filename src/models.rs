@@ -49,6 +49,9 @@ pub struct SolveOptions {
     pub sigma: f32,
     pub ignore_border: u32,
     pub max_stars: usize,
+    /// Acquisition time used to scope transients and propagate minor bodies.
+    /// FITS uploads populate this automatically from DATE-OBS when omitted.
+    pub capture_time: Option<DateTime<Utc>>,
 }
 
 impl Default for SolveOptions {
@@ -64,6 +67,7 @@ impl Default for SolveOptions {
             sigma: 4.0,
             ignore_border: 0,
             max_stars: 600,
+            capture_time: None,
         }
     }
 }
@@ -155,6 +159,22 @@ pub struct OverlayObject {
     pub semi_major_px: f64,
     pub semi_minor_px: f64,
     pub angle_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ra_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dec_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovered: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_capture: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_au: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction_pa_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction_angle_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +190,19 @@ pub struct SolutionResponse {
     #[serde(default)]
     pub footprint: [[f64; 2]; 4],
     #[serde(default)]
+    pub objects: Vec<OverlayObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationResponse {
+    pub job_id: String,
+    pub catalog_version: String,
+    pub capture_time: Option<DateTime<Utc>>,
+    pub counts: std::collections::BTreeMap<String, usize>,
     pub objects: Vec<OverlayObject>,
 }
 
@@ -242,7 +275,9 @@ pub struct JobRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResponse {
-    pub id: JobId,
+    /// Opaque public locator. Its queue sequence is never sufficient without
+    /// the independent random token.
+    pub id: String,
     pub status: JobStatus,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -252,6 +287,7 @@ pub struct JobResponse {
     pub input_available: bool,
     pub preview_url: Option<String>,
     pub overlay_url: Option<String>,
+    pub annotations_url: Option<String>,
     pub wcs_url: Option<String>,
     pub solution: Option<SolutionResponse>,
     pub error: Option<String>,
@@ -301,6 +337,8 @@ mod tests {
             },
             footprint: [[0.0; 2]; 4],
             objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
         };
 
         let header = solution.fits_wcs_header();

@@ -1,4 +1,4 @@
-use crate::models::{OverlayObject, SolutionResponse, SolveOptions, WcsResponse};
+use crate::models::{SolutionResponse, SolveOptions, WcsResponse};
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use image::ImageFormat;
@@ -7,7 +7,6 @@ use seiza::{
     blind::{BlindIndex, BlindParams, solve_blind},
     catalog::TileCatalog,
     detect_stars,
-    objects::ObjectCatalog,
     solve::{SolveHint, solve},
 };
 use std::{io::Cursor, path::Path, sync::Arc};
@@ -15,11 +14,10 @@ use std::{io::Cursor, path::Path, sync::Arc};
 #[derive(Clone)]
 pub struct SolverEngine {
     catalog: Option<Arc<TileCatalog>>,
-    objects: Option<Arc<ObjectCatalog>>,
 }
 
 impl SolverEngine {
-    pub fn from_catalog_paths(star_path: Option<&Path>, object_path: Option<&Path>) -> Self {
+    pub fn from_catalog_path(star_path: Option<&Path>) -> Self {
         let catalog = star_path.and_then(|path| match TileCatalog::open(path) {
             Ok(catalog) => {
                 tracing::info!(path = %path.display(), stars = catalog.star_count(), "opened Seiza star catalog");
@@ -30,21 +28,15 @@ impl SolverEngine {
                 None
             }
         });
-        let objects = object_path.and_then(|path| match ObjectCatalog::open(path) {
-            Ok(objects) => {
-                tracing::info!(path = %path.display(), objects = objects.len(), "opened Seiza object catalog");
-                Some(Arc::new(objects))
-            }
-            Err(error) => {
-                tracing::error!(path = %path.display(), %error, "could not open Seiza object catalog");
-                None
-            }
-        });
-        Self { catalog, objects }
+        Self { catalog }
     }
 
     pub fn is_ready(&self) -> bool {
         self.catalog.is_some()
+    }
+
+    pub(crate) fn catalog(&self) -> Option<Arc<TileCatalog>> {
+        self.catalog.clone()
     }
 
     pub async fn solve(
@@ -56,27 +48,36 @@ impl SolverEngine {
         let catalog = self.catalog.clone().context(
             "solver is not configured: set SEIZA_STAR_DATA to a Seiza star tile catalog",
         )?;
-        let objects = self.objects.clone();
-        tokio::task::spawn_blocking(move || {
-            solve_bytes(&catalog, objects.as_deref(), &bytes, &filename, &options)
-        })
-        .await
-        .context("solver worker panicked")?
+        tokio::task::spawn_blocking(move || solve_bytes(&catalog, &bytes, &filename, &options))
+            .await
+            .context("solver worker panicked")?
     }
 }
 
 pub async fn preview_png(bytes: Bytes, filename: String) -> Result<Bytes> {
+    encode_png(bytes, filename, true).await
+}
+
+pub async fn full_png(bytes: Bytes, filename: String) -> Result<Bytes> {
+    encode_png(bytes, filename, false).await
+}
+
+async fn encode_png(bytes: Bytes, filename: String, thumbnail: bool) -> Result<Bytes> {
     tokio::task::spawn_blocking(move || {
         let image = decode_image(&bytes, &filename)?;
-        let preview = image.thumbnail(1_800, 1_800);
+        let output_image = if thumbnail {
+            image.thumbnail(1_800, 1_800)
+        } else {
+            image
+        };
         let mut output = Cursor::new(Vec::new());
-        preview
+        output_image
             .write_to(&mut output, ImageFormat::Png)
-            .context("encoding preview PNG")?;
+            .context("encoding rendered PNG")?;
         Ok(Bytes::from(output.into_inner()))
     })
     .await
-    .context("preview worker panicked")?
+    .context("PNG worker panicked")?
 }
 
 pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)> {
@@ -86,7 +87,6 @@ pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)>
 
 fn solve_bytes(
     catalog: &TileCatalog,
-    objects: Option<&ObjectCatalog>,
     bytes: &[u8],
     filename: &str,
     options: &SolveOptions,
@@ -151,22 +151,6 @@ fn solve_bytes(
         .wcs
         .footprint(dimensions.0, dimensions.1)
         .map(|(ra, dec)| [ra, dec]);
-    let objects = objects
-        .map(|catalog| catalog.objects_in_footprint(&solution.wcs, dimensions))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|placed| OverlayObject {
-            name: placed.object.name,
-            common_name: placed.object.common_name,
-            kind: placed.object.kind.as_str().to_owned(),
-            mag: placed.object.mag,
-            x: placed.x,
-            y: placed.y,
-            semi_major_px: placed.semi_major_px,
-            semi_minor_px: placed.semi_minor_px,
-            angle_deg: placed.angle_deg,
-        })
-        .collect();
     Ok(SolutionResponse {
         center_ra_deg,
         center_dec_deg,
@@ -185,8 +169,58 @@ fn solve_bytes(
             equinox: 2000.0,
         },
         footprint,
-        objects,
+        objects: Vec::new(),
+        catalog_version: None,
+        capture_time: options.capture_time,
     })
+}
+
+pub fn capture_time_from_bytes(
+    bytes: &[u8],
+    filename: &str,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let looks_like_fits = filename.rsplit('.').next().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("fits")
+            || extension.eq_ignore_ascii_case("fit")
+            || extension.eq_ignore_ascii_case("fts")
+    }) || bytes.starts_with(b"SIMPLE  ");
+    if !looks_like_fits {
+        return None;
+    }
+    for card in bytes.chunks_exact(80).take(1440) {
+        let keyword = std::str::from_utf8(&card[..8]).ok()?.trim();
+        if keyword == "END" {
+            break;
+        }
+        if keyword != "DATE-OBS" {
+            continue;
+        }
+        let raw = std::str::from_utf8(&card[10..]).ok()?.trim();
+        let value = if let Some(quoted) = raw.strip_prefix('\'') {
+            quoted.split('\'').next()?.trim()
+        } else {
+            raw.split('/').next()?.trim()
+        };
+        return parse_capture_time(value);
+    }
+    None
+}
+
+pub fn parse_capture_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{NaiveDate, NaiveDateTime};
+    let value = value.trim();
+    if let Ok(value) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(value.with_timezone(&chrono::Utc));
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(value) = NaiveDateTime::parse_from_str(value.trim_end_matches('Z'), format) {
+            return Some(value.and_utc());
+        }
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .and_then(|value| value.and_hms_opt(0, 0, 0))
+        .map(|value| value.and_utc())
 }
 
 fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
@@ -205,4 +239,40 @@ fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
     }
     image::load_from_memory(bytes)
         .context("unsupported or corrupt image; submit FITS, PNG, JPEG, TIFF, or WebP")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_capture_time_from_fits_date_obs() {
+        let mut header = vec![b' '; 2_880];
+        for (index, card) in [
+            "SIMPLE  =                    T",
+            "DATE-OBS= '2026-07-13T04:05:06.250Z'",
+            "END",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            header[index * 80..index * 80 + card.len()].copy_from_slice(card.as_bytes());
+        }
+        assert_eq!(
+            capture_time_from_bytes(&header, "capture.fits")
+                .unwrap()
+                .to_rfc3339(),
+            "2026-07-13T04:05:06.250+00:00"
+        );
+    }
+
+    #[test]
+    fn parses_timezone_free_fits_timestamp_as_utc() {
+        assert_eq!(
+            parse_capture_time("2026-07-13T04:05:06")
+                .unwrap()
+                .to_rfc3339(),
+            "2026-07-13T04:05:06+00:00"
+        );
+    }
 }

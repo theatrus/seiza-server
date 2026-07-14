@@ -80,6 +80,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub catalog_path: Option<PathBuf>,
     pub object_catalog_path: Option<PathBuf>,
+    pub transient_catalog_path: Option<PathBuf>,
+    pub minor_body_catalog_path: Option<PathBuf>,
     pub job_backend: JobBackend,
     pub sql_database_url: String,
     pub dynamodb_table: Option<String>,
@@ -142,6 +144,8 @@ impl Config {
             data_dir,
             catalog_path: env::var_os("SEIZA_STAR_DATA").map(PathBuf::from),
             object_catalog_path: env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
+            transient_catalog_path: env::var_os("SEIZA_TRANSIENT_DATA").map(PathBuf::from),
+            minor_body_catalog_path: env::var_os("SEIZA_MINOR_BODY_DATA").map(PathBuf::from),
             job_backend: env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")
