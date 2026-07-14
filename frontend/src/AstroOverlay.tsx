@@ -25,11 +25,13 @@ export function OverlayControls({
   layers,
   counts,
   available,
+  disabledReasons,
   onChange,
 }: {
   layers: OverlayLayers
   counts: Record<string, number>
   available?: Record<string, boolean>
+  disabledReasons?: Record<string, string>
   onChange: (layers: OverlayLayers) => void
 }) {
   return <div className="overlay-options" role="group" aria-label="Overlay layers">
@@ -40,7 +42,7 @@ export function OverlayControls({
         key={key}
         aria-pressed={enabled && layers[key]}
         disabled={!enabled}
-        title={enabled ? undefined : `${label} data is unavailable for this solution`}
+        title={enabled ? undefined : disabledReasons?.[countKey] ?? `${label} data is unavailable for this solution`}
         onClick={() => onChange({ ...layers, [key]: !layers[key] })}
       >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>
     })}

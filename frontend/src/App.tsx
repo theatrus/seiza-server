@@ -275,12 +275,19 @@ function SolutionContent({ job }: { job: Job }) {
   const overlayObjects = currentAnnotations?.objects ?? solution?.objects ?? []
   const overlayCounts = currentAnnotations?.counts ?? countObjects(overlayObjects)
   const overlayAvailability = currentAnnotations?.available
+  const minorBodiesNeedCaptureTime = overlayAvailability?.minor_bodies === false
+    && currentAnnotations?.capture_time == null
+    && currentAnnotations?.catalog_version.split(';').some((version) => version.startsWith('minor-bodies:')) === true
   const unavailableLayers = overlayAvailability && [
     ['deep_sky', 'Deep sky'],
     ['named_stars', 'Named stars'],
     ['transients', 'Transients'],
     ['minor_bodies', 'Solar system'],
-  ].filter(([key]) => overlayAvailability[key] === false).map(([, label]) => label)
+  ].filter(([key]) => overlayAvailability[key] === false
+    && !(key === 'minor_bodies' && minorBodiesNeedCaptureTime)).map(([, label]) => label)
+  const disabledReasons = minorBodiesNeedCaptureTime
+    ? { minor_bodies: 'Solar system positions require an acquisition time for this image' }
+    : undefined
   const downloadPng = async () => {
     if (!job.preview_url || !solution || !frameRef.current) return
     setDownloading(true)
@@ -304,8 +311,9 @@ function SolutionContent({ job }: { job: Job }) {
     {solution && <>
       {job.preview_url ? <section className="overlay-card">
         <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Explore the solved field</h2></div><div className="overlay-actions"><button className="button small secondary" type="button" onClick={() => setExpanded(true)}>Expand image</button><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div></div>
-        <OverlayControls layers={layers} counts={overlayCounts} available={overlayAvailability} onChange={setLayers} />
-        {unavailableLayers && unavailableLayers.length > 0 && <p className="overlay-warning">Overlay data unavailable for this solution: {unavailableLayers.join(', ')}. The installed catalogs and capture time determine which layers can be rendered.</p>}
+        <OverlayControls layers={layers} counts={overlayCounts} available={overlayAvailability} disabledReasons={disabledReasons} onChange={setLayers} />
+        {unavailableLayers && unavailableLayers.length > 0 && <p className="overlay-warning">Catalog data unavailable for this solution: {unavailableLayers.join(', ')}.</p>}
+        {minorBodiesNeedCaptureTime && <p className="overlay-warning">Solar system positions require an acquisition time for this image. The minor-body catalog is installed.</p>}
         {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
         {exportError && <p className="overlay-warning">PNG rendering failed: {exportError}</p>}
         <div className={`image-stage${expanded ? ' expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label={expanded ? 'Expanded astronomical image overlay' : undefined}>

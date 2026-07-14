@@ -210,10 +210,34 @@ test('explains and disables catalog layers that are unavailable', async ({ page 
   }))
   await page.goto(`/solutions/${publicId}`)
 
-  await expect(page.getByText(/Overlay data unavailable for this solution/)).toContainText('Deep sky, Named stars, Transients, Solar system')
+  await expect(page.getByText(/Catalog data unavailable for this solution/)).toContainText('Deep sky, Named stars, Transients, Solar system')
   await expect(page.getByRole('button', { name: 'Deep sky · 0' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Named stars · 0' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Field stars · 1' })).toBeEnabled()
+})
+
+test('distinguishes a missing acquisition time from a missing solar-system catalog', async ({ page }) => {
+  await mockSolution(page)
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      job_id: publicId,
+      catalog_version: 'objects:test;stars:test;transients:test;minor-bodies:test',
+      capture_time: null,
+      available: { deep_sky: true, named_stars: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, grid: true },
+      counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      objects: baseObjects.filter((object) => object.kind !== 'comet' && object.kind !== 'asteroid'),
+    }),
+  }))
+  await page.goto(`/solutions/${publicId}`)
+
+  await expect(page.getByText('Solar system positions require an acquisition time for this image. The minor-body catalog is installed.')).toBeVisible()
+  await expect(page.getByText(/Catalog data unavailable for this solution/)).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Solar system · 0' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Solar system · 0' })).toHaveAttribute(
+    'title',
+    'Solar system positions require an acquisition time for this image',
+  )
 })
 
 test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {
