@@ -129,6 +129,19 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   expect(Math.abs(imageBox!.width - overlayBox!.width)).toBeLessThan(1)
   expect(Math.abs(imageBox!.height - overlayBox!.height)).toBeLessThan(1)
 
+  const gridLabels = page.locator('.coordinate-grid text')
+  await expect(gridLabels.first()).toBeVisible()
+  const gridLabelBounds = await gridLabels.evaluateAll((labels) => labels.map((label) => {
+    const box = (label as SVGGraphicsElement).getBBox()
+    return { x: box.x, y: box.y, right: box.x + box.width, bottom: box.y + box.height }
+  }))
+  for (const box of gridLabelBounds) {
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.y).toBeGreaterThanOrEqual(0)
+    expect(box.right).toBeLessThanOrEqual(solution.image_width)
+    expect(box.bottom).toBeLessThanOrEqual(solution.image_height)
+  }
+
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(1)
   await expect(page.locator('[data-kind="galaxy"]')).toBeVisible()
   await expect(page.locator('[data-kind="star"]')).toBeVisible()

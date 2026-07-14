@@ -64,6 +64,7 @@ export function AstroOverlay({
   const encompassing = labeled.filter((object) => encompassesFrame(object, width, height))
   const visible = labeled.filter((object) => !encompassing.includes(object))
   const grid = useMemo(() => makeGrid(solution), [solution])
+  const gridFontSize = Math.max(width / 90, 14)
   const stroke = Math.max(width / 1800, 1.5)
   const fontSize = Math.max(width / 75, 14)
   const placedLabels: Array<{ x: number; y: number; halfWidth: number }> = []
@@ -109,7 +110,7 @@ export function AstroOverlay({
     {layers.grid && <g clipPath="url(#sky-frame)" className="coordinate-grid">
       {grid.map((curve, index) => <g key={`${curve.label}-${index}`}>
         <path d={curve.path} />
-        <text x={curve.x} y={curve.y} textAnchor={curve.anchor} fontSize={Math.max(width / 90, 14)}>{curve.label}</text>
+        <text x={curve.x} y={curve.y} textAnchor={curve.anchor} fontSize={gridFontSize}>{curve.label}</text>
       </g>)}
     </g>}
     <g className="field-stars">
@@ -227,6 +228,7 @@ interface GridCurve {
 function makeGrid(solution: Solution): GridCurve[] {
   const width = solution.image_width
   const height = solution.image_height
+  const fontSize = Math.max(width / 90, 14)
   const centerRa = pixelToWorld(solution, width / 2, height / 2)[0]
   let raMin = Number.POSITIVE_INFINITY
   let raMax = Number.NEGATIVE_INFINITY
@@ -249,13 +251,13 @@ function makeGrid(solution: Solution): GridCurve[] {
   const curves: GridCurve[] = []
   for (let ra = Math.floor(raMin / raStep) * raStep, count = 0; ra <= raMax + raStep && count < 32; ra += raStep, count += 1) {
     const samples = sampleCurve(decMin - decStep, decMax + decStep, (dec) => worldToPixel(solution, modulo(ra, 360), Math.max(-89.999999, Math.min(89.999999, dec))))
-    const curve = gridCurve(samples, width, height, formatRa(modulo(ra, 360)), 'ra')
+    const curve = gridCurve(samples, width, height, formatRa(modulo(ra, 360)), 'ra', fontSize)
     if (curve) curves.push(curve)
   }
   for (let dec = Math.floor(decMin / decStep) * decStep, count = 0; dec <= decMax + decStep && dec <= 90 && count < 32; dec += decStep, count += 1) {
     if (dec < -90) continue
     const samples = sampleCurve(raMin - raStep, raMax + raStep, (ra) => worldToPixel(solution, modulo(ra, 360), Math.max(-89.999999, Math.min(89.999999, dec))))
-    const curve = gridCurve(samples, width, height, formatDec(dec), 'dec')
+    const curve = gridCurve(samples, width, height, formatDec(dec), 'dec', fontSize)
     if (curve) curves.push(curve)
   }
   return curves
@@ -271,6 +273,7 @@ function gridCurve(
   height: number,
   label: string,
   axis: 'ra' | 'dec',
+  fontSize: number,
 ): GridCurve | null {
   const commands: string[] = []
   const inFrame: Array<[number, number]> = []
@@ -290,11 +293,21 @@ function gridCurve(
       ? (candidate[1] < best[1] ? candidate : best)
       : (candidate[0] < best[0] ? candidate : best),
   )
+  const padding = Math.max(4, fontSize * 0.25)
+  const labelWidth = label.length * fontSize * 0.64
+  const minimumBaseline = padding + fontSize
+  const maximumBaseline = height - padding - fontSize * 0.2
   return {
     path: commands.join(' '),
     label,
-    x: axis === 'ra' ? clamp(point[0], 58, width - 6) : clamp(point[0] + 6, 6, width - 6),
-    y: axis === 'ra' ? clamp(point[1] + 18, 20, height - 6) : clamp(point[1] - 5, 20, height - 6),
+    x: axis === 'ra'
+      ? clamp(point[0], padding + labelWidth / 2, width - padding - labelWidth / 2)
+      : clamp(point[0] + padding, padding, width - padding - labelWidth),
+    y: clamp(
+      axis === 'ra' ? point[1] + fontSize * 1.25 : point[1] - padding,
+      minimumBaseline,
+      maximumBaseline,
+    ),
     anchor: axis === 'ra' ? 'middle' : 'start',
   }
 }
