@@ -85,6 +85,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       job_id: publicId,
       catalog_version: 'objects:test;stars:test',
       capture_time: '2026-07-13T04:05:06Z',
+      available: { deep_sky: true, named_stars: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
       counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 1 },
       objects: baseObjects,
     }),
@@ -128,7 +129,23 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   expect(Math.abs(imageBox!.width - overlayBox!.width)).toBeLessThan(1)
   expect(Math.abs(imageBox!.height - overlayBox!.height)).toBeLessThan(1)
 
+  const gridLabels = page.locator('.coordinate-grid text')
+  await expect(gridLabels.first()).toBeVisible()
+  const gridLabelBounds = await gridLabels.evaluateAll((labels) => labels.map((label) => {
+    const box = (label as SVGGraphicsElement).getBBox()
+    return { x: box.x, y: box.y, right: box.x + box.width, bottom: box.y + box.height }
+  }))
+  for (const box of gridLabelBounds) {
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.y).toBeGreaterThanOrEqual(0)
+    expect(box.right).toBeLessThanOrEqual(solution.image_width)
+    expect(box.bottom).toBeLessThanOrEqual(solution.image_height)
+  }
+
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(1)
+  await expect(page.locator('[data-kind="galaxy"]')).toBeVisible()
+  await expect(page.locator('[data-kind="star"]')).toBeVisible()
+  await expect(page.locator('[data-kind="comet"]')).toBeVisible()
   await expect(page.locator('.field-stars circle')).toHaveCount(0)
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toHaveCount(0)
 
@@ -146,6 +163,27 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   expect(Math.abs(expandedImage!.width - expandedOverlay!.width)).toBeLessThan(1)
   expect(Math.abs(expandedImage!.height - expandedOverlay!.height)).toBeLessThan(1)
   await page.getByRole('button', { name: 'Close' }).click()
+})
+
+test('explains and disables catalog layers that are unavailable', async ({ page }) => {
+  await mockSolution(page)
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      job_id: publicId,
+      catalog_version: 'stars:test',
+      capture_time: null,
+      available: { deep_sky: false, named_stars: false, field_stars: true, transients: false, historical_transients: false, minor_bodies: false, grid: true },
+      counts: { deep_sky: 0, named_stars: 0, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      objects: baseObjects.filter((object) => object.kind === 'field-star'),
+    }),
+  }))
+  await page.goto(`/solutions/${publicId}`)
+
+  await expect(page.getByText(/Overlay data unavailable for this solution/)).toContainText('Deep sky, Named stars, Transients, Solar system')
+  await expect(page.getByRole('button', { name: 'Deep sky · 0' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Named stars · 0' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Field stars · 1' })).toBeEnabled()
 })
 
 test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {

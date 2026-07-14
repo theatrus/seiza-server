@@ -3,6 +3,14 @@
 All notable changes to Seiza Server are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- Auto-discover canonically named solver and annotation catalogs from a shared
+  catalog directory, including the production sibling-directory layout.
+- Report unavailable overlay data explicitly and render catalog markers with
+  Safari-safe SVG color attributes.
+- Exercise overlay display and rendered PNG downloads in Chromium and WebKit.
+
 ## 0.1.0 - 2026-07-13
 
 - Add the Axum JSON and Astrometry.net-compatible plate-solving APIs.

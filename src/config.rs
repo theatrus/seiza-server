@@ -1,5 +1,10 @@
 use anyhow::{Context, Result, bail};
-use std::{env, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{
+    env,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
@@ -132,6 +137,9 @@ impl Config {
             bail!("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS must be at least 1");
         }
         let data_dir = PathBuf::from(env_or("SEIZA_DATA_DIR", "data"));
+        let catalog_dirs = env::var_os("SEIZA_CATALOG_DIR")
+            .map(|path| vec![PathBuf::from(path)])
+            .unwrap_or_else(|| default_catalog_dirs(&data_dir));
         let queue_database = env::var_os("SEIZA_QUEUE_DATABASE")
             .map(PathBuf::from)
             .unwrap_or_else(|| data_dir.join("jobs.sqlite3"));
@@ -142,10 +150,26 @@ impl Config {
             bind_addr,
             frontend_dir: PathBuf::from(env_or("SEIZA_FRONTEND_DIR", "frontend/dist")),
             data_dir,
-            catalog_path: env::var_os("SEIZA_STAR_DATA").map(PathBuf::from),
-            object_catalog_path: env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
-            transient_catalog_path: env::var_os("SEIZA_TRANSIENT_DATA").map(PathBuf::from),
-            minor_body_catalog_path: env::var_os("SEIZA_MINOR_BODY_DATA").map(PathBuf::from),
+            catalog_path: resolve_catalog_path(
+                env::var_os("SEIZA_STAR_DATA").map(PathBuf::from),
+                &catalog_dirs,
+                &["stars-gaia.bin", "stars-lite-tycho2.bin", "stars.bin"],
+            ),
+            object_catalog_path: resolve_catalog_path(
+                env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
+                &catalog_dirs,
+                &["objects.bin", "objects-openngc.bin"],
+            ),
+            transient_catalog_path: resolve_catalog_path(
+                env::var_os("SEIZA_TRANSIENT_DATA").map(PathBuf::from),
+                &catalog_dirs,
+                &["transients.bin"],
+            ),
+            minor_body_catalog_path: resolve_catalog_path(
+                env::var_os("SEIZA_MINOR_BODY_DATA").map(PathBuf::from),
+                &catalog_dirs,
+                &["minor-bodies.bin"],
+            ),
             job_backend: env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")
@@ -183,6 +207,34 @@ impl Config {
     }
 }
 
+fn resolve_catalog_path(
+    explicit: Option<PathBuf>,
+    catalog_dirs: &[PathBuf],
+    candidates: &[&str],
+) -> Option<PathBuf> {
+    explicit.or_else(|| {
+        candidates
+            .iter()
+            .flat_map(|name| {
+                catalog_dirs
+                    .iter()
+                    .map(move |directory| directory.join(name))
+            })
+            .find(|path| path.is_file())
+    })
+}
+
+fn default_catalog_dirs(data_dir: &Path) -> Vec<PathBuf> {
+    let mut directories = vec![data_dir.join("catalog")];
+    if let Some(parent) = data_dir.parent() {
+        let sibling = parent.join("catalog");
+        if !directories.contains(&sibling) {
+            directories.push(sibling);
+        }
+    }
+    directories
+}
+
 fn env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_owned())
 }
@@ -197,5 +249,52 @@ where
             .parse()
             .map_err(|error| anyhow::anyhow!("invalid {key}: {error}")),
         Err(_) => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_canonical_catalog_names() {
+        let directory = std::env::temp_dir().join(format!(
+            "seiza-server-catalog-discovery-{}",
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let catalog = directory.join("objects.bin");
+        std::fs::write(&catalog, b"catalog").unwrap();
+
+        assert_eq!(
+            resolve_catalog_path(None, std::slice::from_ref(&directory), &["objects.bin"]),
+            Some(catalog)
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn discovers_the_production_sibling_catalog_directory() {
+        assert_eq!(
+            default_catalog_dirs(&PathBuf::from("/var/lib/seiza-server/data")),
+            vec![
+                PathBuf::from("/var/lib/seiza-server/data/catalog"),
+                PathBuf::from("/var/lib/seiza-server/catalog"),
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_catalog_path_wins_even_before_it_exists() {
+        let explicit = PathBuf::from("/mounted/catalog/objects.bin");
+        assert_eq!(
+            resolve_catalog_path(
+                Some(explicit.clone()),
+                &[PathBuf::from("unused")],
+                &["objects.bin"]
+            ),
+            Some(explicit)
+        );
     }
 }
