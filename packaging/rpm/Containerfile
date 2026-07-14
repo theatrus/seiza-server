@@ -1,4 +1,4 @@
-ARG BASE
+ARG BASE=registry.fedoraproject.org/fedora:44
 FROM ${BASE}
 
 ARG TARGET
