@@ -27,9 +27,11 @@ The package combines everything needed to run the service:
 The Seiza star and optional object catalogs are not packaged. They are larger
 and change on a different cadence than the server; install them on durable
 storage such as `/srv/seiza/catalog/` and make them readable by the systemd
-service. The packaged `SEIZA_CATALOG_DIR` discovers `stars-gaia.bin` (or the
-lite star catalog), `objects.bin`, `transients.bin`, and `minor-bodies.bin`
-there automatically; explicit per-catalog variables override discovery.
+service. The packaged `SEIZA_CATALOG_DIR` prefers `stars-deep-gaia17.bin` and
+discovers its matching `blind-gaia16.idx`, with `stars-gaia.bin` and the lite
+catalog as fallbacks. It also discovers `objects.bin`, `transients.bin`, and
+`minor-bodies.bin` there automatically; explicit per-catalog variables
+override discovery.
 This also keeps an application upgrade from silently changing solver results.
 
 ## Build

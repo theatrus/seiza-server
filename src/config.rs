@@ -84,6 +84,7 @@ pub struct Config {
     pub frontend_dir: PathBuf,
     pub data_dir: PathBuf,
     pub catalog_path: Option<PathBuf>,
+    pub blind_index_path: Option<PathBuf>,
     pub object_catalog_path: Option<PathBuf>,
     pub transient_catalog_path: Option<PathBuf>,
     pub minor_body_catalog_path: Option<PathBuf>,
@@ -153,7 +154,17 @@ impl Config {
             catalog_path: resolve_catalog_path(
                 env::var_os("SEIZA_STAR_DATA").map(PathBuf::from),
                 &catalog_dirs,
-                &["stars-gaia.bin", "stars-lite-tycho2.bin", "stars.bin"],
+                &[
+                    "stars-deep-gaia17.bin",
+                    "stars-gaia.bin",
+                    "stars-lite-tycho2.bin",
+                    "stars.bin",
+                ],
+            ),
+            blind_index_path: resolve_catalog_path(
+                env::var_os("SEIZA_BLIND_INDEX").map(PathBuf::from),
+                &catalog_dirs,
+                &["blind-gaia16.idx"],
             ),
             object_catalog_path: resolve_catalog_path(
                 env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
@@ -269,6 +280,40 @@ mod tests {
         assert_eq!(
             resolve_catalog_path(None, std::slice::from_ref(&directory), &["objects.bin"]),
             Some(catalog)
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn prefers_deep_catalog_and_discovers_blind_index() {
+        let directory = std::env::temp_dir().join(format!(
+            "seiza-server-solver-data-discovery-{}",
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let regular = directory.join("stars-gaia.bin");
+        let deep = directory.join("stars-deep-gaia17.bin");
+        let index = directory.join("blind-gaia16.idx");
+        std::fs::write(&regular, b"regular").unwrap();
+        std::fs::write(&deep, b"deep").unwrap();
+        std::fs::write(&index, b"index").unwrap();
+
+        assert_eq!(
+            resolve_catalog_path(
+                None,
+                std::slice::from_ref(&directory),
+                &["stars-deep-gaia17.bin", "stars-gaia.bin"]
+            ),
+            Some(deep)
+        );
+        assert_eq!(
+            resolve_catalog_path(
+                None,
+                std::slice::from_ref(&directory),
+                &["blind-gaia16.idx"]
+            ),
+            Some(index)
         );
 
         std::fs::remove_dir_all(directory).unwrap();

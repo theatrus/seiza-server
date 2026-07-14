@@ -25,7 +25,8 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving using Seiza's catalog index.
+  solving with Seiza 0.3. The maintained G<=16 index is memory-mapped once per
+  worker and reused across jobs, including fine-scale fields down to 0.1"/px.
 - Per-client token-bucket admission limiting plus a durable weighted-LRU
   priority queue. An unseen/least-recently served client goes first; higher
   future API tiers can use a larger queue weight without changing the
@@ -45,8 +46,9 @@ disappears on a process restart.
 
 ## Quick start
 
-Install or build the Seiza CLI, then get a catalog. The lite Tycho-2 catalog is
-a small starting point; Gaia is better for narrow/deep fields.
+Install or build the Seiza CLI, then get the prebuilt catalogs and maintained
+blind index. The server automatically prefers the deep Gaia G<=17 catalog and
+its matching G<=16 index when both are present.
 
 ```bash
 cargo install seiza-cli
@@ -71,8 +73,11 @@ the built UI instead, run `npm run build` and then `cargo run`; the default
 `SEIZA_FRONTEND_DIR` is `frontend/dist`.
 
 `SEIZA_STAR_DATA` is intentionally required for usable solves and is not in
-this repository. The health endpoint stays available without it and reports
-`"degraded"`, while queued solves fail with a clear configuration error.
+this repository. `SEIZA_BLIND_INDEX` is strongly recommended for blind solving;
+without it each worker builds and caches a shallower legacy index on its first
+blind job. The health endpoint stays available without a star catalog and
+reports `"degraded"`, while queued solves fail with a clear configuration
+error.
 
 ## Worker processes and durable queue
 
@@ -95,7 +100,8 @@ download the original, heartbeat while solving, and complete through the
 authenticated internal worker API.
 
 ```bash
-SEIZA_STAR_DATA=/data/stars-gaia.bin \
+SEIZA_STAR_DATA=/data/stars-deep-gaia17.bin \
+SEIZA_BLIND_INDEX=/data/blind-gaia16.idx \
 SEIZA_WORKER_TOKEN="$SEIZA_WORKER_TOKEN" \
 cargo run -- worker --server http://api-host:8080
 ```
@@ -128,7 +134,7 @@ form field:
 ```bash
 curl -X POST http://127.0.0.1:8080/api/v1/solves \
   -F 'file=@M31.fits' \
-  -F 'options={"min_scale_arcsec_per_pixel":0.5,"max_scale_arcsec_per_pixel":15}'
+  -F 'options={"min_scale_arcsec_per_pixel":0.1,"max_scale_arcsec_per_pixel":15}'
 ```
 
 The response is `202 Accepted` with an opaque ID and artifact URLs. Poll it until
@@ -225,7 +231,8 @@ are currently supported:
 | --- | --- | --- |
 | `SEIZA_BIND_ADDR` | `127.0.0.1:8080` | Axum listen address |
 | `SEIZA_CATALOG_DIR` | automatic | Directory searched for canonically named prebuilt Seiza datasets; defaults to `SEIZA_DATA_DIR/catalog` and its sibling `catalog` directory |
-| `SEIZA_STAR_DATA` | unset | Seiza tile catalog path |
+| `SEIZA_STAR_DATA` | unset | Seiza tile catalog path; automatic discovery prefers `stars-deep-gaia17.bin` |
+| `SEIZA_BLIND_INDEX` | unset | Seiza persisted blind-index path; automatic discovery uses `blind-gaia16.idx` |
 | `SEIZA_OBJECT_DATA` | unset | Optional Seiza object catalog for named overlay annotations |
 | `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |
 | `SEIZA_MINOR_BODY_DATA` | unset | Optional reloadable Seiza minor-body orbital-elements catalog |
@@ -319,9 +326,10 @@ job store, then deletes the SQS message only after completion is accepted.
 Duplicate messages and expired leases are safe by design. The AWS SDK uses the
 standard credential provider chain, so ECS task roles work without application
 secrets.
-Put `SEIZA_STAR_DATA` and optional annotation catalogs on a read-only EFS mount
-or bake/version them into a dedicated server image. Workers need only
-`SEIZA_STAR_DATA`; annotation catalogs are loaded by the API server. The server sweeps expired
+Put `SEIZA_STAR_DATA`, `SEIZA_BLIND_INDEX`, and optional annotation catalogs on
+a read-only EFS mount or bake/version them into a dedicated server image.
+Workers need the star catalog and blind index; annotation catalogs are loaded
+by the API server. The server sweeps expired
 S3 uploads itself; configure a matching bucket lifecycle rule as
 defense-in-depth.
 

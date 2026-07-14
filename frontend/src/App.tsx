@@ -191,7 +191,7 @@ function SolvePage() {
         <details>
           <summary>Blind solve settings</summary>
           <div className="form-grid">
-            <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="0.3" /></label>
+            <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="0.1" /></label>
             <label>Maximum scale (arcsec/px)<input name="max_scale" type="number" min="0.01" step="any" placeholder="20" /></label>
             <label>Hint scale tolerance<input name="scale_tolerance" type="number" min="0.01" max="1" step="0.01" placeholder="0.2" /></label>
           </div>
