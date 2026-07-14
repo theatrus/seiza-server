@@ -31,7 +31,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Select AWS-LC-RS for every Rustls user in the process. The AWS SDK's
 # `default-https-client` feature also selects its AWS-LC provider directly.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
-sqlx = { version = "0.8", default-features = false, features = ["any", "chrono", "postgres", "runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs"] }
+sqlx = { version = "0.9", default-features = false, features = ["any", "chrono", "postgres", "runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs"] }
 seiza = "0.2.3"
 seiza-fits = "0.1.3"
 serde = { version = "1", features = ["derive"] }
