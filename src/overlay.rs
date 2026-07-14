@@ -36,11 +36,16 @@ pub fn render_svg(
             render_object(&mut objects, object, width as f64, height as f64);
         }
     }
-    let grid = if options.grid {
+    let GridMarkup {
+        lines: grid_lines,
+        labels: grid_labels,
+    } = if options.grid {
         render_grid(solution)
     } else {
-        String::new()
+        GridMarkup::default()
     };
+    let grid_font_size = grid_label_font_size(width as f64);
+    let grid_label_stroke = grid_font_size * 0.12;
     let center_x = width as f64 / 2.0;
     let center_y = height as f64 / 2.0;
     format!(
@@ -50,11 +55,13 @@ pub fn render_svg(
   .label {{ fill: #f8fbff; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 600 15px ui-sans-serif, system-ui, sans-serif; }}
   .detail {{ fill: #c7d5e5; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 13px ui-monospace, monospace; }}
   .grid-line {{ fill: none; stroke: #7ddbe8; stroke-width: 1.2; stroke-dasharray: 7 5; opacity: .72; vector-effect: non-scaling-stroke; }}
-  .grid-label {{ fill: #b9f3f7; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 600 13px ui-monospace, monospace; }}
+  .grid-label {{ fill: #b9f3f7; stroke: #05090e; stroke-width: {grid_label_stroke:.2}; paint-order: stroke; font: 700 {grid_font_size:.2}px ui-monospace, monospace; }}
+  .direction-tail {{ stroke-linecap: round; stroke-linejoin: round; }}
 </style>
 <defs><clipPath id="image-frame"><rect width="{width}" height="{height}" /></clipPath></defs>
 <image href="data:image/png;base64,{encoded}" width="{width}" height="{height}" preserveAspectRatio="none" />
-<g clip-path="url(#image-frame)">{grid}</g>
+<g clip-path="url(#image-frame)" class="grid-lines">{grid_lines}</g>
+<g class="grid-labels">{grid_labels}</g>
 <g>{objects}</g>
 <g stroke="#f2c66d" fill="none" stroke-width="2" vector-effect="non-scaling-stroke">
   <circle cx="{center_x}" cy="{center_y}" r="18" />
@@ -75,7 +82,13 @@ pub fn render_svg(
     )
 }
 
-fn render_grid(solution: &SolutionResponse) -> String {
+#[derive(Debug, Default)]
+struct GridMarkup {
+    lines: String,
+    labels: String,
+}
+
+fn render_grid(solution: &SolutionResponse) -> GridMarkup {
     let width = solution.image_width as f64;
     let height = solution.image_height as f64;
     let wcs = Wcs {
@@ -88,39 +101,45 @@ fn render_grid(solution: &SolutionResponse) -> String {
     let angular_span = (dec_max - dec_min)
         .max((ra_max - ra_min) * center_dec_cos)
         .max(solution.pixel_scale_arcsec_per_pixel / 3600.0);
-    let dec_step = nice_grid_step(angular_span / 6.0);
-    let ra_step = nice_grid_step(angular_span / center_dec_cos / 6.0);
-    let mut output = String::new();
+    let dec_step = nice_grid_step(angular_span / 5.0);
+    let ra_step = nice_grid_step(angular_span / center_dec_cos / 5.0);
+    let font_size = grid_label_font_size(width);
+    let geometry = GridGeometry {
+        width,
+        height,
+        font_size,
+    };
+    let mut output = GridMarkup::default();
 
     let mut ra = (ra_min / ra_step).floor() * ra_step;
-    while ra <= ra_max + ra_step && output.len() < 250_000 {
+    while ra <= ra_max + ra_step && output.lines.len() < 250_000 {
         let samples = sample_curve(96, dec_min - dec_step, dec_max + dec_step, |dec| {
             wcs.world_to_pixel(normalize_ra(ra), dec.clamp(-89.999_999, 89.999_999))
         });
         render_grid_curve(
-            &mut output,
+            &mut output.lines,
+            &mut output.labels,
             &samples,
-            width,
-            height,
             &format_ra(normalize_ra(ra)),
             GridAxis::Ra,
+            geometry,
         );
         ra += ra_step;
     }
 
     let mut dec = (dec_min / dec_step).floor() * dec_step;
-    while dec <= dec_max + dec_step && dec <= 90.0 && output.len() < 500_000 {
+    while dec <= dec_max + dec_step && dec <= 90.0 && output.lines.len() < 500_000 {
         if dec >= -90.0 {
             let samples = sample_curve(96, ra_min - ra_step, ra_max + ra_step, |ra| {
                 wcs.world_to_pixel(normalize_ra(ra), dec.clamp(-89.999_999, 89.999_999))
             });
             render_grid_curve(
-                &mut output,
+                &mut output.lines,
+                &mut output.labels,
                 &samples,
-                width,
-                height,
                 &format_dec(dec),
                 GridAxis::Dec,
+                geometry,
             );
         }
         dec += dec_step;
@@ -169,14 +188,26 @@ enum GridAxis {
     Dec,
 }
 
-fn render_grid_curve(
-    output: &mut String,
-    samples: &[Option<(f64, f64)>],
+#[derive(Debug, Clone, Copy)]
+struct GridGeometry {
     width: f64,
     height: f64,
+    font_size: f64,
+}
+
+fn render_grid_curve(
+    lines: &mut String,
+    labels: &mut String,
+    samples: &[Option<(f64, f64)>],
     label: &str,
     axis: GridAxis,
+    geometry: GridGeometry,
 ) {
+    let GridGeometry {
+        width,
+        height,
+        font_size,
+    } = geometry;
     let mut path = String::new();
     let mut pen_down = false;
     let mut points_in_frame = Vec::new();
@@ -192,14 +223,14 @@ fn render_grid_curve(
         let command = if pen_down { 'L' } else { 'M' };
         let _ = write!(path, "{command}{x:.2},{y:.2} ");
         pen_down = true;
-        if *x >= 4.0 && *x <= width - 4.0 && *y >= 62.0 && *y <= height - 4.0 {
+        if *x >= 4.0 && *x <= width - 4.0 && *y >= 4.0 && *y <= height - 4.0 {
             points_in_frame.push((*x, *y));
         }
     }
     if path.matches(['M', 'L']).count() < 2 || points_in_frame.is_empty() {
         return;
     }
-    let _ = write!(output, r#"<path class="grid-line" d="{path}" />"#);
+    let _ = write!(lines, r#"<path class="grid-line" d="{path}" />"#);
     let &(x, y) = match axis {
         GridAxis::Ra => points_in_frame
             .iter()
@@ -210,25 +241,59 @@ fn render_grid_curve(
             .min_by(|left, right| left.0.total_cmp(&right.0))
             .expect("grid curve has an in-frame point"),
     };
-    let max_x = (width - 6.0).max(6.0);
-    let max_y = (height - 6.0).max(6.0);
-    let label_top = 76.0_f64.min(max_y);
-    let (x, y, anchor) = match axis {
+    let padding = (font_size * 0.45).max(6.0);
+    let label_width = label.chars().count() as f64 * font_size * 0.7;
+    let minimum_baseline = padding + font_size * 1.08;
+    let maximum_baseline = height - padding - font_size * 0.25;
+    let y = clamp_or_center(
+        match axis {
+            GridAxis::Ra => y + font_size * 1.35,
+            GridAxis::Dec => y - padding,
+        },
+        minimum_baseline,
+        maximum_baseline,
+        height / 2.0,
+    );
+    let (x, anchor) = match axis {
         GridAxis::Ra => (
-            x.clamp(58.0_f64.min(max_x), max_x),
-            (y + 15.0).clamp(label_top, max_y),
+            clamp_or_center(
+                x,
+                padding + label_width / 2.0,
+                width - padding - label_width / 2.0,
+                width / 2.0,
+            ),
             "middle",
         ),
         GridAxis::Dec => (
-            (x + 6.0).clamp(6.0, max_x),
-            (y - 5.0).clamp(label_top, max_y),
-            "start",
+            clamp_or_center(
+                x + padding,
+                padding,
+                width - padding - label_width,
+                width / 2.0,
+            ),
+            if label_width + padding * 2.0 <= width {
+                "start"
+            } else {
+                "middle"
+            },
         ),
     };
     let _ = write!(
-        output,
+        labels,
         r#"<text class="grid-label" x="{x:.2}" y="{y:.2}" text-anchor="{anchor}">{label}</text>"#,
     );
+}
+
+fn clamp_or_center(value: f64, minimum: f64, maximum: f64, center: f64) -> f64 {
+    if minimum <= maximum {
+        value.clamp(minimum, maximum)
+    } else {
+        center
+    }
+}
+
+fn grid_label_font_size(width: f64) -> f64 {
+    (width / 60.0).max(18.0).min(width / 18.0).max(6.0)
 }
 
 fn nice_grid_step(target_degrees: f64) -> f64 {
@@ -351,7 +416,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
             );
         }
         "transient" | "comet" | "asteroid" => {
-            let size = 10.0;
+            let size = (width / 75.0).max(14.0);
             let _ = write!(
                 output,
                 r#"<path class="marker" stroke="{color}" d="M {x:.2} {top:.2} L {right:.2} {y:.2} L {x:.2} {bottom:.2} L {left:.2} {y:.2} Z" />"#,
@@ -365,15 +430,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
             if matches!(object.kind.as_str(), "comet" | "asteroid")
                 && let Some(angle) = object.direction_angle_deg
             {
-                let radians = angle.to_radians();
-                let _ = write!(
-                    output,
-                    r#"<path class="marker" stroke="{color}" d="M {x1:.2} {y1:.2} L {x2:.2} {y2:.2}" />"#,
-                    x1 = object.x + radians.cos() * size * 1.3,
-                    y1 = object.y + radians.sin() * size * 1.3,
-                    x2 = object.x + radians.cos() * size * 2.4,
-                    y2 = object.y + radians.sin() * size * 2.4,
-                );
+                render_direction_tail(output, object, size, angle, color);
             }
         }
         _ => {
@@ -393,6 +450,69 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         r#"<text class="label" x="{x:.2}" y="{y:.2}">{label} ({designation}){magnitude}</text>"#,
         x = (object.x + 14.0).clamp(8.0, width - 8.0),
         y = (object.y - 14.0).clamp(18.0, height - 8.0),
+    );
+}
+
+fn render_direction_tail(
+    output: &mut String,
+    object: &OverlayObject,
+    size: f64,
+    angle_degrees: f64,
+    color: &str,
+) {
+    let radians = angle_degrees.to_radians();
+    let along = |distance: f64| {
+        (
+            object.x + radians.cos() * size * distance,
+            object.y + radians.sin() * size * distance,
+        )
+    };
+    let offset = |point: (f64, f64), distance: f64| {
+        (
+            point.0 - radians.sin() * size * distance,
+            point.1 + radians.cos() * size * distance,
+        )
+    };
+    let (path, class_name) = if object.kind == "comet" {
+        let root = along(1.15);
+        let tip = along(4.0);
+        let upper = offset(along(3.25), 0.55);
+        let lower = offset(along(3.25), -0.55);
+        (
+            format!(
+                "M {:.2} {:.2} L {:.2} {:.2} M {:.2} {:.2} L {:.2} {:.2} M {:.2} {:.2} L {:.2} {:.2}",
+                root.0,
+                root.1,
+                tip.0,
+                tip.1,
+                root.0,
+                root.1,
+                upper.0,
+                upper.1,
+                root.0,
+                root.1,
+                lower.0,
+                lower.1,
+            ),
+            "comet-tail",
+        )
+    } else {
+        let root = along(1.2);
+        let tip = along(4.5);
+        let arrow_root = along(3.6);
+        let upper = offset(arrow_root, 0.65);
+        let lower = offset(arrow_root, -0.65);
+        (
+            format!(
+                "M {:.2} {:.2} L {:.2} {:.2} M {:.2} {:.2} L {:.2} {:.2} L {:.2} {:.2}",
+                root.0, root.1, tip.0, tip.1, upper.0, upper.1, tip.0, tip.1, lower.0, lower.1,
+            ),
+            "asteroid-tail",
+        )
+    };
+    let _ = write!(
+        output,
+        r#"<path class="marker direction-tail {class_name}" data-direction-angle="{angle_degrees:.2}" stroke="{color}" d="{path}" />"#,
     );
 }
 
@@ -496,6 +616,11 @@ mod tests {
         assert!(svg.contains("RA "));
         assert!(svg.contains("Dec "));
         assert!(!svg.contains("&lt;target&gt;"));
+        assert!(svg.contains("class=\"grid-lines\""));
+        assert!(svg.contains("class=\"grid-labels\""));
+        assert!(
+            svg.find("class=\"grid-labels\"").unwrap() > svg.find("class=\"grid-lines\"").unwrap()
+        );
     }
 
     #[test]
@@ -513,5 +638,49 @@ mod tests {
         );
         assert!(svg.contains("class=\"grid-line\""));
         assert!(svg.contains("RA 00h"));
+    }
+
+    #[test]
+    fn large_overlays_scale_coordinate_labels_for_native_rendering() {
+        let mut large = solution();
+        large.image_width = 4096;
+        large.image_height = 2400;
+        large.wcs.crpix = [2048.0, 1200.0];
+        let svg = render_svg(
+            &large,
+            &Bytes::from_static(b"png"),
+            OverlayOptions {
+                objects: false,
+                grid: true,
+            },
+        );
+        assert!(svg.contains("font: 700 68.27px ui-monospace"));
+        assert!(svg.contains("stroke-width: 8.19"));
+    }
+
+    #[test]
+    fn moving_bodies_render_catalog_direction_tails() {
+        let mut moving = solution();
+        let mut comet = moving.objects[0].clone();
+        comet.name = "C/2026 A1".into();
+        comet.common_name = "Test comet".into();
+        comet.kind = "comet".into();
+        comet.direction_angle_deg = Some(18.0);
+        let mut asteroid = comet.clone();
+        asteroid.name = "(12345)".into();
+        asteroid.common_name = "Test asteroid".into();
+        asteroid.kind = "asteroid".into();
+        asteroid.direction_angle_deg = Some(136.0);
+        moving.objects = vec![comet, asteroid];
+
+        let svg = render_svg(
+            &moving,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(svg.contains("direction-tail comet-tail"));
+        assert!(svg.contains("data-direction-angle=\"18.00\""));
+        assert!(svg.contains("direction-tail asteroid-tail"));
+        assert!(svg.contains("data-direction-angle=\"136.00\""));
     }
 }
