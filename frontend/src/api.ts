@@ -99,7 +99,10 @@ export async function submitSolve(
   onProgress?: (progress: number) => void,
 ): Promise<Job> {
   const uppy = new Uppy({
-    id: `seiza-solve-${file.name}-${file.size}-${file.lastModified}`,
+    // Uppy includes its instance ID in the TUS fingerprint. Scope resumable
+    // sessions to the solve settings as well as the file identity so changing
+    // options never resumes an upload created with stale metadata.
+    id: `seiza-solve-${solveOptionsFingerprint(options)}`,
     autoProceed: false,
     restrictions: { maxNumberOfFiles: 1 },
   })
@@ -108,6 +111,9 @@ export async function submitSolve(
     chunkSize: uploadChunkBytes,
     retryDelays: [0, 1_000, 3_000, 5_000],
     limit: 1,
+    // Keep failed/interrupted uploads resumable, but never reuse a completed
+    // upload URL and its already-created solve job.
+    removeFingerprintOnSuccess: true,
     allowedMetaFields: false,
     onBeforeRequest: (request, uploadedFile) => {
       request.setHeader('Upload-Metadata', [
@@ -136,12 +142,25 @@ export async function submitSolve(
   } finally {
     const tus = uppy.getPlugin('Tus')
     for (const uploadedFile of uppy.getFiles()) {
-      // Stop local requests without sending TUS termination. Keeping the
-      // fingerprint and server session is what makes a later retry resumable.
+      // Stop local requests without terminating an incomplete server session.
+      // Successful uploads have already removed their stored fingerprint;
+      // interrupted uploads remain resumable for the same solve settings.
       tus?.resetUploaderReferences(uploadedFile.id, { abort: false })
     }
     uppy.destroy()
   }
+}
+
+function solveOptionsFingerprint(options: SolveOptions): string {
+  const normalized = Object.fromEntries(
+    Object.entries(options)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  )
+  return base64Metadata(JSON.stringify(normalized))
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '')
 }
 
 function base64Metadata(value: string): string {
