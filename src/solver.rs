@@ -9,15 +9,20 @@ use seiza::{
     detect_stars,
     solve::{SolveHint, solve},
 };
-use std::{io::Cursor, path::Path, sync::Arc};
+use std::{
+    io::Cursor,
+    path::Path,
+    sync::{Arc, OnceLock},
+};
 
 #[derive(Clone)]
 pub struct SolverEngine {
     catalog: Option<Arc<TileCatalog>>,
+    blind_index: Arc<OnceLock<Arc<BlindIndex>>>,
 }
 
 impl SolverEngine {
-    pub fn from_catalog_path(star_path: Option<&Path>) -> Self {
+    pub fn from_catalog_paths(star_path: Option<&Path>, blind_index_path: Option<&Path>) -> Self {
         let catalog = star_path.and_then(|path| match TileCatalog::open(path) {
             Ok(catalog) => {
                 tracing::info!(path = %path.display(), stars = catalog.star_count(), "opened Seiza star catalog");
@@ -28,7 +33,46 @@ impl SolverEngine {
                 None
             }
         });
-        Self { catalog }
+        let blind_index = Arc::new(OnceLock::new());
+        if let (Some(catalog), Some(path)) = (&catalog, blind_index_path) {
+            match BlindIndex::open(path) {
+                Ok(index) => {
+                    let source_stars = index.source_star_count();
+                    let catalog_stars = catalog.star_count();
+                    if source_stars != 0 && source_stars != catalog_stars {
+                        tracing::error!(
+                            path = %path.display(),
+                            source_stars,
+                            catalog_stars,
+                            "Seiza blind index was built from a different star catalog; ignoring it"
+                        );
+                    } else {
+                        tracing::info!(
+                            path = %path.display(),
+                            patterns = index.pattern_count(),
+                            index_mag_limit = index.index_mag_limit(),
+                            max_pattern_deg = index.max_pattern_deg(),
+                            "memory-mapped Seiza blind index"
+                        );
+                        assert!(
+                            blind_index.set(Arc::new(index)).is_ok(),
+                            "blind index is initialized only once"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(
+                        path = %path.display(),
+                        %error,
+                        "could not open Seiza blind index; a legacy index will be built on the first blind solve"
+                    );
+                }
+            }
+        }
+        Self {
+            catalog,
+            blind_index,
+        }
     }
 
     pub fn is_ready(&self) -> bool {
@@ -48,9 +92,12 @@ impl SolverEngine {
         let catalog = self.catalog.clone().context(
             "solver is not configured: set SEIZA_STAR_DATA to a Seiza star tile catalog",
         )?;
-        tokio::task::spawn_blocking(move || solve_bytes(&catalog, &bytes, &filename, &options))
-            .await
-            .context("solver worker panicked")?
+        let blind_index = self.blind_index.clone();
+        tokio::task::spawn_blocking(move || {
+            solve_bytes(&catalog, &blind_index, &bytes, &filename, &options)
+        })
+        .await
+        .context("solver worker panicked")?
     }
 }
 
@@ -87,6 +134,7 @@ pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)>
 
 fn solve_bytes(
     catalog: &TileCatalog,
+    blind_index: &OnceLock<Arc<BlindIndex>>,
     bytes: &[u8],
     filename: &str,
     options: &SolveOptions,
@@ -131,16 +179,27 @@ fn solve_bytes(
         )
         .context("hinted Seiza solve failed")?,
         _ => {
+            let index = blind_index.get_or_init(|| {
+                let params = BlindParams::default();
+                tracing::warn!(
+                    index_mag_limit = params.index_mag_limit,
+                    "no prebuilt Seiza blind index is configured; building a legacy index once for this worker"
+                );
+                let index = BlindIndex::build(catalog, &params);
+                tracing::info!(
+                    patterns = index.pattern_count(),
+                    "built and cached legacy Seiza blind index"
+                );
+                Arc::new(index)
+            });
             let params = BlindParams {
                 min_scale_arcsec_px: options.min_scale_arcsec_per_pixel,
                 max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
+                index_mag_limit: index.index_mag_limit(),
+                max_pattern_deg: index.max_pattern_deg(),
                 ..Default::default()
             };
-            // The index is tied to the accepted scale range. It is created in
-            // the bounded worker rather than on the request path, ensuring a
-            // blind job cannot make HTTP handling interactive.
-            let index = BlindIndex::build(catalog, &params);
-            solve_blind(&detected, catalog, &index, &params, dimensions)
+            solve_blind(&detected, catalog, index, &params, dimensions)
                 .context("blind Seiza solve failed")?
         }
     };

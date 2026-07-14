@@ -57,7 +57,10 @@ impl AppState {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
         let transport = queue_transport(&config).await?;
-        let solver = SolverEngine::from_catalog_path(config.catalog_path.as_deref());
+        let solver = SolverEngine::from_catalog_paths(
+            config.catalog_path.as_deref(),
+            config.blind_index_path.as_deref(),
+        );
         let annotations = AnnotationEngine::new(
             solver.catalog(),
             config.catalog_path.as_deref(),
@@ -1839,6 +1842,7 @@ mod tests {
             frontend_dir: root.join("frontend"),
             data_dir: root.to_owned(),
             catalog_path: None,
+            blind_index_path: None,
             object_catalog_path: None,
             transient_catalog_path: None,
             minor_body_catalog_path: None,

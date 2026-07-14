@@ -62,11 +62,11 @@ impl Default for SolveOptions {
             radius_deg: Some(2.0),
             scale_arcsec_per_pixel: None,
             scale_tolerance: 0.2,
-            min_scale_arcsec_per_pixel: 0.3,
+            min_scale_arcsec_per_pixel: 0.1,
             max_scale_arcsec_per_pixel: 20.0,
             sigma: 4.0,
             ignore_border: 0,
-            max_stars: 600,
+            max_stars: 500,
             capture_time: None,
         }
     }

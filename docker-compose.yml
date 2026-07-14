@@ -4,7 +4,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      SEIZA_STAR_DATA: /catalog/stars-lite-tycho2.bin
+      SEIZA_CATALOG_DIR: /catalog
       SEIZA_DATA_DIR: /app/data
       SEIZA_WORKER_COUNT: "1"
       SEIZA_AUTH_MODE: public

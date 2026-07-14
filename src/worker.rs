@@ -145,7 +145,10 @@ impl WorkerClient {
 
 pub async fn run(args: WorkerArgs) -> Result<()> {
     let config = Config::from_env()?;
-    let engine = SolverEngine::from_catalog_path(config.catalog_path.as_deref());
+    let engine = SolverEngine::from_catalog_paths(
+        config.catalog_path.as_deref(),
+        config.blind_index_path.as_deref(),
+    );
     if !engine.is_ready() {
         bail!("worker requires SEIZA_STAR_DATA to point at a Seiza tile catalog");
     }
