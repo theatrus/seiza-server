@@ -8,6 +8,7 @@ export interface SolveOptions {
   scale_tolerance?: number
   min_scale_arcsec_per_pixel?: number
   max_scale_arcsec_per_pixel?: number
+  capture_time?: string
 }
 
 export interface OverlayObject {
@@ -20,6 +21,14 @@ export interface OverlayObject {
   semi_major_px: number
   semi_minor_px: number
   angle_deg: number
+  source?: string
+  ra_deg?: number
+  dec_deg?: number
+  discovered?: string
+  near_capture?: boolean
+  distance_au?: number
+  direction_pa_deg?: number
+  direction_angle_deg?: number
 }
 
 export interface Solution {
@@ -41,6 +50,16 @@ export interface Solution {
   }
   footprint: [[number, number], [number, number], [number, number], [number, number]]
   objects: OverlayObject[]
+  catalog_version?: string
+  capture_time?: string
+}
+
+export interface Annotations {
+  job_id: number
+  catalog_version: string
+  capture_time: string | null
+  counts: Record<string, number>
+  objects: OverlayObject[]
 }
 
 export interface Job {
@@ -54,6 +73,7 @@ export interface Job {
   input_available: boolean
   preview_url: string | null
   overlay_url: string | null
+  annotations_url: string | null
   wcs_url: string | null
   solution: Solution | null
   error: string | null
@@ -76,4 +96,11 @@ export async function submitSolve(file: File, options: SolveOptions): Promise<Jo
 
 export async function getSolve(jobId: number): Promise<Job> {
   return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}`))
+}
+
+export async function getAnnotations(url: string): Promise<Annotations> {
+  const separator = url.includes('?') ? '&' : '?'
+  return expectJson<Annotations>(await fetch(
+    `${url}${separator}field_stars=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300`,
+  ))
 }

@@ -307,6 +307,15 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         "asteroid" => "#ffad5c",
         _ => "#5ee7f2",
     };
+    if object.kind == "field-star" {
+        let _ = write!(
+            output,
+            r##"<circle class="marker" stroke="#eef7ff" opacity=".78" cx="{x:.2}" cy="{y:.2}" r="3.5" />"##,
+            x = object.x,
+            y = object.y,
+        );
+        return;
+    }
     let label = if object.common_name.trim().is_empty() {
         object.name.as_str()
     } else {
@@ -318,7 +327,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         .mag
         .map(|mag| format!(" · mag {mag:.1}"))
         .unwrap_or_default();
-    let encompasses_frame = object.semi_major_px > width.hypot(height);
+    let encompasses_frame = encompasses_frame(object, width, height);
     if encompasses_frame {
         let _ = write!(
             output,
@@ -353,6 +362,19 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
                 bottom = object.y + size,
                 left = object.x - size,
             );
+            if matches!(object.kind.as_str(), "comet" | "asteroid")
+                && let Some(angle) = object.direction_angle_deg
+            {
+                let radians = angle.to_radians();
+                let _ = write!(
+                    output,
+                    r#"<path class="marker" stroke="{color}" d="M {x1:.2} {y1:.2} L {x2:.2} {y2:.2}" />"#,
+                    x1 = object.x + radians.cos() * size * 1.3,
+                    y1 = object.y + radians.sin() * size * 1.3,
+                    x2 = object.x + radians.cos() * size * 2.4,
+                    y2 = object.y + radians.sin() * size * 2.4,
+                );
+            }
         }
         _ => {
             let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
@@ -372,6 +394,23 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         x = (object.x + 14.0).clamp(8.0, width - 8.0),
         y = (object.y - 14.0).clamp(18.0, height - 8.0),
     );
+}
+
+fn encompasses_frame(object: &OverlayObject, width: f64, height: f64) -> bool {
+    if object.semi_major_px <= 0.0 {
+        return false;
+    }
+    let radians = object.angle_deg.to_radians();
+    let (sin, cos) = radians.sin_cos();
+    [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+        .into_iter()
+        .all(|(x, y)| {
+            let dx = x - object.x;
+            let dy = y - object.y;
+            let u = (dx * cos + dy * sin) / object.semi_major_px;
+            let v = (-dx * sin + dy * cos) / object.semi_minor_px.max(1.0);
+            u * u + v * v <= 1.0
+        })
 }
 
 fn xml_escape(value: &str) -> String {
@@ -417,7 +456,17 @@ mod tests {
                 semi_major_px: 10.0,
                 semi_minor_px: 5.0,
                 angle_deg: 20.0,
+                source: Some("deep_sky".into()),
+                ra_deg: Some(12.0),
+                dec_deg: Some(-4.0),
+                discovered: None,
+                near_capture: None,
+                distance_au: None,
+                direction_pa_deg: None,
+                direction_angle_deg: None,
             }],
+            catalog_version: None,
+            capture_time: None,
         }
     }
 

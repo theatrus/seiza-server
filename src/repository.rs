@@ -240,13 +240,13 @@ impl JobRepository for SqlxJobRepository {
             // advisory lock to keep concurrent API replicas from evaluating
             // stale client-service timestamps.
             sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                .bind(0x7365_697a_61_i64)
+                .bind(0x0073_6569_7a61_i64)
                 .execute(&mut *transaction)
                 .await?;
         }
-        self.reclaim_expired(&mut *transaction, now).await?;
+        self.reclaim_expired(&mut transaction, now).await?;
         let Some(job) = self
-            .select_candidate(&mut *transaction, requested_job_id, now)
+            .select_candidate(&mut transaction, requested_job_id, now)
             .await?
         else {
             transaction.commit().await?;
@@ -335,7 +335,7 @@ impl JobRepository for SqlxJobRepository {
 
     async fn pending_notifications(&self, limit: usize) -> Result<Vec<JobId>> {
         let mut transaction = self.pool.begin().await?;
-        self.reclaim_expired(&mut *transaction, Utc::now()).await?;
+        self.reclaim_expired(&mut transaction, Utc::now()).await?;
         let rows = sqlx::query("SELECT job_id FROM queue_outbox WHERE delivered_at IS NULL ORDER BY job_id ASC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&mut *transaction)

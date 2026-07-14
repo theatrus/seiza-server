@@ -1,13 +1,14 @@
 use crate::{
+    annotations::{AnnotationEngine, AnnotationOptions},
     config::{AuthMode, Config},
     models::{
-        JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse, SolveOptions,
-        WorkerCompletion,
+        AnnotationResponse, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
+        SolveOptions, WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
-    solver::{SolverEngine, dimensions_from_bytes, preview_png},
+    solver::{SolverEngine, capture_time_from_bytes, dimensions_from_bytes, full_png, preview_png},
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
 };
@@ -43,6 +44,7 @@ pub struct AppState {
     limiter: RateLimiter,
     store: Arc<dyn ObjectStore>,
     solver: SolverEngine,
+    annotations: AnnotationEngine,
 }
 
 impl AppState {
@@ -50,9 +52,13 @@ impl AppState {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
         let transport = queue_transport(&config).await?;
-        let solver = SolverEngine::from_catalog_paths(
+        let solver = SolverEngine::from_catalog_path(config.catalog_path.as_deref());
+        let annotations = AnnotationEngine::new(
+            solver.catalog(),
             config.catalog_path.as_deref(),
             config.object_catalog_path.as_deref(),
+            config.transient_catalog_path.as_deref(),
+            config.minor_body_catalog_path.as_deref(),
         );
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
@@ -61,6 +67,7 @@ impl AppState {
             transport,
             store,
             solver,
+            annotations,
         })
     }
 
@@ -220,6 +227,21 @@ impl AppState {
 
     fn job_response(&self, job: &JobRecord) -> JobResponse {
         let input_available = self.input_available(job);
+        let solution = job.solution.as_ref().map(|solution| {
+            let mut solution = solution.clone();
+            let annotations = self.annotations.annotate(
+                job.id,
+                &solution,
+                job.options.capture_time,
+                &AnnotationOptions::default(),
+            );
+            if self.annotations.is_configured() {
+                solution.objects = annotations.objects;
+            }
+            solution.catalog_version = Some(annotations.catalog_version);
+            solution.capture_time = job.options.capture_time;
+            solution
+        });
         JobResponse {
             id: job.id,
             status: job.status,
@@ -230,13 +252,16 @@ impl AppState {
             input_expires_at: self.input_expires_at(job),
             input_available,
             preview_url: input_available.then(|| format!("/api/v1/solves/{}/preview", job.id)),
-            overlay_url: (input_available && job.solution.is_some())
+            overlay_url: (input_available && solution.is_some())
                 .then(|| format!("/api/v1/solves/{}/overlay.svg", job.id)),
+            annotations_url: solution
+                .as_ref()
+                .map(|_| format!("/api/v1/solves/{}/annotations", job.id)),
             wcs_url: job
                 .solution
                 .as_ref()
                 .map(|_| format!("/api/v1/solves/{}/wcs", job.id)),
-            solution: job.solution.clone(),
+            solution,
             error: job.error.clone(),
         }
     }
@@ -245,8 +270,11 @@ impl AppState {
         &self,
         client: Client,
         upload: UploadedFile,
-        options: SolveOptions,
+        mut options: SolveOptions,
     ) -> Result<JobResponse, ApiError> {
+        if options.capture_time.is_none() {
+            options.capture_time = capture_time_from_bytes(&upload.data, &upload.filename);
+        }
         options.validate().map_err(ApiError::bad_request)?;
         self.limiter
             .check(&client.id)
@@ -306,6 +334,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/solves", post(post_solve))
         .route("/api/v1/solves/{job_id}", get(get_solve))
+        .route(
+            "/api/v1/solves/{job_id}/annotations",
+            get(get_solve_annotations),
+        )
         .route("/api/v1/solves/{job_id}/preview", get(get_solve_preview))
         .route(
             "/api/v1/solves/{job_id}/overlay.svg",
@@ -415,6 +447,7 @@ async fn get_solve(
 async fn get_solve_preview(
     State(state): State<AppState>,
     Path(job_id): Path<JobId>,
+    Query(query): Query<PreviewQuery>,
 ) -> Result<Response, ApiError> {
     let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
@@ -423,9 +456,12 @@ async fn get_solve_preview(
         .get(&job.object_key)
         .await
         .map_err(ApiError::internal)?;
-    let preview = preview_png(content, job.original_filename)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let preview = if query.full {
+        full_png(content, job.original_filename).await
+    } else {
+        preview_png(content, job.original_filename).await
+    }
+    .map_err(ApiError::bad_request)?;
     Ok((
         [
             (header::CONTENT_TYPE, "image/png"),
@@ -436,6 +472,29 @@ async fn get_solve_preview(
         .into_response())
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct PreviewQuery {
+    #[serde(default)]
+    full: bool,
+}
+
+async fn get_solve_annotations(
+    State(state): State<AppState>,
+    Path(job_id): Path<JobId>,
+    Query(query): Query<AnnotationQuery>,
+) -> Result<Json<AnnotationResponse>, ApiError> {
+    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let solution = job.solution.as_ref().ok_or_else(|| {
+        ApiError::artifact_not_ready("the solve has not produced annotations yet")
+    })?;
+    Ok(Json(state.annotations.annotate(
+        job.id,
+        solution,
+        job.options.capture_time,
+        &query.options(),
+    )))
+}
+
 async fn get_solve_overlay(
     State(state): State<AppState>,
     Path(job_id): Path<JobId>,
@@ -443,10 +502,22 @@ async fn get_solve_overlay(
 ) -> Result<Response, ApiError> {
     let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
-    let solution = job
+    let stored_solution = job
         .solution
         .as_ref()
         .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced an overlay yet"))?;
+    let mut solution = stored_solution.clone();
+    if query.objects {
+        solution.objects = state
+            .annotations
+            .annotate(
+                job.id,
+                stored_solution,
+                job.options.capture_time,
+                &query.annotations.options(),
+            )
+            .objects;
+    }
     let content = state
         .store
         .get(&job.object_key)
@@ -456,7 +527,7 @@ async fn get_solve_overlay(
         .await
         .map_err(ApiError::bad_request)?;
     let svg = render_svg(
-        solution,
+        &solution,
         &preview,
         OverlayOptions {
             objects: query.objects,
@@ -483,6 +554,51 @@ struct OverlayQuery {
     objects: bool,
     #[serde(default)]
     grid: bool,
+    #[serde(flatten)]
+    annotations: AnnotationQuery,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnnotationQuery {
+    #[serde(default = "default_true")]
+    deep_sky: bool,
+    #[serde(default = "default_true")]
+    named_stars: bool,
+    #[serde(default)]
+    field_stars: bool,
+    #[serde(default = "default_true")]
+    transients: bool,
+    #[serde(default = "default_true")]
+    minor_bodies: bool,
+    #[serde(default)]
+    historical_transients: bool,
+    #[serde(default = "default_field_star_magnitude")]
+    field_star_mag_limit: f32,
+    #[serde(default = "default_field_star_limit")]
+    max_field_stars: usize,
+}
+
+impl AnnotationQuery {
+    fn options(&self) -> AnnotationOptions {
+        AnnotationOptions {
+            deep_sky: self.deep_sky,
+            named_stars: self.named_stars,
+            field_stars: self.field_stars,
+            transients: self.transients,
+            minor_bodies: self.minor_bodies,
+            historical_transients: self.historical_transients,
+            field_star_mag_limit: self.field_star_mag_limit.clamp(-2.0, 20.0),
+            max_field_stars: self.max_field_stars.clamp(1, 2_000),
+        }
+    }
+}
+
+fn default_field_star_magnitude() -> f32 {
+    10.0
+}
+
+fn default_field_star_limit() -> usize {
+    300
 }
 
 fn default_true() -> bool {
@@ -738,12 +854,37 @@ async fn astrometry_info(
     Path(job_id): Path<JobId>,
 ) -> Result<Json<Value>, ApiError> {
     let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let objects_in_field = job
+        .solution
+        .as_ref()
+        .map(|solution| {
+            state
+                .annotations
+                .annotate(
+                    job.id,
+                    solution,
+                    job.options.capture_time,
+                    &AnnotationOptions::default(),
+                )
+                .objects
+                .into_iter()
+                .filter(|object| object.kind != "field-star")
+                .map(|object| {
+                    if object.common_name.trim().is_empty() {
+                        object.name
+                    } else {
+                        format!("{} ({})", object.common_name, object.name)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut result = json!({
         "status": astro_status(job.status),
         "original_filename": job.original_filename,
         "machine_tags": [],
         "tags": [],
-        "objects_in_field": [],
+        "objects_in_field": objects_in_field,
     });
     if let Some(solution) = job.solution {
         result["calibration"] = calibration_json(&solution);

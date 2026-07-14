@@ -1,3 +1,4 @@
+pub mod annotations;
 pub mod api;
 pub mod config;
 #[cfg(feature = "aws")]
