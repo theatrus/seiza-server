@@ -29,27 +29,36 @@ else
 fi
 
 tag="seiza-server-rpm-builder:${target}"
-"${engine}" build \
-  --build-arg "BASE=${base_image}" \
-  --build-arg "TARGET=${target}" \
-  --tag "${tag}" \
-  --file "${repo_root}/packaging/rpm/Containerfile" \
-  "${repo_root}"
+if [[ ${SEIZA_SKIP_CONTAINER_BUILD:-0} == 1 ]]; then
+  if ! "${engine}" image inspect "${tag}" >/dev/null 2>&1; then
+    echo "cached builder image ${tag} is not loaded" >&2
+    exit 1
+  fi
+else
+  "${engine}" build \
+    --build-arg "BASE=${base_image}" \
+    --build-arg "TARGET=${target}" \
+    --tag "${tag}" \
+    --file "${repo_root}/packaging/rpm/Containerfile" \
+    "${repo_root}"
+fi
 
 # `:Z` is useful on enforcing-SELinux hosts. Leave it configurable so Docker
 # Desktop and non-SELinux Podman installations work without special casing.
 volume_suffix=${SEIZA_CONTAINER_VOLUME_SUFFIX:-}
 cache_dir="${repo_root}/.rpm-cache/${target}"
-mkdir -p "${cache_dir}/cargo" "${cache_dir}/target"
+mkdir -p "${cache_dir}/cargo" "${cache_dir}/npm" "${cache_dir}/target"
 
 "${engine}" run --rm \
   --user "$(id -u):$(id -g)" \
   --env HOME=/tmp \
   --env CARGO_HOME=/tmp/cargo \
   --env CARGO_TARGET_DIR=/tmp/target \
+  --env npm_config_cache=/tmp/npm \
   --env RUSTUP_HOME=/opt/rustup \
   --volume "${repo_root}:/src${volume_suffix}" \
   --volume "${cache_dir}/cargo:/tmp/cargo${volume_suffix}" \
+  --volume "${cache_dir}/npm:/tmp/npm${volume_suffix}" \
   --volume "${cache_dir}/target:/tmp/target${volume_suffix}" \
   --workdir /src \
   "${tag}" \

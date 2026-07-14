@@ -34,7 +34,9 @@ npm run build --prefix frontend
 LDFLAGS="${LDFLAGS:-} -fPIE" cargo build --locked --release --features aws
 
 %check
-LDFLAGS="${LDFLAGS:-} -fPIE" cargo test --locked --features aws
+# Reuse the release dependency graph produced in %%build. A default-profile
+# test would compile aws-lc-sys and the rest of the dependency graph again.
+LDFLAGS="${LDFLAGS:-} -fPIE" cargo test --locked --release --features aws
 
 %install
 install -Dpm 0755 "${CARGO_TARGET_DIR:-target}/release/seiza-server" %{buildroot}%{_bindir}/seiza-server

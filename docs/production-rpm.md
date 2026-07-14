@@ -52,6 +52,10 @@ SEIZA_AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023.12.20260611.0 \
 
 The package build runs the AWS-enabled Rust test suite and builds the frontend.
 It produces binary, debuginfo, and source RPMs in the target artifact directory.
+Cargo downloads, npm downloads, and compiled Rust targets are reused from
+`.rpm-cache/<target>/` on subsequent local builds. GitHub Actions persists the
+same directories between runs and separately caches the target-native builder
+image, including its DNF packages and Rust toolchain.
 Verify that the main package installs on a clean target container with:
 
 ```bash
@@ -61,7 +65,15 @@ make rpm-verify-f44
 
 GitHub Actions runs both builds and clean-install checks for pull requests,
 pushes to `main`, version tags, and manual dispatches. Its `x86_64` RPMs are
-retained as workflow artifacts for 14 days.
+retained as workflow artifacts for 14 days on pull requests and 30 days on
+`main`. Download them from the workflow run in GitHub, or with:
+
+```bash
+gh run download <run-id> --repo theatrus/seiza-server
+```
+
+Release workflow artifacts are also attached to the corresponding GitHub
+release for durable retrieval.
 
 ## Install and configure
 
