@@ -58,6 +58,7 @@ export interface Annotations {
   job_id: string
   catalog_version: string
   capture_time: string | null
+  available?: Record<string, boolean>
   counts: Record<string, number>
   objects: OverlayObject[]
 }

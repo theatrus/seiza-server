@@ -26,8 +26,10 @@ The package combines everything needed to run the service:
 
 The Seiza star and optional object catalogs are not packaged. They are larger
 and change on a different cadence than the server; install them on durable
-storage such as `/srv/seiza/catalog/`, point `SEIZA_STAR_DATA` and optional
-`SEIZA_OBJECT_DATA` at them, and make them readable by the systemd service.
+storage such as `/srv/seiza/catalog/` and make them readable by the systemd
+service. The packaged `SEIZA_CATALOG_DIR` discovers `stars-gaia.bin` (or the
+lite star catalog), `objects.bin`, `transients.bin`, and `minor-bodies.bin`
+there automatically; explicit per-catalog variables override discovery.
 This also keeps an application upgrade from silently changing solver results.
 
 ## Build
@@ -86,9 +88,19 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Set `SEIZA_STAR_DATA` before starting the service. Configure
-`SEIZA_OBJECT_DATA` as well when named-object annotations are desired. The
-default configuration uses a SQLite database and local uploaded-object storage
+Download the prebuilt datasets with Seiza before starting the service:
+
+```bash
+sudo install -d -o root -g seiza-server -m 0750 /srv/seiza/catalog
+sudo seiza download-data prebuilt --output /srv/seiza/catalog
+sudo chgrp -R seiza-server /srv/seiza/catalog
+sudo chmod -R g+rX /srv/seiza/catalog
+```
+
+The hosted prebuilt set supplies the star, deep-sky/named-star, and transient
+catalogs. A minor-body catalog is built separately from current orbital
+elements. The default configuration uses a SQLite database and local
+uploaded-object storage
 under `/var/lib/seiza-server/`; systemd creates and owns that state directory
 for the restricted `seiza-server` system account. Keep that path on persistent
 local storage. The environment file is packaged as `root:seiza-server` mode

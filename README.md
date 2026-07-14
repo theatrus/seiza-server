@@ -53,7 +53,7 @@ cargo install seiza-cli
 seiza download-data prebuilt --output ../seiza-data
 
 cp .env.example .env # copy the values into your shell or dotenv runner
-export SEIZA_STAR_DATA="$PWD/../seiza-data/stars-lite-tycho2.bin"
+export SEIZA_CATALOG_DIR="$PWD/../seiza-data"
 
 cargo run
 ```
@@ -214,6 +214,7 @@ are currently supported:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SEIZA_BIND_ADDR` | `127.0.0.1:8080` | Axum listen address |
+| `SEIZA_CATALOG_DIR` | automatic | Directory searched for canonically named prebuilt Seiza datasets; defaults to `SEIZA_DATA_DIR/catalog` and its sibling `catalog` directory |
 | `SEIZA_STAR_DATA` | unset | Seiza tile catalog path |
 | `SEIZA_OBJECT_DATA` | unset | Optional Seiza object catalog for named overlay annotations |
 | `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |

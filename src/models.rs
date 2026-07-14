@@ -202,6 +202,7 @@ pub struct AnnotationResponse {
     pub job_id: String,
     pub catalog_version: String,
     pub capture_time: Option<DateTime<Utc>>,
+    pub available: std::collections::BTreeMap<String, bool>,
     pub counts: std::collections::BTreeMap<String, usize>,
     pub objects: Vec<OverlayObject>,
 }

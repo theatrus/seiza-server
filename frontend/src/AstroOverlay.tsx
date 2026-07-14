@@ -24,19 +24,26 @@ const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
 export function OverlayControls({
   layers,
   counts,
+  available,
   onChange,
 }: {
   layers: OverlayLayers
   counts: Record<string, number>
+  available?: Record<string, boolean>
   onChange: (layers: OverlayLayers) => void
 }) {
   return <div className="overlay-options" role="group" aria-label="Overlay layers">
-    {layerLabels.map(([key, label, countKey]) => <button
-      type="button"
-      key={key}
-      aria-pressed={layers[key]}
-      onClick={() => onChange({ ...layers, [key]: !layers[key] })}
-    >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>)}
+    {layerLabels.map(([key, label, countKey]) => {
+      const enabled = available?.[countKey] !== false
+      return <button
+        type="button"
+        key={key}
+        aria-pressed={enabled && layers[key]}
+        disabled={!enabled}
+        title={enabled ? undefined : `${label} data is unavailable for this solution`}
+        onClick={() => onChange({ ...layers, [key]: !layers[key] })}
+      >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>
+    })}
   </div>
 }
 
@@ -94,9 +101,8 @@ export function AstroOverlay({
       .coordinate-grid path { fill: none; stroke: #7ddbe8; stroke-width: 1.2; stroke-dasharray: 7 5; opacity: .72; vector-effect: non-scaling-stroke; }
       .coordinate-grid text { fill: #b9f3f7; stroke: #05090e; stroke-width: .12em; paint-order: stroke; font-family: ui-monospace, monospace; font-weight: 600; }
       .field-stars circle { fill: none; stroke: #eef7ff; stroke-width: 1.25; opacity: .78; vector-effect: non-scaling-stroke; }
-      .object-marker { fill: none; stroke: currentColor; vector-effect: non-scaling-stroke; }
-      .overlay-label { fill: currentColor; stroke: rgba(0,0,0,.88); stroke-width: .12em; paint-order: stroke; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 700; }
-      .encompassing-label { color: #aee8ff; }
+      .object-marker { fill: none; vector-effect: non-scaling-stroke; }
+      .overlay-label { stroke: rgba(0,0,0,.88); stroke-width: .12em; paint-order: stroke; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 700; }
       .solution-center { fill: none; stroke: #f2c66d; vector-effect: non-scaling-stroke; }
     `}</style>
     <defs><clipPath id="sky-frame"><rect width={width} height={height} /></clipPath></defs>
@@ -116,6 +122,7 @@ export function AstroOverlay({
     </g>
     {encompassing.length > 0 && <text
       className="overlay-label encompassing-label"
+      fill="#aee8ff"
       x={fontSize}
       y={height - fontSize}
       fontSize={fontSize}
@@ -143,20 +150,23 @@ export function AstroOverlay({
           x2: object.x + Math.cos(angle) * a * 2.4,
           y2: object.y + Math.sin(angle) * a * 2.4,
         }
-        return <g key={`${object.kind}-${object.name}-${object.x}-${object.y}-${index}`} style={{ color }}>
+        return <g key={`${object.kind}-${object.name}-${object.x}-${object.y}-${index}`} data-kind={object.kind}>
           {moving || transient ? <>
             <path
               className="object-marker"
+              stroke={color}
               strokeWidth={stroke * 1.5}
               d={`M ${object.x} ${object.y - a} L ${object.x + a} ${object.y} L ${object.x} ${object.y + a} L ${object.x - a} ${object.y} Z`}
             />
-            {moving && <line className="object-marker" strokeWidth={stroke * 1.5} {...trail} />}
+            {moving && <line className="object-marker" stroke={color} strokeWidth={stroke * 1.5} {...trail} />}
           </> : namedStar ? <path
             className="object-marker"
+            stroke={color}
             strokeWidth={stroke}
             d={`M ${object.x - a} ${object.y} H ${object.x - a / 3} M ${object.x + a / 3} ${object.y} H ${object.x + a}`}
           /> : <ellipse
             className="object-marker"
+            stroke={color}
             strokeWidth={stroke}
             cx={0}
             cy={0}
@@ -166,6 +176,7 @@ export function AstroOverlay({
           />}
           <text
             className="overlay-label"
+            fill={color}
             x={object.x}
             y={labelY(object)}
             textAnchor="middle"

@@ -100,6 +100,15 @@ impl AnnotationEngine {
             solution.objects.clone()
         };
         let mut versions = Vec::new();
+        let mut available = BTreeMap::from([
+            ("deep_sky".into(), false),
+            ("named_stars".into(), false),
+            ("field_stars".into(), self.stars.is_some()),
+            ("transients".into(), false),
+            ("historical_transients".into(), false),
+            ("minor_bodies".into(), false),
+            ("grid".into(), true),
+        ]);
 
         if let Some(version) = &self.star_version {
             versions.push(format!("stars:{version}"));
@@ -107,6 +116,8 @@ impl AnnotationEngine {
         if let Some(catalog) = &self.objects
             && let Some((catalog, version)) = catalog.current()
         {
+            available.insert("deep_sky".into(), true);
+            available.insert("named_stars".into(), true);
             versions.push(format!("objects:{version}"));
             append_object_catalog(
                 &mut objects,
@@ -121,6 +132,8 @@ impl AnnotationEngine {
         if let Some(catalog) = &self.transients
             && let Some((catalog, version)) = catalog.current()
         {
+            available.insert("transients".into(), true);
+            available.insert("historical_transients".into(), true);
             versions.push(format!("transients:{version}"));
             if options.transients {
                 append_object_catalog(
@@ -150,12 +163,21 @@ impl AnnotationEngine {
             if options.minor_bodies
                 && let Some(capture_time) = capture_time
             {
+                available.insert("minor_bodies".into(), true);
                 append_minor_bodies(&mut objects, &catalog, &wcs, dimensions, capture_time);
             }
         }
 
-        let mut counts = BTreeMap::new();
+        let mut counts = BTreeMap::from([
+            ("deep_sky".into(), 0),
+            ("named_stars".into(), 0),
+            ("field_stars".into(), 0),
+            ("transients".into(), 0),
+            ("historical_transients".into(), 0),
+            ("minor_bodies".into(), 0),
+        ]);
         for object in &objects {
+            available.insert(layer_name(&object.kind).to_owned(), true);
             *counts
                 .entry(layer_name(&object.kind).to_owned())
                 .or_insert(0) += 1;
@@ -171,6 +193,7 @@ impl AnnotationEngine {
                 versions.join(";")
             },
             capture_time,
+            available,
             counts,
             objects,
         }
