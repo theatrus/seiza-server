@@ -1,4 +1,9 @@
+import Uppy from '@uppy/core'
+import Tus from '@uppy/tus'
+
 export type JobStatus = 'queued' | 'solving' | 'succeeded' | 'failed'
+
+const uploadChunkBytes = 5 * 1024 * 1024
 
 export interface SolveOptions {
   center_ra_deg?: number
@@ -88,11 +93,64 @@ async function expectJson<T>(response: Response): Promise<T> {
   return payload
 }
 
-export async function submitSolve(file: File, options: SolveOptions): Promise<Job> {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('options', JSON.stringify(options))
-  return expectJson<Job>(await fetch('/api/v1/solves', { method: 'POST', body: form }))
+export async function submitSolve(
+  file: File,
+  options: SolveOptions,
+  onProgress?: (progress: number) => void,
+): Promise<Job> {
+  const uppy = new Uppy({
+    id: `seiza-solve-${file.name}-${file.size}-${file.lastModified}`,
+    autoProceed: false,
+    restrictions: { maxNumberOfFiles: 1 },
+  })
+  uppy.use(Tus, {
+    endpoint: '/api/v1/uploads',
+    chunkSize: uploadChunkBytes,
+    retryDelays: [0, 1_000, 3_000, 5_000],
+    limit: 1,
+    allowedMetaFields: false,
+    onBeforeRequest: (request, uploadedFile) => {
+      request.setHeader('Upload-Metadata', [
+        ['filename', uploadedFile.name],
+        ['filetype', uploadedFile.type || 'application/octet-stream'],
+        ['options', JSON.stringify(options)],
+      ].map(([key, value]) => `${key} ${base64Metadata(value)}`).join(','))
+    },
+  })
+  if (onProgress) uppy.on('progress', onProgress)
+  uppy.addFile({
+    name: file.name,
+    type: file.type,
+    data: file,
+  })
+  try {
+    const result = await uppy.upload()
+    const failed = result?.failed ?? []
+    if (failed.length > 0) {
+      throw failed[0].error ?? new Error('Upload failed')
+    }
+    const uploaded = result?.successful?.[0]
+    const uploadUrl = uploaded?.uploadURL ?? uploaded?.response?.uploadURL
+    if (!uploadUrl) throw new Error('Upload completed without a result URL')
+    return expectJson<Job>(await fetch(`${uploadUrl}/result`))
+  } finally {
+    const tus = uppy.getPlugin('Tus')
+    for (const uploadedFile of uppy.getFiles()) {
+      // Stop local requests without sending TUS termination. Keeping the
+      // fingerprint and server session is what makes a later retry resumable.
+      tus?.resetUploaderReferences(uploadedFile.id, { abort: false })
+    }
+    uppy.destroy()
+  }
+}
+
+function base64Metadata(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 8_192) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8_192))
+  }
+  return btoa(binary)
 }
 
 export async function getSolve(jobId: string): Promise<Job> {

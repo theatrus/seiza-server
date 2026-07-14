@@ -4,8 +4,9 @@
 
 ```mermaid
 flowchart LR
-    Browser["React / Vite UI"] --> API["Axum API"]
+    Browser["React / Vite UI"] --> Upload["TUS resumable upload\n5 MiB chunks"]
     Client["Native or Astrometry-compatible client"] --> API
+    Upload --> API["Axum API"]
     API --> Admission["Auth stub + token bucket"]
     Admission --> Store["Object store\nlocal disk or S3"]
     Store --> Queue["Durable SQLx or DynamoDB\nweighted-LRU priority queue"]
@@ -55,6 +56,7 @@ Admission is separate and uses a token bucket per client/IP. It returns HTTP
 | Concern | Local baseline | AWS deployment | Horizontal production step |
 | --- | --- | --- | --- |
 | Original image | `SEIZA_DATA_DIR/objects` | S3 | Server sweep plus lifecycle defense-in-depth |
+| In-progress upload | object-store manifest + chunks | S3 manifest + chunks | Shared object store; resumable across API restarts |
 | Catalog | local readonly path | EFS or immutable image layer | Versioned catalog release |
 | Job record | SQLx SQLite file | DynamoDB or SQLx PostgreSQL | DynamoDB or SQLx PostgreSQL |
 | Scheduler | SQLx transaction | job store + SQS notification outbox | durable job store plus queue outbox |
@@ -80,6 +82,14 @@ Catalog annotations are regenerated from that WCS, so catalog upgrades do not
 require a new solve. No schema-specific expiration process is required, so the
 same policy works with SQLite, PostgreSQL, and DynamoDB. Production S3 buckets
 should also use a matching lifecycle rule to cover interrupted cleanup.
+
+The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. A random
+upload-session URL identifies a manifest stored beside its chunks in the
+selected object store. `HEAD` returns the durable byte offset, so a client can
+resume after a browser, network, or API-process interruption. Finalization is
+idempotent: the jobs table enforces one row per private object key, and a lost
+completion response reuses that row rather than queueing the image twice.
+Partial sessions follow the same retention sweep as completed originals.
 
 Preview PNGs are generated on demand rather than stored as additional durable
 objects. The web client renders the preview as the base image and places a

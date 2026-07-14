@@ -117,6 +117,7 @@ function HomePage() {
 function SolvePage() {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -152,9 +153,10 @@ function SolvePage() {
       options.capture_time = parsed.toISOString()
     }
     setSubmitting(true)
+    setUploadProgress(0)
     setError(null)
     try {
-      const job = await submitSolve(file, options)
+      const job = await submitSolve(file, options, setUploadProgress)
       navigate(`/solutions/${job.id}`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Upload failed')
@@ -166,7 +168,7 @@ function SolvePage() {
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Queue a new image.</h1>
-      <p className="intro">Your solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="intro">Your image uploads in resumable chunks, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -194,7 +196,11 @@ function SolvePage() {
             <label>Hint scale tolerance<input name="scale_tolerance" type="number" min="0.01" max="1" step="0.01" placeholder="0.2" /></label>
           </div>
         </details>
-        <button className="button" disabled={submitting}>{submitting ? 'Queueing…' : 'Queue solve'}</button>
+        {submitting && <div className="upload-progress" aria-live="polite">
+          <progress max="100" value={uploadProgress} />
+          <span>Uploading resumably · {uploadProgress}%</span>
+        </div>}
+        <button className="button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : 'Queue solve'}</button>
       </form>
     </section>
     {error && <p className="error" role="alert">{error}</p>}

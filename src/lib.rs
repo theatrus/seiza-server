@@ -10,4 +10,5 @@ pub mod repository;
 pub mod solver;
 pub mod storage;
 pub mod transport;
+pub mod uploads;
 pub mod worker;

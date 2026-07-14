@@ -11,23 +11,27 @@ use crate::{
     solver::{SolverEngine, capture_time_from_bytes, dimensions_from_bytes, full_png, preview_png},
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
+    uploads::{ResumableUpload, ResumableUploadError, TUS_EXTENSIONS, TUS_VERSION},
 };
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
+use base64::Engine;
 use bytes::Bytes;
 use chrono::{Duration as ChronoDuration, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     hash::{Hash, Hasher},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime},
 };
+use tokio::sync::Mutex;
 use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -45,6 +49,7 @@ pub struct AppState {
     store: Arc<dyn ObjectStore>,
     solver: SolverEngine,
     annotations: AnnotationEngine,
+    upload_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
 }
 
 impl AppState {
@@ -68,6 +73,7 @@ impl AppState {
             store,
             solver,
             annotations,
+            upload_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -292,27 +298,59 @@ impl AppState {
             .check(&client.id)
             .await
             .map_err(ApiError::rate_limited)?;
-        let extension = safe_extension(&upload.filename);
-        let prefix = self.config.s3_prefix.trim_matches('/');
-        let public_token = Uuid::new_v4();
-        let storage_token = Uuid::now_v7();
-        let object_key = if prefix.is_empty() {
-            format!("public-{public_token}/{storage_token}.{extension}")
-        } else {
-            format!("{prefix}/public-{public_token}/{storage_token}.{extension}")
-        };
+        let object_key = self.new_object_key(&upload.filename);
         self.store
             .put(&object_key, upload.data, upload.content_type.as_deref())
             .await
             .map_err(ApiError::internal)?;
+        let job = self
+            .enqueue_stored(
+                client,
+                object_key,
+                upload.filename,
+                upload.content_type,
+                options,
+            )
+            .await?;
+        self.job_response(&job)
+    }
+
+    fn new_object_key(&self, filename: &str) -> String {
+        let extension = safe_extension(filename);
+        let prefix = self.config.s3_prefix.trim_matches('/');
+        let public_token = Uuid::new_v4();
+        let storage_token = Uuid::now_v7();
+        if prefix.is_empty() {
+            format!("public-{public_token}/{storage_token}.{extension}")
+        } else {
+            format!("{prefix}/public-{public_token}/{storage_token}.{extension}")
+        }
+    }
+
+    async fn enqueue_stored(
+        &self,
+        client: Client,
+        object_key: String,
+        original_filename: String,
+        content_type: Option<String>,
+        options: SolveOptions,
+    ) -> Result<JobRecord, ApiError> {
+        if let Some(job) = self
+            .repository
+            .find_by_object_key(&object_key)
+            .await
+            .map_err(ApiError::internal)?
+        {
+            return Ok(job);
+        }
         let created_at = Utc::now();
         let job = JobRecord {
             id: 0,
             owner: client.id.clone(),
             queue_weight: client.queue_weight,
             object_key,
-            original_filename: upload.filename,
-            content_type: upload.content_type,
+            original_filename,
+            content_type,
             options,
             status: JobStatus::Queued,
             created_at,
@@ -338,7 +376,66 @@ impl AppState {
                 }
             }
         }
-        self.job_response(&job)
+        Ok(job)
+    }
+
+    async fn upload_lock(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.upload_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(id.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
+    async fn finalize_resumable(
+        &self,
+        upload: &mut ResumableUpload,
+    ) -> Result<JobRecord, ApiError> {
+        if let Some(job_id) = upload.job_id {
+            return self
+                .repository
+                .get(job_id)
+                .await
+                .map_err(ApiError::internal)?
+                .ok_or_else(|| ApiError::internal("completed upload job is missing"));
+        }
+        let bytes = upload
+            .assemble(&self.store)
+            .await
+            .map_err(resumable_api_error)?;
+        if upload.options.capture_time.is_none() {
+            upload.options.capture_time =
+                capture_time_from_bytes(&bytes, &upload.original_filename);
+        }
+        self.store
+            .put(&upload.object_key, bytes, upload.content_type.as_deref())
+            .await
+            .map_err(ApiError::internal)?;
+        let job = self
+            .enqueue_stored(
+                Client {
+                    id: upload.owner.clone(),
+                    queue_weight: upload.queue_weight,
+                },
+                upload.object_key.clone(),
+                upload.original_filename.clone(),
+                upload.content_type.clone(),
+                upload.options.clone(),
+            )
+            .await?;
+        upload.job_id = Some(job.id);
+        upload
+            .save(&self.store, &self.config.s3_prefix)
+            .await
+            .map_err(resumable_api_error)?;
+        upload.cleanup_chunks(&self.store).await;
+        if let Err(error) = upload.save(&self.store, &self.config.s3_prefix).await {
+            tracing::warn!(upload_id = %upload.id, %error, "could not compact completed upload state");
+        }
+        Ok(job)
     }
 }
 
@@ -347,6 +444,20 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/solves", post(post_solve))
+        .route(
+            "/api/v1/uploads",
+            post(create_resumable_upload).options(resumable_upload_options),
+        )
+        .route(
+            "/api/v1/uploads/{upload_id}",
+            patch(patch_resumable_upload)
+                .head(head_resumable_upload)
+                .delete(delete_resumable_upload),
+        )
+        .route(
+            "/api/v1/uploads/{upload_id}/result",
+            get(get_resumable_upload_result),
+        )
         .route("/api/v1/solves/{job_id}", get(get_solve))
         .route(
             "/api/v1/solves/{job_id}/annotations",
@@ -401,11 +512,28 @@ pub fn router(state: AppState) -> Router {
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([http::Method::GET, http::Method::POST])
+                .allow_methods([
+                    http::Method::GET,
+                    http::Method::POST,
+                    http::Method::PATCH,
+                    http::Method::DELETE,
+                    http::Method::HEAD,
+                    http::Method::OPTIONS,
+                ])
                 .allow_headers([
                     header::CONTENT_TYPE,
                     header::AUTHORIZATION,
                     http::HeaderName::from_static("x-api-key"),
+                    http::HeaderName::from_static("tus-resumable"),
+                    http::HeaderName::from_static("upload-length"),
+                    http::HeaderName::from_static("upload-offset"),
+                    http::HeaderName::from_static("upload-metadata"),
+                ])
+                .expose_headers([
+                    header::LOCATION,
+                    http::HeaderName::from_static("tus-resumable"),
+                    http::HeaderName::from_static("upload-length"),
+                    http::HeaderName::from_static("upload-offset"),
                 ]),
         )
         .layer(TraceLayer::new_for_http())
@@ -426,6 +554,282 @@ async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
         "queue_transport": match state.config.queue_transport { crate::config::QueueDelivery::Local => "local", crate::config::QueueDelivery::Sqs => "sqs" },
         "embedded_workers": state.config.embedded_workers,
     })))
+}
+
+async fn resumable_upload_options(State(state): State<AppState>) -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        tus_headers(state.config.max_upload_bytes),
+    )
+        .into_response()
+}
+
+async fn create_resumable_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    verify_tus_version(&headers)?;
+    let client = client_from_headers(&state, &headers, None)?;
+    state
+        .limiter
+        .check(&client.id)
+        .await
+        .map_err(ApiError::rate_limited)?;
+    let total_size = required_u64_header(&headers, "upload-length")?;
+    if total_size == 0 {
+        return Err(ApiError::bad_request("uploaded image must not be empty"));
+    }
+    if total_size > state.config.max_upload_bytes as u64 {
+        return Err(ApiError::payload_too_large());
+    }
+    let metadata = parse_upload_metadata(&headers)?;
+    let original_filename = metadata
+        .get("filename")
+        .map(|filename| safe_filename(filename))
+        .filter(|filename| !filename.is_empty())
+        .ok_or_else(|| ApiError::bad_request("Upload-Metadata must include filename"))?;
+    let content_type = metadata
+        .get("filetype")
+        .filter(|value| !value.is_empty() && value.len() <= 255)
+        .cloned();
+    let options = metadata
+        .get("options")
+        .map(|raw| {
+            serde_json::from_str::<SolveOptions>(raw)
+                .map_err(|error| ApiError::bad_request(format!("invalid options JSON: {error}")))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    options.validate().map_err(ApiError::bad_request)?;
+    let object_key = state.new_object_key(&original_filename);
+    let upload = ResumableUpload::new(
+        original_filename,
+        content_type,
+        total_size,
+        object_key,
+        options,
+        client.id,
+        client.queue_weight,
+    );
+    upload
+        .save(&state.store, &state.config.s3_prefix)
+        .await
+        .map_err(resumable_api_error)?;
+
+    let mut response_headers = tus_headers(state.config.max_upload_bytes);
+    response_headers.insert(
+        header::LOCATION,
+        HeaderValue::from_str(&format!("/api/v1/uploads/{}", upload.id))
+            .map_err(ApiError::internal)?,
+    );
+    response_headers.insert(
+        http::HeaderName::from_static("upload-offset"),
+        HeaderValue::from_static("0"),
+    );
+    Ok((StatusCode::CREATED, response_headers).into_response())
+}
+
+async fn head_resumable_upload(
+    State(state): State<AppState>,
+    Path(upload_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    verify_tus_version(&headers)?;
+    let client = client_from_headers(&state, &headers, None)?;
+    let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
+        .await
+        .map_err(resumable_api_error)?;
+    ensure_upload_owner(&upload, &client)?;
+    let mut response_headers = tus_headers(state.config.max_upload_bytes);
+    insert_u64_header(&mut response_headers, "upload-offset", upload.offset)?;
+    insert_u64_header(&mut response_headers, "upload-length", upload.total_size)?;
+    response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok((StatusCode::OK, response_headers).into_response())
+}
+
+async fn patch_resumable_upload(
+    State(state): State<AppState>,
+    Path(upload_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    verify_tus_version(&headers)?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if content_type != "application/offset+octet-stream" {
+        return Err(ApiError::bad_request(
+            "chunk Content-Type must be application/offset+octet-stream",
+        ));
+    }
+    let client = client_from_headers(&state, &headers, None)?;
+    let offset = required_u64_header(&headers, "upload-offset")?;
+    let lock = state.upload_lock(&upload_id).await;
+    let _guard = lock.lock().await;
+    let mut upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
+        .await
+        .map_err(resumable_api_error)?;
+    ensure_upload_owner(&upload, &client)?;
+    let new_offset = upload
+        .append(&state.store, &state.config.s3_prefix, offset, body)
+        .await
+        .map_err(resumable_api_error)?;
+    if new_offset == upload.total_size {
+        state.finalize_resumable(&mut upload).await?;
+    }
+    let mut response_headers = tus_headers(state.config.max_upload_bytes);
+    insert_u64_header(&mut response_headers, "upload-offset", new_offset)?;
+    Ok((StatusCode::NO_CONTENT, response_headers).into_response())
+}
+
+async fn delete_resumable_upload(
+    State(state): State<AppState>,
+    Path(upload_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    verify_tus_version(&headers)?;
+    let client = client_from_headers(&state, &headers, None)?;
+    let lock = state.upload_lock(&upload_id).await;
+    let _guard = lock.lock().await;
+    let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
+        .await
+        .map_err(resumable_api_error)?;
+    ensure_upload_owner(&upload, &client)?;
+    upload
+        .terminate(&state.store, &state.config.s3_prefix)
+        .await
+        .map_err(resumable_api_error)?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        tus_headers(state.config.max_upload_bytes),
+    )
+        .into_response())
+}
+
+async fn get_resumable_upload_result(
+    State(state): State<AppState>,
+    Path(upload_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<JobResponse>, ApiError> {
+    let client = client_from_headers(&state, &headers, None)?;
+    let lock = state.upload_lock(&upload_id).await;
+    let _guard = lock.lock().await;
+    let mut upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
+        .await
+        .map_err(resumable_api_error)?;
+    ensure_upload_owner(&upload, &client)?;
+    if upload.offset != upload.total_size {
+        return Err(ApiError::artifact_not_ready(format!(
+            "upload has received {} of {} bytes",
+            upload.offset, upload.total_size
+        )));
+    }
+    let job = state.finalize_resumable(&mut upload).await?;
+    Ok(Json(state.job_response(&job)?))
+}
+
+fn tus_headers(max_upload_bytes: usize) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::HeaderName::from_static("tus-resumable"),
+        HeaderValue::from_static(TUS_VERSION),
+    );
+    headers.insert(
+        http::HeaderName::from_static("tus-version"),
+        HeaderValue::from_static(TUS_VERSION),
+    );
+    headers.insert(
+        http::HeaderName::from_static("tus-extension"),
+        HeaderValue::from_static(TUS_EXTENSIONS),
+    );
+    if let Ok(value) = HeaderValue::from_str(&max_upload_bytes.to_string()) {
+        headers.insert(http::HeaderName::from_static("tus-max-size"), value);
+    }
+    headers
+}
+
+fn verify_tus_version(headers: &HeaderMap) -> Result<(), ApiError> {
+    match headers
+        .get("tus-resumable")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(TUS_VERSION) => Ok(()),
+        _ => Err(ApiError::bad_request(format!(
+            "Tus-Resumable must be {TUS_VERSION}"
+        ))),
+    }
+}
+
+fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, ApiError> {
+    headers
+        .get(name)
+        .ok_or_else(|| ApiError::bad_request(format!("missing {name} header")))?
+        .to_str()
+        .map_err(ApiError::bad_request)?
+        .parse()
+        .map_err(|_| ApiError::bad_request(format!("invalid {name} header")))
+}
+
+fn insert_u64_header(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: u64,
+) -> Result<(), ApiError> {
+    headers.insert(
+        http::HeaderName::from_static(name),
+        HeaderValue::from_str(&value.to_string()).map_err(ApiError::internal)?,
+    );
+    Ok(())
+}
+
+fn parse_upload_metadata(headers: &HeaderMap) -> Result<HashMap<String, String>, ApiError> {
+    let Some(raw) = headers
+        .get("upload-metadata")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Ok(HashMap::new());
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (key, encoded) = pair.split_once(' ').unwrap_or((pair, ""));
+            let value = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|_| ApiError::bad_request("invalid base64 Upload-Metadata value"))?;
+            let value = String::from_utf8(value)
+                .map_err(|_| ApiError::bad_request("Upload-Metadata value is not UTF-8"))?;
+            Ok((key.to_owned(), value))
+        })
+        .collect()
+}
+
+fn ensure_upload_owner(upload: &ResumableUpload, client: &Client) -> Result<(), ApiError> {
+    if upload.owner == client.id {
+        Ok(())
+    } else {
+        Err(ApiError::not_found_message("upload session not found"))
+    }
+}
+
+fn resumable_api_error(error: ResumableUploadError) -> ApiError {
+    match error {
+        ResumableUploadError::NotFound => ApiError::not_found_message("upload session not found"),
+        ResumableUploadError::OffsetMismatch { expected, actual } => ApiError::upload_conflict(
+            format!("upload offset mismatch: expected {expected}, received {actual}"),
+        ),
+        ResumableUploadError::ExceedsLength => {
+            ApiError::bad_request("upload chunk exceeds declared file length")
+        }
+        ResumableUploadError::Incomplete { offset, total } => {
+            ApiError::artifact_not_ready(format!("upload has received {offset} of {total} bytes"))
+        }
+        ResumableUploadError::Completed => {
+            ApiError::upload_conflict("upload has already completed")
+        }
+        ResumableUploadError::Internal(error) => ApiError::internal(error),
+    }
 }
 
 async fn post_solve(
@@ -1176,6 +1580,7 @@ impl AstroUploadRequest {
     }
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     code: &'static str,
@@ -1215,6 +1620,14 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             code: "lease_conflict",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
+    fn upload_conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "upload_conflict",
             message: message.into(),
             retry_after: None,
         }
@@ -1281,6 +1694,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{JobBackend, QueueDelivery, StorageBackend};
 
     #[test]
     fn public_solution_locators_require_the_random_upload_token() {
@@ -1306,5 +1720,146 @@ mod tests {
         assert!(!public_id_matches_job(&locator, 43, &new_key));
         assert_eq!(public_job_sequence("42"), None);
         assert_eq!(public_job_sequence("42-not-a-token"), None);
+    }
+
+    #[tokio::test]
+    async fn resumable_upload_survives_restart_and_queues_once() {
+        let root = std::env::temp_dir().join(format!("seiza-api-upload-{}", Uuid::now_v7()));
+        let config = test_config(&root);
+        let state = AppState::new(config.clone()).await.unwrap();
+        let mut create_headers = tus_request_headers();
+        create_headers.insert("upload-length", HeaderValue::from_static("8"));
+        let metadata = [
+            ("filename", "field.fits"),
+            ("filetype", "application/fits"),
+            ("options", "{}"),
+        ]
+        .map(|(key, value)| {
+            format!(
+                "{key} {}",
+                base64::engine::general_purpose::STANDARD.encode(value)
+            )
+        })
+        .join(",");
+        create_headers.insert("upload-metadata", HeaderValue::from_str(&metadata).unwrap());
+        let response = create_resumable_upload(State(state.clone()), create_headers)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let location = response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let upload_id = location.rsplit('/').next().unwrap().to_owned();
+
+        let first = patch_resumable_upload(
+            State(state.clone()),
+            Path(upload_id.clone()),
+            chunk_headers(0),
+            Bytes::from_static(b"abcd"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.status(), StatusCode::NO_CONTENT);
+        assert_eq!(first.headers()["upload-offset"], "4");
+        drop(state);
+
+        let restarted = AppState::new(config).await.unwrap();
+        let head = head_resumable_upload(
+            State(restarted.clone()),
+            Path(upload_id.clone()),
+            tus_request_headers(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(head.headers()["upload-offset"], "4");
+        let mismatch = patch_resumable_upload(
+            State(restarted.clone()),
+            Path(upload_id.clone()),
+            chunk_headers(0),
+            Bytes::from_static(b"bad"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(mismatch.status, StatusCode::CONFLICT);
+
+        patch_resumable_upload(
+            State(restarted.clone()),
+            Path(upload_id.clone()),
+            chunk_headers(4),
+            Bytes::from_static(b"efgh"),
+        )
+        .await
+        .unwrap();
+        let Json(first_result) = get_resumable_upload_result(
+            State(restarted.clone()),
+            Path(upload_id.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        let Json(second_result) = get_resumable_upload_result(
+            State(restarted.clone()),
+            Path(upload_id),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_result.id, second_result.id);
+        assert_eq!(first_result.original_filename, "field.fits");
+        assert_eq!(first_result.status, JobStatus::Queued);
+        assert_eq!(restarted.repository.queue_depth().await.unwrap(), 1);
+
+        drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn tus_request_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("tus-resumable", HeaderValue::from_static(TUS_VERSION));
+        headers
+    }
+
+    fn chunk_headers(offset: u64) -> HeaderMap {
+        let mut headers = tus_request_headers();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/offset+octet-stream"),
+        );
+        headers.insert(
+            "upload-offset",
+            HeaderValue::from_str(&offset.to_string()).unwrap(),
+        );
+        headers
+    }
+
+    fn test_config(root: &std::path::Path) -> Config {
+        Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            frontend_dir: root.join("frontend"),
+            data_dir: root.to_owned(),
+            catalog_path: None,
+            object_catalog_path: None,
+            transient_catalog_path: None,
+            minor_body_catalog_path: None,
+            job_backend: JobBackend::Sqlx,
+            sql_database_url: format!("sqlite://{}?mode=rwc", root.join("jobs.sqlite3").display()),
+            dynamodb_table: None,
+            queue_transport: QueueDelivery::Local,
+            sqs_queue_url: None,
+            embedded_workers: false,
+            worker_token: None,
+            lease_seconds: 900,
+            worker_count: 1,
+            max_upload_bytes: 1_024,
+            upload_retention_seconds: 86_400,
+            upload_cleanup_interval_seconds: 3_600,
+            rate_limit_per_minute: 60.0,
+            rate_limit_burst: 10.0,
+            auth_mode: AuthMode::Public,
+            storage_backend: StorageBackend::Local,
+            s3_bucket: None,
+            s3_prefix: "uploads".into(),
+        }
     }
 }

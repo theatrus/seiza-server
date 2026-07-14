@@ -16,6 +16,7 @@ use uuid::Uuid;
 pub trait JobRepository: Send + Sync {
     async fn enqueue(&self, job: JobRecord) -> Result<JobRecord>;
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>>;
+    async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>>;
     async fn queue_depth(&self) -> Result<usize>;
     async fn claim(
         &self,
@@ -89,6 +90,7 @@ impl SqlxJobRepository {
             "CREATE TABLE IF NOT EXISTS jobs (id BIGINT PRIMARY KEY, owner TEXT NOT NULL, queue_weight DOUBLE PRECISION NOT NULL, object_key TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, solution_json TEXT, error TEXT, lease_token TEXT, lease_expires_at TEXT, attempts BIGINT NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at)",
             "CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status, lease_expires_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS jobs_object_key_idx ON jobs(object_key)",
             "CREATE TABLE IF NOT EXISTS client_service (owner TEXT PRIMARY KEY, last_served_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS queue_outbox (job_id BIGINT PRIMARY KEY, delivered_at TEXT)",
             "INSERT INTO queue_counters (name, value) VALUES ('jobs', 0) ON CONFLICT(name) DO NOTHING",
@@ -187,7 +189,7 @@ impl JobRepository for SqlxJobRepository {
         .await?;
         job.id = job_id(row.try_get::<i64, _>("value")?)?;
         job.status = JobStatus::Queued;
-        sqlx::query("INSERT INTO jobs (id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8)")
+        let inserted = sqlx::query("INSERT INTO jobs (id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8) ON CONFLICT(object_key) DO NOTHING")
             .bind(as_i64(job.id)?)
             .bind(&job.owner)
             .bind(job.queue_weight)
@@ -198,6 +200,13 @@ impl JobRepository for SqlxJobRepository {
             .bind(encode_time(job.created_at))
             .execute(&mut *transaction)
             .await?;
+        if inserted.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return self
+                .find_by_object_key(&job.object_key)
+                .await?
+                .context("idempotent SQL enqueue could not find the existing job");
+        }
         sqlx::query("INSERT INTO queue_outbox (job_id, delivered_at) VALUES ($1, NULL)")
             .bind(as_i64(job.id)?)
             .execute(&mut *transaction)
@@ -209,6 +218,15 @@ impl JobRepository for SqlxJobRepository {
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>> {
         sqlx::query("SELECT * FROM jobs WHERE id = $1")
             .bind(as_i64(job_id)?)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(record_from_row)
+            .transpose()
+    }
+
+    async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>> {
+        sqlx::query("SELECT * FROM jobs WHERE object_key = $1")
+            .bind(object_key)
             .fetch_optional(&self.pool)
             .await?
             .map(record_from_row)
@@ -441,7 +459,7 @@ mod tests {
             id: 0,
             owner: owner.into(),
             queue_weight: 1.0,
-            object_key: "test.fits".into(),
+            object_key: format!("test-{owner}-{}.fits", Uuid::now_v7()),
             original_filename: "test.fits".into(),
             content_type: None,
             options: SolveOptions::default(),
@@ -472,6 +490,17 @@ mod tests {
             repository.claim(None, 60).await.unwrap().unwrap().job_id,
             repeated.id
         );
+    }
+
+    #[tokio::test]
+    async fn enqueue_is_idempotent_for_an_uploaded_object() {
+        let repository = repository().await;
+        let upload = job("client");
+        let first = repository.enqueue(upload.clone()).await.unwrap();
+        let repeated = repository.enqueue(upload).await.unwrap();
+
+        assert_eq!(repeated.id, first.id);
+        assert_eq!(repository.queue_depth().await.unwrap(), 1);
     }
 
     #[tokio::test]
