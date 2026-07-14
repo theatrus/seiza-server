@@ -333,7 +333,11 @@ async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, so
     { type: 'image/svg+xml;charset=utf-8' },
   ))
   try {
-    const [sourceImage, overlayImage] = await Promise.all([loadImage(sourceUrl), loadImage(overlayUrl)])
+    const [sourceImage, overlayImage, seizaMark] = await Promise.all([
+      loadImage(sourceUrl),
+      loadImage(overlayUrl),
+      loadImage('/seiza-mark.png?watermark=1'),
+    ])
     const canvas = document.createElement('canvas')
     canvas.width = solution.image_width
     canvas.height = solution.image_height
@@ -341,6 +345,7 @@ async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, so
     if (!context) throw new Error('this browser does not provide a 2D canvas')
     context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
     context.drawImage(overlayImage, 0, 0, canvas.width, canvas.height)
+    drawSeizaWatermark(context, seizaMark, canvas.width, canvas.height)
     const png = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
       (value) => value ? resolve(value) : reject(new Error('the browser could not encode the PNG')),
       'image/png',
@@ -355,6 +360,55 @@ async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, so
     URL.revokeObjectURL(sourceUrl)
     URL.revokeObjectURL(overlayUrl)
   }
+}
+
+function drawSeizaWatermark(
+  context: CanvasRenderingContext2D,
+  logo: HTMLImageElement,
+  width: number,
+  height: number,
+) {
+  let scale = Math.max(0.4, Math.min(width / 1_600, height / 1_200, 3.5))
+  const measure = () => {
+    context.font = `700 ${Math.round(27 * scale)}px ui-sans-serif, system-ui, sans-serif`
+    const titleWidth = context.measureText('Solved with Seiza').width
+    context.font = `600 ${Math.round(20 * scale)}px ui-sans-serif, system-ui, sans-serif`
+    const urlWidth = context.measureText('seiza.fyi').width
+    return Math.max(titleWidth, urlWidth)
+  }
+  const naturalWidth = () => 22 * scale + 64 * scale + 18 * scale + measure() + 24 * scale
+  if (naturalWidth() > width * 0.92) scale *= width * 0.92 / naturalWidth()
+
+  const padding = 18 * scale
+  const logoSize = 64 * scale
+  const gap = 16 * scale
+  const textWidth = measure()
+  const plaqueWidth = padding + logoSize + gap + textWidth + padding
+  const plaqueHeight = Math.max(logoSize + padding * 1.2, 94 * scale)
+  const margin = Math.max(8, Math.min(width, height) * 0.018)
+  const x = width - plaqueWidth - margin
+  const y = height - plaqueHeight - margin
+  const radius = 13 * scale
+
+  context.save()
+  context.beginPath()
+  context.roundRect(x, y, plaqueWidth, plaqueHeight, radius)
+  context.fillStyle = 'rgba(4, 12, 18, .84)'
+  context.fill()
+  context.strokeStyle = 'rgba(125, 219, 232, .72)'
+  context.lineWidth = Math.max(1, 1.5 * scale)
+  context.stroke()
+  context.drawImage(logo, x + padding, y + (plaqueHeight - logoSize) / 2, logoSize, logoSize)
+
+  const textX = x + padding + logoSize + gap
+  context.textBaseline = 'alphabetic'
+  context.font = `700 ${Math.round(27 * scale)}px ui-sans-serif, system-ui, sans-serif`
+  context.fillStyle = '#f5f8f7'
+  context.fillText('Solved with Seiza', textX, y + plaqueHeight * 0.48)
+  context.font = `600 ${Math.round(20 * scale)}px ui-sans-serif, system-ui, sans-serif`
+  context.fillStyle = '#f2c66d'
+  context.fillText('seiza.fyi', textX, y + plaqueHeight * 0.75)
+  context.restore()
 }
 
 function loadImage(url: string) {

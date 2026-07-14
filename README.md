@@ -145,7 +145,8 @@ markers as a transparent React SVG over the preview, with independent controls
 for deep-sky objects, named stars, field stars, transients, minor bodies, and
 historical transients. **Download rendered PNG** fetches the retained image at
 full resolution and composites the currently selected layers into a PNG in the
-browser; it does not download an SVG.
+browser. The exported image carries a small Seiza logo, “Solved with Seiza,”
+and `seiza.fyi` mark; it does not download an SVG.
 
 `GET /api/v1/solves/:public_id/overlay.svg` remains as an optional self-contained
 image output for API clients. Its query supports `objects`, `grid`,

@@ -126,17 +126,19 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await page.getByRole('button', { name: 'Close' }).click()
 })
 
-test('downloads a rendered PNG with the current overlay', async ({ page }) => {
+test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {
   await mockSolution(page)
   await page.goto(`/solutions/${publicId}`)
+  const watermarkPromise = page.waitForRequest((request) => request.url().includes('seiza-mark.png?watermark=1'))
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Download rendered PNG' }).click()
+  await watermarkPromise
   const download = await downloadPromise
   expect(download.suggestedFilename()).toBe(`seiza-solution-${publicId}.png`)
   expect(await download.failure()).toBeNull()
-  const path = await download.path()
-  expect(path).not.toBeNull()
-  const png = await readFile(path!)
+  const path = testInfo.outputPath('seiza-solution-branded.png')
+  await download.saveAs(path)
+  const png = await readFile(path)
   expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10])
   expect(png.readUInt32BE(16)).toBe(solution.image_width)
   expect(png.readUInt32BE(20)).toBe(solution.image_height)

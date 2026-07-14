@@ -86,8 +86,9 @@ objects. The web client renders the preview as the base image and places a
 responsive React SVG over it, independently toggling catalog categories and a
 true WCS-projected RA/Dec graticule. PNG export fetches a full-resolution base
 image and rasterizes the currently selected React overlay into one browser-side
-PNG; users never need to download an SVG. The optional composite SVG API is
-generated on demand for machine clients. Once the original expires,
+PNG, then adds the Seiza logo and `seiza.fyi` attribution plaque; users never
+need to download an SVG. The optional composite SVG API is generated on demand
+for machine clients. Once the original expires,
 image-backed visual artifacts return HTTP 410 while annotation JSON and the
 standards-facing WCS download remain available.
 
