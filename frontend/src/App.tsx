@@ -41,13 +41,13 @@ export default function App() {
     window.addEventListener('popstate', updatePath)
     return () => window.removeEventListener('popstate', updatePath)
   }, [])
-  const solutionMatch = path.match(/^\/solutions\/(\d+)$/)
+  const solutionMatch = path.match(/^\/solutions\/(\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
 
   return <div className="site-shell">
     <SiteHeader />
     {path === '/' && <HomePage />}
     {path === '/solve' && <SolvePage />}
-    {solutionMatch && <SolutionPage jobId={Number(solutionMatch[1])} />}
+    {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
     {path !== '/' && path !== '/solve' && !solutionMatch && <NotFoundPage />}
     <SiteFooter />
   </div>
@@ -166,7 +166,7 @@ function SolvePage() {
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Queue a new image.</h1>
-      <p className="intro">Your solve runs in a background worker. The result gets its own durable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="intro">Your solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -201,7 +201,7 @@ function SolvePage() {
   </main>
 }
 
-function SolutionPage({ jobId }: { jobId: number }) {
+function SolutionPage({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -224,7 +224,7 @@ function SolutionPage({ jobId }: { jobId: number }) {
 
   return <main className="solution-page">
     <header className="solution-heading">
-      <div><p className="eyebrow">SOLUTION #{jobId}</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
+      <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
       {job && <span className={`status ${job.status}`}>{job.status}</span>}
     </header>
     {error && <p className="error" role="alert">{error}</p>}
@@ -314,7 +314,7 @@ function SolutionContent({ job }: { job: Job }) {
   </>
 }
 
-async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, solution: NonNullable<Job['solution']>, jobId: number) {
+async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, solution: NonNullable<Job['solution']>, jobId: string) {
   const separator = previewUrl.includes('?') ? '&' : '?'
   const response = await fetch(`${previewUrl}${separator}full=true`)
   if (!response.ok) throw new Error(`full-resolution image request failed (${response.status})`)

@@ -24,8 +24,9 @@ flowchart LR
 
 The request path stops at enqueue. It does not invoke Seiza, build blind
 indices, or hold the upload socket while detecting stars. That split is the
-core behavior for a shared service: a client always receives a job ID quickly,
-and workers are the only place expensive CPU/memory work can occur.
+core behavior for a shared service: a client always receives an opaque public
+solve ID quickly, and workers are the only place expensive CPU/memory work can
+occur.
 
 ## Queue policy
 
@@ -104,6 +105,12 @@ This boundary keeps HTTP and cloud-queue workers interchangeable while catalog
 updates immediately improve old solution pages. Named stars come from the
 object catalog; an optional field-star layer projects the solve tile catalog
 with a magnitude threshold and result cap.
+
+Native result URLs use `<internal sequence>-<random UUID>`. The sequence keeps
+repository lookups efficient, while the UUID must match the random token stored
+in the private upload key. Sequential `/solutions/1`-style guesses therefore
+do not resolve. Internal workers and queue transports continue to use compact
+numeric IDs; the native result API never accepts those IDs on their own.
 
 ## API compatibility boundary
 

@@ -217,6 +217,16 @@ impl AppState {
             .map_err(ApiError::internal)
     }
 
+    async fn public_job(&self, public_id: &str) -> Result<Option<JobRecord>, ApiError> {
+        let Some(job_id) = public_job_sequence(public_id) else {
+            return Ok(None);
+        };
+        let Some(job) = self.job(job_id).await? else {
+            return Ok(None);
+        };
+        Ok(public_id_matches_job(public_id, job.id, &job.object_key).then_some(job))
+    }
+
     fn input_expires_at(&self, job: &JobRecord) -> chrono::DateTime<Utc> {
         job.created_at + ChronoDuration::seconds(self.config.upload_retention_seconds as i64)
     }
@@ -225,12 +235,14 @@ impl AppState {
         Utc::now() < self.input_expires_at(job)
     }
 
-    fn job_response(&self, job: &JobRecord) -> JobResponse {
+    fn job_response(&self, job: &JobRecord) -> Result<JobResponse, ApiError> {
+        let public_id = public_job_id(job)
+            .ok_or_else(|| ApiError::internal("job object key has no public UUID"))?;
         let input_available = self.input_available(job);
         let solution = job.solution.as_ref().map(|solution| {
             let mut solution = solution.clone();
             let annotations = self.annotations.annotate(
-                job.id,
+                &public_id,
                 &solution,
                 job.options.capture_time,
                 &AnnotationOptions::default(),
@@ -242,8 +254,8 @@ impl AppState {
             solution.capture_time = job.options.capture_time;
             solution
         });
-        JobResponse {
-            id: job.id,
+        Ok(JobResponse {
+            id: public_id.clone(),
             status: job.status,
             created_at: job.created_at,
             started_at: job.started_at,
@@ -251,19 +263,19 @@ impl AppState {
             original_filename: job.original_filename.clone(),
             input_expires_at: self.input_expires_at(job),
             input_available,
-            preview_url: input_available.then(|| format!("/api/v1/solves/{}/preview", job.id)),
+            preview_url: input_available.then(|| format!("/api/v1/solves/{public_id}/preview")),
             overlay_url: (input_available && solution.is_some())
-                .then(|| format!("/api/v1/solves/{}/overlay.svg", job.id)),
+                .then(|| format!("/api/v1/solves/{public_id}/overlay.svg")),
             annotations_url: solution
                 .as_ref()
-                .map(|_| format!("/api/v1/solves/{}/annotations", job.id)),
+                .map(|_| format!("/api/v1/solves/{public_id}/annotations")),
             wcs_url: job
                 .solution
                 .as_ref()
-                .map(|_| format!("/api/v1/solves/{}/wcs", job.id)),
+                .map(|_| format!("/api/v1/solves/{public_id}/wcs")),
             solution,
             error: job.error.clone(),
-        }
+        })
     }
 
     async fn submit(
@@ -282,10 +294,12 @@ impl AppState {
             .map_err(ApiError::rate_limited)?;
         let extension = safe_extension(&upload.filename);
         let prefix = self.config.s3_prefix.trim_matches('/');
+        let public_token = Uuid::new_v4();
+        let storage_token = Uuid::now_v7();
         let object_key = if prefix.is_empty() {
-            format!("{}.{}", Uuid::now_v7(), extension)
+            format!("public-{public_token}/{storage_token}.{extension}")
         } else {
-            format!("{prefix}/{}.{}", Uuid::now_v7(), extension)
+            format!("{prefix}/public-{public_token}/{storage_token}.{extension}")
         };
         self.store
             .put(&object_key, upload.data, upload.content_type.as_deref())
@@ -324,7 +338,7 @@ impl AppState {
                 }
             }
         }
-        Ok(self.job_response(&job))
+        self.job_response(&job)
     }
 }
 
@@ -435,21 +449,24 @@ async fn post_solve(
 
 async fn get_solve(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
 ) -> Result<Json<JobResponse>, ApiError> {
-    state
-        .job(job_id)
+    let job = state
+        .public_job(&public_id)
         .await?
-        .map(|job| Json(state.job_response(&job)))
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(state.job_response(&job)?))
 }
 
 async fn get_solve_preview(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
     Query(query): Query<PreviewQuery>,
 ) -> Result<Response, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
     let content = state
         .store
@@ -480,15 +497,18 @@ struct PreviewQuery {
 
 async fn get_solve_annotations(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
     Query(query): Query<AnnotationQuery>,
 ) -> Result<Json<AnnotationResponse>, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let solution = job.solution.as_ref().ok_or_else(|| {
         ApiError::artifact_not_ready("the solve has not produced annotations yet")
     })?;
     Ok(Json(state.annotations.annotate(
-        job.id,
+        &public_id,
         solution,
         job.options.capture_time,
         &query.options(),
@@ -497,10 +517,13 @@ async fn get_solve_annotations(
 
 async fn get_solve_overlay(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
     Query(query): Query<OverlayQuery>,
 ) -> Result<Response, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ensure_input_available(&state, &job)?;
     let stored_solution = job
         .solution
@@ -511,7 +534,7 @@ async fn get_solve_overlay(
         solution.objects = state
             .annotations
             .annotate(
-                job.id,
+                &public_id,
                 stored_solution,
                 job.options.capture_time,
                 &query.annotations.options(),
@@ -607,9 +630,12 @@ fn default_true() -> bool {
 
 async fn get_solve_wcs(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(public_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let solution = job
         .solution
         .as_ref()
@@ -1034,6 +1060,37 @@ fn safe_filename(filename: &str) -> String {
     }
 }
 
+fn public_job_id(job: &JobRecord) -> Option<String> {
+    public_token_from_object_key(&job.object_key).map(|token| format!("{}-{token}", job.id))
+}
+
+fn public_id_matches_job(public_id: &str, job_id: JobId, object_key: &str) -> bool {
+    public_job_sequence(public_id) == Some(job_id)
+        && public_token_from_object_key(object_key)
+            .map(|token| format!("{job_id}-{token}"))
+            .as_deref()
+            == Some(public_id)
+}
+
+fn public_job_sequence(public_id: &str) -> Option<JobId> {
+    let (sequence, token) = public_id.split_once('-')?;
+    Uuid::parse_str(token).ok()?;
+    sequence.parse().ok()
+}
+
+fn public_token_from_object_key(object_key: &str) -> Option<Uuid> {
+    let mut components = object_key.rsplit('/');
+    let filename = components.next()?;
+    let tagged_parent = components
+        .next()
+        .and_then(|value| value.strip_prefix("public-"))
+        .and_then(|value| Uuid::parse_str(value).ok());
+    tagged_parent.or_else(|| {
+        let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+        Uuid::parse_str(stem).ok()
+    })
+}
+
 fn safe_extension(filename: &str) -> &'static str {
     match filename
         .rsplit('.')
@@ -1218,5 +1275,36 @@ impl IntoResponse for ApiError {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_solution_locators_require_the_random_upload_token() {
+        let public_token = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let legacy_token = Uuid::parse_str("019f5c5d-af6b-7930-b0ca-371b62e32bc0").unwrap();
+        let storage_token = Uuid::parse_str("019f5c5d-af6b-7930-b0ca-371b62e32bc1").unwrap();
+        let new_key = format!("uploads/public-{public_token}/{storage_token}.fits");
+        let legacy_key = format!("uploads/{legacy_token}.fits");
+        let locator = format!("42-{public_token}");
+
+        assert_eq!(public_token_from_object_key(&new_key), Some(public_token));
+        assert_eq!(
+            public_token_from_object_key(&legacy_key),
+            Some(legacy_token)
+        );
+        assert_eq!(public_job_sequence(&locator), Some(42));
+        assert!(public_id_matches_job(&locator, 42, &new_key));
+        assert!(!public_id_matches_job(
+            &format!("42-{storage_token}"),
+            42,
+            &new_key
+        ));
+        assert!(!public_id_matches_job(&locator, 43, &new_key));
+        assert_eq!(public_job_sequence("42"), None);
+        assert_eq!(public_job_sequence("42-not-a-token"), None);
     }
 }

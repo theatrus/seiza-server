@@ -199,7 +199,7 @@ pub struct SolutionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnotationResponse {
-    pub job_id: JobId,
+    pub job_id: String,
     pub catalog_version: String,
     pub capture_time: Option<DateTime<Utc>>,
     pub counts: std::collections::BTreeMap<String, usize>,
@@ -275,7 +275,9 @@ pub struct JobRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResponse {
-    pub id: JobId,
+    /// Opaque public locator. Its queue sequence is never sufficient without
+    /// the independent random token.
+    pub id: String,
     pub status: JobStatus,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,

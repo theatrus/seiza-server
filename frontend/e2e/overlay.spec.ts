@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 const previewPath = fileURLToPath(new URL('../public/seiza-mark.png', import.meta.url))
+const publicId = '42-550e8400-e29b-41d4-a716-446655440000'
 
 const baseObjects = [
   {
@@ -56,24 +57,24 @@ const solution = {
 }
 
 async function mockSolution(page: Page, inputAvailable = true) {
-  await page.route('**/api/v1/solves/42/annotations**', async (route) => route.fulfill({
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
-      job_id: 42,
+      job_id: publicId,
       catalog_version: 'objects:test;stars:test',
       capture_time: '2026-07-13T04:05:06Z',
       counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 1 },
       objects: baseObjects,
     }),
   }))
-  await page.route('**/api/v1/solves/42/preview**', async (route) => route.fulfill({
+  await page.route(`**/api/v1/solves/${publicId}/preview**`, async (route) => route.fulfill({
     contentType: 'image/png',
     path: previewPath,
   }))
-  await page.route('**/api/v1/solves/42', async (route) => route.fulfill({
+  await page.route(`**/api/v1/solves/${publicId}`, async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
-      id: 42,
+      id: publicId,
       status: 'succeeded',
       created_at: '2026-07-13T04:00:00Z',
       started_at: '2026-07-13T04:00:01Z',
@@ -81,10 +82,10 @@ async function mockSolution(page: Page, inputAvailable = true) {
       original_filename: 'M31.fits',
       input_expires_at: '2026-07-14T04:00:00Z',
       input_available: inputAvailable,
-      preview_url: inputAvailable ? '/api/v1/solves/42/preview' : null,
-      overlay_url: inputAvailable ? '/api/v1/solves/42/overlay.svg' : null,
-      annotations_url: '/api/v1/solves/42/annotations',
-      wcs_url: '/api/v1/solves/42/wcs',
+      preview_url: inputAvailable ? `/api/v1/solves/${publicId}/preview` : null,
+      overlay_url: inputAvailable ? `/api/v1/solves/${publicId}/overlay.svg` : null,
+      annotations_url: `/api/v1/solves/${publicId}/annotations`,
+      wcs_url: `/api/v1/solves/${publicId}/wcs`,
       solution,
       error: null,
     }),
@@ -93,7 +94,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
 
 test('keeps the interactive SVG aligned and filters annotation layers', async ({ page }) => {
   await mockSolution(page)
-  await page.goto('/solutions/42')
+  await page.goto(`/solutions/${publicId}`)
   await expect(page.getByRole('heading', { name: 'Explore the solved field' })).toBeVisible()
 
   const imageBox = await page.locator('.sky-frame img').boundingBox()
@@ -127,11 +128,11 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
 
 test('downloads a rendered PNG with the current overlay', async ({ page }) => {
   await mockSolution(page)
-  await page.goto('/solutions/42')
+  await page.goto(`/solutions/${publicId}`)
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Download rendered PNG' }).click()
   const download = await downloadPromise
-  expect(download.suggestedFilename()).toBe('seiza-solution-42.png')
+  expect(download.suggestedFilename()).toBe(`seiza-solution-${publicId}.png`)
   expect(await download.failure()).toBeNull()
   const path = await download.path()
   expect(path).not.toBeNull()
@@ -143,10 +144,20 @@ test('downloads a rendered PNG with the current overlay', async ({ page }) => {
 
 test('keeps calibration and object metadata after the image expires', async ({ page }) => {
   await mockSolution(page, false)
-  await page.goto('/solutions/42')
+  await page.goto(`/solutions/${publicId}`)
   await expect(page.getByText(/expired and deleted/i)).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Complete WCS calibration' })).toBeVisible()
   await page.getByText(/catalog objects in field/).click()
   await expect(page.getByText('Andromeda Galaxy', { exact: true })).toBeVisible()
   await expect(page.locator('.image-stage')).toHaveCount(0)
+})
+
+test('does not treat sequential job numbers as solution URLs', async ({ page }) => {
+  const nativeRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/v1/solves/')) nativeRequests.push(request.url())
+  })
+  await page.goto('/solutions/42')
+  await expect(page.getByRole('heading', { name: 'This point is off the chart.' })).toBeVisible()
+  expect(nativeRequests).toEqual([])
 })

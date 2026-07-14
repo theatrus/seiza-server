@@ -36,10 +36,12 @@ disappears on a process restart.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
-- Every solve has a durable `/solutions/:id` web page. Uploaded originals and
-  derived visual previews expire after one day by default, while the job and
-  its complete WCS and annotation metadata remain available. The React UI
-  renders an interactive SVG layer over the retained image preview.
+- Every solve has a durable `/solutions/:public_id` web page. Its public ID
+  includes a random UUID and cannot be discovered by incrementing the internal
+  queue sequence. Uploaded originals and derived visual previews expire after
+  one day by default, while the job and its complete WCS and annotation
+  metadata remain available. The React UI renders an interactive SVG layer over
+  the retained image preview.
 
 ## Quick start
 
@@ -120,19 +122,20 @@ curl -X POST http://127.0.0.1:8080/api/v1/solves \
   -F 'options={"min_scale_arcsec_per_pixel":0.5,"max_scale_arcsec_per_pixel":15}'
 ```
 
-The response is `202 Accepted` with an ID and artifact URLs. Poll it until
+The response is `202 Accepted` with an opaque ID and artifact URLs. Poll it until
 `status` becomes `succeeded` or `failed`:
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/solves/1
+PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
+curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID"
 ```
 
 Successful jobs expose an on-demand PNG preview while the uploaded image is
 retained, plus persistent annotations and a FITS-compatible WCS header:
 
 ```bash
-curl 'http://127.0.0.1:8080/api/v1/solves/1/annotations?field_stars=true&historical_transients=true'
-curl -OJ http://127.0.0.1:8080/api/v1/solves/1/wcs
+curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/annotations?field_stars=true&historical_transients=true"
+curl -OJ "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/wcs"
 ```
 
 The grid is projected through the solved TAN WCS rather than drawn in image
@@ -144,7 +147,7 @@ historical transients. **Download rendered PNG** fetches the retained image at
 full resolution and composites the currently selected layers into a PNG in the
 browser; it does not download an SVG.
 
-`GET /api/v1/solves/:id/overlay.svg` remains as an optional self-contained
+`GET /api/v1/solves/:public_id/overlay.svg` remains as an optional self-contained
 image output for API clients. Its query supports `objects`, `grid`,
 `deep_sky`, `named_stars`, `field_stars`, `transients`, `minor_bodies`,
 `historical_transients`, `field_star_mag_limit`, and `max_field_stars`.

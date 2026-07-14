@@ -55,7 +55,7 @@ export interface Solution {
 }
 
 export interface Annotations {
-  job_id: number
+  job_id: string
   catalog_version: string
   capture_time: string | null
   counts: Record<string, number>
@@ -63,7 +63,7 @@ export interface Annotations {
 }
 
 export interface Job {
-  id: number
+  id: string
   status: JobStatus
   created_at: string
   started_at: string | null
@@ -94,7 +94,7 @@ export async function submitSolve(file: File, options: SolveOptions): Promise<Jo
   return expectJson<Job>(await fetch('/api/v1/solves', { method: 'POST', body: form }))
 }
 
-export async function getSolve(jobId: number): Promise<Job> {
+export async function getSolve(jobId: string): Promise<Job> {
   return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}`))
 }
 

@@ -1,4 +1,4 @@
-use crate::models::{AnnotationResponse, JobId, OverlayObject, SolutionResponse};
+use crate::models::{AnnotationResponse, OverlayObject, SolutionResponse};
 use chrono::{DateTime, NaiveDate, Utc};
 use seiza::{
     catalog::{StarCatalog, TileCatalog, angular_separation_deg},
@@ -83,7 +83,7 @@ impl AnnotationEngine {
 
     pub fn annotate(
         &self,
-        job_id: JobId,
+        job_id: impl ToString,
         solution: &SolutionResponse,
         capture_time: Option<DateTime<Utc>>,
         options: &AnnotationOptions,
@@ -164,7 +164,7 @@ impl AnnotationEngine {
             }
         }
         AnnotationResponse {
-            job_id,
+            job_id: job_id.to_string(),
             catalog_version: if versions.is_empty() {
                 "unconfigured".into()
             } else {
