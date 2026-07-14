@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{
     Client,
-    types::{AttributeValue, ReturnValue, TransactWriteItem, Update},
+    types::{AttributeValue, Put, ReturnValue, TransactWriteItem, Update},
 };
 use chrono::{DateTime, Duration, Utc};
 use std::{cmp::Ordering, collections::HashMap};
@@ -208,15 +208,40 @@ impl JobRepository for DynamoDbJobRepository {
     async fn enqueue(&self, mut job: JobRecord) -> Result<JobRecord> {
         job.id = self.next_id().await?;
         job.status = JobStatus::Queued;
-        self.client
-            .put_item()
+        let job_put = Put::builder()
             .table_name(&self.table)
             .set_item(Some(job_item(&job)?))
             .condition_expression("attribute_not_exists(pk)")
+            .build()?;
+        let index_put = Put::builder()
+            .table_name(&self.table)
+            .set_item(Some(HashMap::from([
+                ("pk".into(), string(object_index_key(&job.object_key))),
+                ("entity".into(), string("object_index")),
+                ("job_id".into(), number(job.id)),
+            ])))
+            .condition_expression("attribute_not_exists(pk)")
+            .build()?;
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().put(job_put).build())
+            .transact_items(TransactWriteItem::builder().put(index_put).build())
             .send()
-            .await
-            .context("persisting DynamoDB job")?;
-        Ok(job)
+            .await;
+        match result {
+            Ok(_) => Ok(job),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+            {
+                self.find_by_object_key(&job.object_key)
+                    .await?
+                    .context("idempotent DynamoDB enqueue could not find the existing job")
+            }
+            Err(error) => Err(error).context("persisting DynamoDB job and object index"),
+        }
     }
 
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>> {
@@ -229,6 +254,52 @@ impl JobRepository for DynamoDbJobRepository {
             .item()
             .map(record_from_item)
             .transpose()
+    }
+
+    async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>> {
+        let index = self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("pk", string(object_index_key(object_key)))
+            .consistent_read(true)
+            .send()
+            .await?;
+        if let Some(job_id) = index
+            .item()
+            .map(|item| required_u64(item, "job_id"))
+            .transpose()?
+        {
+            return self
+                .client
+                .get_item()
+                .table_name(&self.table)
+                .key("pk", string(job_key(job_id)))
+                .consistent_read(true)
+                .send()
+                .await?
+                .item()
+                .map(record_from_item)
+                .transpose();
+        }
+
+        // Compatibility for jobs written before the object-key index existed.
+        let mut values = HashMap::new();
+        values.insert(":job".into(), string("job"));
+        values.insert(":object_key".into(), string(object_key));
+        let mut names = HashMap::new();
+        names.insert("#entity".into(), "entity".into());
+        names.insert("#object_key".into(), "object_key".into());
+        self.scan(
+            "#entity = :job AND #object_key = :object_key",
+            names,
+            values,
+            Some(1),
+        )
+        .await?
+        .first()
+        .map(record_from_item)
+        .transpose()
     }
 
     async fn queue_depth(&self) -> Result<usize> {
@@ -505,6 +576,9 @@ fn job_key(job_id: JobId) -> String {
 }
 fn client_key(owner: &str) -> String {
     format!("CLIENT#{owner}")
+}
+fn object_index_key(object_key: &str) -> String {
+    format!("OBJECT#{object_key}")
 }
 fn encode_time(value: DateTime<Utc>) -> String {
     value.to_rfc3339()

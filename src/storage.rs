@@ -17,6 +17,8 @@ use std::{
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, content: Bytes, content_type: Option<&str>) -> Result<()>;
     async fn get(&self, key: &str) -> Result<Bytes>;
+    async fn exists(&self, key: &str) -> Result<bool>;
+    async fn delete(&self, key: &str) -> Result<()>;
     async fn delete_older_than(&self, cutoff: SystemTime) -> Result<usize>;
 }
 
@@ -63,6 +65,19 @@ impl ObjectStore for LocalObjectStore {
             .await
             .map(Bytes::from)
             .with_context(|| format!("reading {}", path.display()))
+    }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        Ok(tokio::fs::try_exists(self.path_for(key)?).await?)
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        let path = self.path_for(key)?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("deleting {}", path.display())),
+        }
     }
 
     async fn delete_older_than(&self, cutoff: SystemTime) -> Result<usize> {
@@ -166,6 +181,38 @@ impl ObjectStore for S3ObjectStore {
             .into_bytes())
     }
 
+    async fn exists(&self, key: &str) -> Result<bool> {
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_not_found()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error).context("checking S3 upload object"),
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .with_context(|| format!("deleting S3 upload object {key}"))?;
+        Ok(())
+    }
+
     async fn delete_older_than(&self, cutoff: SystemTime) -> Result<usize> {
         let cutoff = cutoff.duration_since(UNIX_EPOCH)?.as_secs() as i64;
         let mut continuation_token = None;
@@ -250,6 +297,23 @@ mod tests {
 
         assert_eq!(removed, 1);
         assert!(store.get("nested/image.fits").await.is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_store_reports_and_deletes_individual_objects() {
+        let root = std::env::temp_dir().join(format!("seiza-store-{}", uuid::Uuid::now_v7()));
+        let store = LocalObjectStore::new(root.clone()).await.unwrap();
+        store
+            .put("uploads/session/chunk", Bytes::from_static(b"chunk"), None)
+            .await
+            .unwrap();
+
+        assert!(store.exists("uploads/session/chunk").await.unwrap());
+        store.delete("uploads/session/chunk").await.unwrap();
+        assert!(!store.exists("uploads/session/chunk").await.unwrap());
+        store.delete("uploads/session/chunk").await.unwrap();
+
         std::fs::remove_dir_all(root).unwrap();
     }
 }

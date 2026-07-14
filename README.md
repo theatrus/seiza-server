@@ -15,10 +15,10 @@ disappears on a process restart.
 
 ## What is implemented
 
-- Native JSON API: multipart uploads, job polling, explicit WCS/quality output,
-  refreshable catalog annotations, downloadable FITS-style WCS headers, an
-  optional composite overlay endpoint, a 100 MB default body limit,
-  structured errors, and CORS.
+- Native JSON API: resumable TUS uploads (with multipart fallback), job polling,
+  explicit WCS/quality output, refreshable catalog annotations, downloadable
+  FITS-style WCS headers, an optional composite overlay endpoint, a 100 MB
+  default file limit, structured errors, and CORS.
 - Astrometry.net-compatible API subset: `POST /api/login`, `POST /api/upload`,
   `GET /api/submissions/:id`, `GET /api/jobs/:id`,
   `GET /api/jobs/:id/calibration`, and `GET /api/jobs/:id/info`.
@@ -113,8 +113,17 @@ Health and queue state:
 curl http://127.0.0.1:8080/api/v1/health
 ```
 
-Submit a blind solve. `options` is a JSON form field, making the file upload
-endpoint straightforward for browsers and API clients alike.
+The web client uploads through the TUS 1.0 endpoint at `/api/v1/uploads` using
+5 MiB chunks, automatic retries, and offset-based resume. In-progress manifests
+and chunks live in the configured local or S3 object store, so an API-process
+restart does not discard progress. Once the declared length is complete, the
+server assembles the object, creates exactly one queued solve, and exposes the
+job from `GET /api/v1/uploads/:upload_id/result`. Any standard TUS client can
+use the same creation, `HEAD`, `PATCH`, and termination flow.
+
+The original multipart endpoint remains available for small scripts and
+Astrometry-compatible clients. Submit a blind solve with `options` as a JSON
+form field:
 
 ```bash
 curl -X POST http://127.0.0.1:8080/api/v1/solves \
@@ -176,8 +185,9 @@ A position hint avoids the whole-sky path:
 }
 ```
 
-All solver work happens after the `202`; upload handlers only validate, store,
-rate-limit, and enqueue.
+All solver work happens after enqueue; upload handlers only validate, store,
+rate-limit, and enqueue. `SEIZA_MAX_UPLOAD_BYTES` limits the complete image,
+not an individual TUS chunk.
 
 ## Astrometry.net compatibility
 
@@ -230,7 +240,7 @@ are currently supported:
 | `SEIZA_EMBEDDED_WORKERS` | `true` | Run workers inside the API process |
 | `SEIZA_WORKER_TOKEN` | unset | Required shared secret for separate workers |
 | `SEIZA_LEASE_SECONDS` | `900` | Exclusive worker-lease duration |
-| `SEIZA_MAX_UPLOAD_BYTES` | `104857600` | Request/file size ceiling |
+| `SEIZA_MAX_UPLOAD_BYTES` | `104857600` | Complete image size ceiling; resumable requests contain smaller chunks |
 | `SEIZA_UPLOAD_RETENTION_SECONDS` | `86400` | Age after which uploaded image objects and visual previews are unavailable |
 | `SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS` | `3600` | Local/S3 expired-object sweep interval |
 | `SEIZA_RATE_LIMIT_PER_MINUTE` | `6` | Per-client submission refill rate |
