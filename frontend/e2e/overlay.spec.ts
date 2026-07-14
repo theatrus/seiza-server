@@ -53,6 +53,11 @@ const baseObjects = [
     x: 420, y: 210, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
     source: 'minor_body', distance_au: 0.84, direction_pa_deg: 45, direction_angle_deg: 18,
   },
+  {
+    name: '(12345)', common_name: 'Test asteroid', kind: 'asteroid', mag: 14.1,
+    x: 760, y: 700, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
+    source: 'minor_body', distance_au: 1.42, direction_pa_deg: 122, direction_angle_deg: 136,
+  },
 ]
 
 const solution = {
@@ -86,7 +91,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       catalog_version: 'objects:test;stars:test',
       capture_time: '2026-07-13T04:05:06Z',
       available: { deep_sky: true, named_stars: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
-      counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 1 },
+      counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
       objects: baseObjects,
     }),
   }))
@@ -131,21 +136,46 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
 
   const gridLabels = page.locator('.coordinate-grid text')
   await expect(gridLabels.first()).toBeVisible()
+  const overlayBounds = await page.locator('.sky-overlay').boundingBox()
+  expect(overlayBounds).not.toBeNull()
   const gridLabelBounds = await gridLabels.evaluateAll((labels) => labels.map((label) => {
     const box = (label as SVGGraphicsElement).getBBox()
-    return { x: box.x, y: box.y, right: box.x + box.width, bottom: box.y + box.height }
+    const rendered = label.getBoundingClientRect()
+    return {
+      x: box.x,
+      y: box.y,
+      right: box.x + box.width,
+      bottom: box.y + box.height,
+      renderedX: rendered.x,
+      renderedY: rendered.y,
+      renderedRight: rendered.right,
+      renderedBottom: rendered.bottom,
+      fontSize: Number.parseFloat(getComputedStyle(label).fontSize),
+    }
   }))
   for (const box of gridLabelBounds) {
     expect(box.x).toBeGreaterThanOrEqual(0)
     expect(box.y).toBeGreaterThanOrEqual(0)
     expect(box.right).toBeLessThanOrEqual(solution.image_width)
     expect(box.bottom).toBeLessThanOrEqual(solution.image_height)
+    expect(box.renderedX).toBeGreaterThanOrEqual(overlayBounds!.x)
+    expect(box.renderedY).toBeGreaterThanOrEqual(overlayBounds!.y)
+    expect(box.renderedRight).toBeLessThanOrEqual(overlayBounds!.x + overlayBounds!.width)
+    expect(box.renderedBottom).toBeLessThanOrEqual(overlayBounds!.y + overlayBounds!.height)
+    expect(box.fontSize).toBeGreaterThanOrEqual(18)
   }
 
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(1)
   await expect(page.locator('[data-kind="galaxy"]')).toBeVisible()
   await expect(page.locator('[data-kind="star"]')).toBeVisible()
   await expect(page.locator('[data-kind="comet"]')).toBeVisible()
+  await expect(page.locator('[data-kind="asteroid"]')).toBeVisible()
+  const cometTail = page.locator('[data-kind="comet"] .comet-tail')
+  const asteroidTail = page.locator('[data-kind="asteroid"] .asteroid-tail')
+  await expect(cometTail).toHaveAttribute('data-direction-angle', '18')
+  await expect(asteroidTail).toHaveAttribute('data-direction-angle', '136')
+  expect(await cometTail.evaluate((tail) => (tail as SVGPathElement).getTotalLength())).toBeGreaterThan(100)
+  expect(await asteroidTail.evaluate((tail) => (tail as SVGPathElement).getTotalLength())).toBeGreaterThan(75)
   await expect(page.locator('.field-stars circle')).toHaveCount(0)
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toHaveCount(0)
 
@@ -189,6 +219,16 @@ test('explains and disables catalog layers that are unavailable', async ({ page 
 test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {
   await mockSolution(page)
   await page.goto(`/solutions/${publicId}`)
+  await page.evaluate(() => {
+    const originalCreateObjectUrl = URL.createObjectURL.bind(URL)
+    const state = window as typeof window & { __seizaSerializedOverlay?: Promise<string> }
+    URL.createObjectURL = (object: Blob | MediaSource) => {
+      if (object instanceof Blob && object.type.startsWith('image/svg+xml')) {
+        state.__seizaSerializedOverlay = object.text()
+      }
+      return originalCreateObjectUrl(object)
+    }
+  })
   const watermarkPromise = page.waitForRequest((request) => request.url().includes('seiza-mark.png?watermark=1'))
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Download rendered PNG' }).click()
@@ -202,6 +242,38 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
   expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10])
   expect(png.readUInt32BE(16)).toBe(solution.image_width)
   expect(png.readUInt32BE(20)).toBe(solution.image_height)
+
+  const renderedLabels = await page.evaluate(async () => {
+    const state = window as typeof window & { __seizaSerializedOverlay?: Promise<string> }
+    if (!state.__seizaSerializedOverlay) return []
+    const markup = await state.__seizaSerializedOverlay
+    const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml')
+    const host = document.createElement('div')
+    host.style.cssText = 'position:absolute;left:-10000px;top:0;'
+    const svg = document.importNode(parsed.documentElement, true) as unknown as SVGSVGElement
+    host.append(svg)
+    document.body.append(host)
+    const labels = [...svg.querySelectorAll<SVGTextElement>('.coordinate-grid text')].map((label) => {
+      const box = label.getBBox()
+      return {
+        x: box.x,
+        y: box.y,
+        right: box.x + box.width,
+        bottom: box.y + box.height,
+        fontSize: Number.parseFloat(getComputedStyle(label).fontSize),
+      }
+    })
+    host.remove()
+    return labels
+  })
+  expect(renderedLabels.length).toBeGreaterThan(0)
+  for (const label of renderedLabels) {
+    expect(label.x).toBeGreaterThanOrEqual(0)
+    expect(label.y).toBeGreaterThanOrEqual(0)
+    expect(label.right).toBeLessThanOrEqual(solution.image_width)
+    expect(label.bottom).toBeLessThanOrEqual(solution.image_height)
+    expect(label.fontSize).toBeGreaterThanOrEqual(18)
+  }
 })
 
 test('keeps calibration and object metadata after the image expires', async ({ page }) => {

@@ -64,7 +64,7 @@ export function AstroOverlay({
   const encompassing = labeled.filter((object) => encompassesFrame(object, width, height))
   const visible = labeled.filter((object) => !encompassing.includes(object))
   const grid = useMemo(() => makeGrid(solution), [solution])
-  const gridFontSize = Math.max(width / 90, 14)
+  const gridFontSize = gridLabelFontSize(width)
   const stroke = Math.max(width / 1800, 1.5)
   const fontSize = Math.max(width / 75, 14)
   const placedLabels: Array<{ x: number; y: number; halfWidth: number }> = []
@@ -100,18 +100,26 @@ export function AstroOverlay({
   >
     <style>{`
       .coordinate-grid path { fill: none; stroke: #7ddbe8; stroke-width: 1.2; stroke-dasharray: 7 5; opacity: .72; vector-effect: non-scaling-stroke; }
-      .coordinate-grid text { fill: #b9f3f7; stroke: #05090e; stroke-width: .12em; paint-order: stroke; font-family: ui-monospace, monospace; font-weight: 600; }
+      .coordinate-grid text { fill: #b9f3f7; stroke: #05090e; stroke-width: .12em; paint-order: stroke; font-family: ui-monospace, monospace; font-weight: 700; }
       .field-stars circle { fill: none; stroke: #eef7ff; stroke-width: 1.25; opacity: .78; vector-effect: non-scaling-stroke; }
       .object-marker { fill: none; vector-effect: non-scaling-stroke; }
       .overlay-label { stroke: rgba(0,0,0,.88); stroke-width: .12em; paint-order: stroke; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 700; }
       .solution-center { fill: none; stroke: #f2c66d; vector-effect: non-scaling-stroke; }
     `}</style>
     <defs><clipPath id="sky-frame"><rect width={width} height={height} /></clipPath></defs>
-    {layers.grid && <g clipPath="url(#sky-frame)" className="coordinate-grid">
-      {grid.map((curve, index) => <g key={`${curve.label}-${index}`}>
-        <path d={curve.path} />
-        <text x={curve.x} y={curve.y} textAnchor={curve.anchor} fontSize={gridFontSize}>{curve.label}</text>
-      </g>)}
+    {layers.grid && <g className="coordinate-grid">
+      <g clipPath="url(#sky-frame)" className="coordinate-grid-lines">
+        {grid.map((curve, index) => <path key={`${curve.label}-${index}`} d={curve.path} />)}
+      </g>
+      <g className="coordinate-grid-labels">
+        {grid.map((curve, index) => <text
+          key={`${curve.label}-${index}`}
+          x={curve.x}
+          y={curve.y}
+          textAnchor={curve.anchor}
+          fontSize={gridFontSize}
+        >{curve.label}</text>)}
+      </g>
     </g>}
     <g className="field-stars">
       {fieldStars.map((star, index) => <circle
@@ -144,13 +152,9 @@ export function AstroOverlay({
                 : '#5fd3ff'
         const a = Math.max(object.semi_major_px, fontSize)
         const b = Math.max(object.semi_minor_px, fontSize)
-        const angle = (object.direction_angle_deg ?? 45) * Math.PI / 180
-        const trail = {
-          x1: object.x + Math.cos(angle) * a * 1.3,
-          y1: object.y + Math.sin(angle) * a * 1.3,
-          x2: object.x + Math.cos(angle) * a * 2.4,
-          y2: object.y + Math.sin(angle) * a * 2.4,
-        }
+        const directionTail = moving && object.direction_angle_deg != null
+          ? movingBodyTail(object.x, object.y, a, object.direction_angle_deg, object.kind)
+          : null
         return <g key={`${object.kind}-${object.name}-${object.x}-${object.y}-${index}`} data-kind={object.kind}>
           {moving || transient ? <>
             <path
@@ -159,7 +163,15 @@ export function AstroOverlay({
               strokeWidth={stroke * 1.5}
               d={`M ${object.x} ${object.y - a} L ${object.x + a} ${object.y} L ${object.x} ${object.y + a} L ${object.x - a} ${object.y} Z`}
             />
-            {moving && <line className="object-marker" stroke={color} strokeWidth={stroke * 1.5} {...trail} />}
+            {directionTail && <path
+              className={`object-marker direction-tail ${object.kind}-tail`}
+              data-direction-angle={object.direction_angle_deg}
+              stroke={color}
+              strokeWidth={stroke * 1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d={directionTail}
+            />}
           </> : namedStar ? <path
             className="object-marker"
             stroke={color}
@@ -217,6 +229,40 @@ function encompassesFrame(object: OverlayObject, width: number, height: number) 
   })
 }
 
+function movingBodyTail(
+  x: number,
+  y: number,
+  size: number,
+  angleDegrees: number,
+  kind: string,
+) {
+  const angle = angleDegrees * Math.PI / 180
+  const along = (distance: number) => [
+    x + Math.cos(angle) * size * distance,
+    y + Math.sin(angle) * size * distance,
+  ] as const
+  const offset = (point: readonly [number, number], distance: number) => [
+    point[0] - Math.sin(angle) * size * distance,
+    point[1] + Math.cos(angle) * size * distance,
+  ] as const
+  const point = (value: readonly [number, number]) => `${value[0].toFixed(2)} ${value[1].toFixed(2)}`
+
+  if (kind === 'comet') {
+    const root = along(1.15)
+    const tip = along(4.0)
+    const upper = offset(along(3.25), 0.55)
+    const lower = offset(along(3.25), -0.55)
+    return `M ${point(root)} L ${point(tip)} M ${point(root)} L ${point(upper)} M ${point(root)} L ${point(lower)}`
+  }
+
+  const root = along(1.2)
+  const tip = along(4.5)
+  const arrowRoot = along(3.6)
+  const upper = offset(arrowRoot, 0.65)
+  const lower = offset(arrowRoot, -0.65)
+  return `M ${point(root)} L ${point(tip)} M ${point(upper)} L ${point(tip)} L ${point(lower)}`
+}
+
 interface GridCurve {
   path: string
   label: string
@@ -228,7 +274,7 @@ interface GridCurve {
 function makeGrid(solution: Solution): GridCurve[] {
   const width = solution.image_width
   const height = solution.image_height
-  const fontSize = Math.max(width / 90, 14)
+  const fontSize = gridLabelFontSize(width)
   const centerRa = pixelToWorld(solution, width / 2, height / 2)[0]
   let raMin = Number.POSITIVE_INFINITY
   let raMax = Number.NEGATIVE_INFINITY
@@ -246,8 +292,8 @@ function makeGrid(solution: Solution): GridCurve[] {
   }
   const cosDec = Math.max(Math.abs(Math.cos(solution.center_dec_deg * Math.PI / 180)), 0.05)
   const span = Math.max(decMax - decMin, (raMax - raMin) * cosDec, solution.pixel_scale_arcsec_per_pixel / 3600)
-  const decStep = niceGridStep(span / 6)
-  const raStep = niceGridStep(span / cosDec / 6)
+  const decStep = niceGridStep(span / 5)
+  const raStep = niceGridStep(span / cosDec / 5)
   const curves: GridCurve[] = []
   for (let ra = Math.floor(raMin / raStep) * raStep, count = 0; ra <= raMax + raStep && count < 32; ra += raStep, count += 1) {
     const samples = sampleCurve(decMin - decStep, decMax + decStep, (dec) => worldToPixel(solution, modulo(ra, 360), Math.max(-89.999999, Math.min(89.999999, dec))))
@@ -293,10 +339,10 @@ function gridCurve(
       ? (candidate[1] < best[1] ? candidate : best)
       : (candidate[0] < best[0] ? candidate : best),
   )
-  const padding = Math.max(4, fontSize * 0.25)
-  const labelWidth = label.length * fontSize * 0.64
-  const minimumBaseline = padding + fontSize
-  const maximumBaseline = height - padding - fontSize * 0.2
+  const padding = Math.max(6, fontSize * 0.45)
+  const labelWidth = label.length * fontSize * 0.7
+  const minimumBaseline = padding + fontSize * 1.08
+  const maximumBaseline = height - padding - fontSize * 0.25
   return {
     path: commands.join(' '),
     label,
@@ -304,12 +350,16 @@ function gridCurve(
       ? clamp(point[0], padding + labelWidth / 2, width - padding - labelWidth / 2)
       : clamp(point[0] + padding, padding, width - padding - labelWidth),
     y: clamp(
-      axis === 'ra' ? point[1] + fontSize * 1.25 : point[1] - padding,
+      axis === 'ra' ? point[1] + fontSize * 1.35 : point[1] - padding,
       minimumBaseline,
       maximumBaseline,
     ),
     anchor: axis === 'ra' ? 'middle' : 'start',
   }
+}
+
+function gridLabelFontSize(width: number) {
+  return Math.max(Math.min(Math.max(width / 60, 18), width / 18), 6)
 }
 
 function pixelToWorld(solution: Solution, x: number, y: number): [number, number] {
