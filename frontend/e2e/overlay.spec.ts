@@ -1,9 +1,31 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 
-const previewPath = fileURLToPath(new URL('../public/seiza-mark.png', import.meta.url))
 const publicId = '42-550e8400-e29b-41d4-a716-446655440000'
+const starFieldSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="sky" cx="62%" cy="42%" r="70%">
+      <stop offset="0" stop-color="#183052"/><stop offset=".42" stop-color="#081526"/><stop offset="1" stop-color="#01050b"/>
+    </radialGradient>
+    <radialGradient id="nebula" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#5b8fc7" stop-opacity=".25"/><stop offset="1" stop-color="#14253b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#sky)"/>
+  <ellipse cx="565" cy="510" rx="390" ry="210" fill="url(#nebula)" transform="rotate(-18 565 510)"/>
+  <g fill="#f4f8ff">
+    <circle cx="75" cy="96" r="2"/><circle cx="158" cy="210" r="1.4"/><circle cx="230" cy="73" r="1.2"/>
+    <circle cx="317" cy="278" r="2.4"/><circle cx="401" cy="124" r="1.5"/><circle cx="493" cy="237" r="1.1"/>
+    <circle cx="608" cy="92" r="2.1"/><circle cx="711" cy="188" r="1.4"/><circle cx="818" cy="74" r="1.8"/>
+    <circle cx="932" cy="229" r="1.2"/><circle cx="111" cy="403" r="1.5"/><circle cx="205" cy="536" r="2.2"/>
+    <circle cx="348" cy="449" r="1.1"/><circle cx="468" cy="602" r="2.6"/><circle cx="574" cy="408" r="1.4"/>
+    <circle cx="693" cy="553" r="1.8"/><circle cx="806" cy="375" r="1.1"/><circle cx="939" cy="487" r="2.3"/>
+    <circle cx="84" cy="723" r="1.2"/><circle cx="191" cy="873" r="2"/><circle cx="292" cy="688" r="1.6"/>
+    <circle cx="390" cy="835" r="1.1"/><circle cx="526" cy="752" r="2.1"/><circle cx="642" cy="903" r="1.3"/>
+    <circle cx="744" cy="707" r="2.4"/><circle cx="866" cy="846" r="1.2"/><circle cx="962" cy="680" r="1.8"/>
+  </g>
+  <g fill="#a9d8ff"><circle cx="270" cy="355" r="3"/><circle cx="653" cy="326" r="2.8"/><circle cx="781" cy="638" r="3.2"/></g>
+</svg>`
 
 const baseObjects = [
   {
@@ -68,8 +90,8 @@ async function mockSolution(page: Page, inputAvailable = true) {
     }),
   }))
   await page.route(`**/api/v1/solves/${publicId}/preview**`, async (route) => route.fulfill({
-    contentType: 'image/png',
-    path: previewPath,
+    contentType: 'image/svg+xml',
+    body: starFieldSvg,
   }))
   await page.route(`**/api/v1/solves/${publicId}`, async (route) => route.fulfill({
     contentType: 'application/json',
