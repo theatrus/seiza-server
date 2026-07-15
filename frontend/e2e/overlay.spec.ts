@@ -38,6 +38,21 @@ const baseObjects = [
     source: 'deep_sky', ra_deg: 10.68, dec_deg: 41.27,
   },
   {
+    name: 'Sh2-101', common_name: 'Tulip Nebula', kind: 'hii-region', mag: null,
+    x: 220, y: 690, semi_major_px: 48, semi_minor_px: 36, angle_deg: 8,
+    source: 'deep_sky', ra_deg: 10.92, dec_deg: 41.08,
+  },
+  {
+    name: 'LDN 935', common_name: '', kind: 'dark-nebula', mag: null,
+    x: 790, y: 430, semi_major_px: 42, semi_minor_px: 25, angle_deg: 61,
+    source: 'deep_sky', ra_deg: 10.31, dec_deg: 41.35,
+  },
+  {
+    name: 'PGC 12345', common_name: '', kind: 'galaxy', mag: 14.2,
+    x: 820, y: 790, semi_major_px: 24, semi_minor_px: 12, angle_deg: 24,
+    source: 'deep_sky', ra_deg: 10.27, dec_deg: 40.99,
+  },
+  {
     name: 'HIP 123', common_name: 'Alpheratz', kind: 'star', mag: 2.1,
     x: 270, y: 330, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
     source: 'deep_sky', ra_deg: 2.1, dec_deg: 29.1,
@@ -100,7 +115,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       catalog_version: 'objects:test;stars:test',
       capture_time: '2026-07-13T04:05:06Z',
       available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
-      counts: { deep_sky: 1, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
+      counts: { deep_sky: 4, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
       objects: baseObjects,
     }),
   }))
@@ -193,8 +208,8 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
     expect(box.fontSize).toBeGreaterThanOrEqual(18)
   }
 
-  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(1)
-  await expect(page.locator('[data-kind="galaxy"]')).toBeVisible()
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(4)
+  await expect(page.locator('[data-kind="galaxy"]')).toHaveCount(2)
   await expect(page.locator('[data-kind="star"]')).toBeVisible()
   await expect(page.locator('[data-kind="identified-star"]')).toHaveCount(0)
   await expect(page.locator('[data-kind="comet"]')).toBeVisible()
@@ -215,6 +230,22 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await expect(page.locator('.field-stars circle')).toHaveCount(1)
   await page.getByRole('button', { name: /Older transients/ }).click()
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toBeVisible()
+
+  await page.getByRole('button', { name: /Catalogs · 4\/4/ }).click()
+  await expect(page.getByRole('group', { name: 'Deep sky catalogs' })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: 'NGC / IC / Messier · 1' })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Sharpless / vdB · 1' })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Dark nebulae (B / LDN) · 1' })).toBeChecked()
+  const pgcCatalog = page.getByRole('checkbox', { name: 'PGC galaxies · 1' })
+  await expect(pgcCatalog).toBeChecked()
+  await pgcCatalog.uncheck()
+  await expect(page.getByRole('button', { name: /Catalogs · 3\/4/ })).toHaveAttribute('aria-pressed', 'true')
+  const skyOverlay = page.locator('.sky-overlay')
+  await expect(skyOverlay.getByText('PGC 12345', { exact: false })).toHaveCount(0)
+  await expect(skyOverlay.getByText('M 31 · Andromeda Galaxy', { exact: false })).toBeVisible()
+  await expect(skyOverlay.getByText('Sh2-101 · Tulip Nebula', { exact: false })).toBeVisible()
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(3)
+
   await page.getByRole('button', { name: /Deep sky/ }).click()
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(0)
 
@@ -258,7 +289,7 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
       catalog_version: 'objects:test;stars:test;transients:test;minor-bodies:test',
       capture_time: null,
       available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, grid: true },
-      counts: { deep_sky: 1, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      counts: { deep_sky: 4, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
       objects: baseObjects.filter((object) => object.kind !== 'comet' && object.kind !== 'asteroid'),
     }),
   }))
@@ -276,6 +307,8 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
 test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {
   await mockSolution(page)
   await page.goto(`/solutions/${publicId}`)
+  await page.getByRole('button', { name: /Catalogs · 4\/4/ }).click()
+  await page.getByRole('checkbox', { name: 'PGC galaxies · 1' }).uncheck()
   await page.evaluate(() => {
     const originalCreateObjectUrl = URL.createObjectURL.bind(URL)
     const state = window as typeof window & { __seizaSerializedOverlay?: Promise<string> }
@@ -309,6 +342,7 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
       labelWeight: '',
       gridWeight: '',
       haloWidth: '',
+      objectLabels: [],
     }
     const markup = await state.__seizaSerializedOverlay
     const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml')
@@ -332,14 +366,18 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
     const labelWeight = svg.style.getPropertyValue('--seiza-overlay-label-font-weight')
     const gridWeight = svg.style.getPropertyValue('--seiza-overlay-grid-font-weight')
     const haloWidth = svg.style.getPropertyValue('--seiza-overlay-label-halo-width')
+    const objectLabels = [...svg.querySelectorAll<SVGTextElement>('.catalog-objects text')]
+      .map((label) => label.textContent ?? '')
     host.remove()
-    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth }
+    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels }
   })
   expect(renderedOverlay.markerStroke).toBe('0.7')
   expect(renderedOverlay.gridStroke).toBe('0.65')
   expect(renderedOverlay.labelWeight).toBe('400')
   expect(renderedOverlay.gridWeight).toBe('500')
   expect(renderedOverlay.haloWidth).toBe('0.1em')
+  expect(renderedOverlay.objectLabels).toContain('M 31 · Andromeda Galaxy')
+  expect(renderedOverlay.objectLabels).not.toContain('PGC 12345')
   expect(renderedOverlay.labels.length).toBeGreaterThan(0)
   for (const label of renderedOverlay.labels) {
     expect(label.x).toBeGreaterThanOrEqual(0)

@@ -1,3 +1,4 @@
+import { Fragment, useState } from 'react'
 import { AstroOverlay as ReusableAstroOverlay } from '@seiza/astro-overlay/react'
 import {
   defaultOverlayDensity,
@@ -5,6 +6,8 @@ import {
   type OverlayLayerVisibility,
 } from '@seiza/astro-overlay'
 import type { OverlayObject, Solution } from './api'
+import { deepSkyCatalogForObject, deepSkyCatalogs } from './catalogs'
+import type { DeepSkyCatalogId } from './catalogs'
 
 export interface OverlayLayers {
   deepSky: boolean
@@ -33,42 +36,110 @@ export function OverlayControls({
   counts,
   available,
   disabledReasons,
+  objects,
+  hiddenCatalogs,
   onChange,
+  onHiddenCatalogsChange,
 }: {
   layers: OverlayLayers
   counts: Record<string, number>
   available?: Record<string, boolean>
   disabledReasons?: Record<string, string>
+  objects: OverlayObject[]
+  hiddenCatalogs: DeepSkyCatalogId[]
   onChange: (layers: OverlayLayers) => void
+  onHiddenCatalogsChange: (catalogs: DeepSkyCatalogId[]) => void
 }) {
   return <div className="overlay-options" role="group" aria-label="Overlay layers">
     {layerLabels.map(([key, label, countKey]) => {
       const enabled = available?.[countKey] !== false
-      return <button
-        type="button"
-        key={key}
-        aria-pressed={enabled && layers[key]}
-        disabled={!enabled}
-        title={enabled ? undefined : disabledReasons?.[countKey] ?? `${label} data is unavailable for this solution`}
-        onClick={() => onChange({ ...layers, [key]: !layers[key] })}
-      >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>
+      return <Fragment key={key}>
+        <button
+          type="button"
+          aria-pressed={enabled && layers[key]}
+          disabled={!enabled}
+          title={enabled ? undefined : disabledReasons?.[countKey] ?? `${label} data is unavailable for this solution`}
+          onClick={() => onChange({ ...layers, [key]: !layers[key] })}
+        >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>
+        {key === 'deepSky' && <DeepSkyCatalogMenu
+          objects={objects}
+          disabled={!enabled || !layers.deepSky}
+          hiddenCatalogs={hiddenCatalogs}
+          onChange={onHiddenCatalogsChange}
+        />}
+      </Fragment>
     })}
   </div>
+}
+
+function DeepSkyCatalogMenu({
+  objects,
+  disabled,
+  hiddenCatalogs,
+  onChange,
+}: {
+  objects: OverlayObject[]
+  disabled: boolean
+  hiddenCatalogs: DeepSkyCatalogId[]
+  onChange: (catalogs: DeepSkyCatalogId[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const counts = new Map<DeepSkyCatalogId, number>()
+  for (const object of objects) {
+    const catalog = deepSkyCatalogForObject(object)
+    if (catalog) counts.set(catalog, (counts.get(catalog) ?? 0) + 1)
+  }
+  const availableCatalogs = deepSkyCatalogs.filter(([id]) => counts.has(id))
+  if (availableCatalogs.length < 2) return null
+  const activeCatalogs = availableCatalogs.filter(([id]) => !hiddenCatalogs.includes(id)).length
+  const toggleCatalog = (id: DeepSkyCatalogId) => onChange(
+    hiddenCatalogs.includes(id)
+      ? hiddenCatalogs.filter((catalog) => catalog !== id)
+      : [...hiddenCatalogs, id],
+  )
+
+  return <span className="catalog-filter">
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-haspopup="true"
+      aria-pressed={hiddenCatalogs.length > 0}
+      disabled={disabled}
+      title="Choose which deep-sky catalogs to label"
+      onClick={() => setOpen(!open)}
+    >Catalogs · {activeCatalogs}/{availableCatalogs.length} {open ? '▴' : '▾'}</button>
+    {open && !disabled && <span className="catalog-menu" role="group" aria-label="Deep sky catalogs">
+      {availableCatalogs.map(([id, label]) => <label key={id}>
+        <input
+          type="checkbox"
+          checked={!hiddenCatalogs.includes(id)}
+          onChange={() => toggleCatalog(id)}
+        />
+        <span>{label} · {counts.get(id)}</span>
+      </label>)}
+    </span>}
+  </span>
 }
 
 export function AstroOverlay({
   solution,
   objects,
   layers,
+  hiddenCatalogs,
 }: {
   solution: Solution
   objects: OverlayObject[]
   layers: OverlayLayers
+  hiddenCatalogs: DeepSkyCatalogId[]
 }) {
+  const visibleObjects = objects.filter((object) => {
+    const catalog = deepSkyCatalogForObject(object)
+    return catalog == null || !hiddenCatalogs.includes(catalog)
+  })
   return <ReusableAstroOverlay
     className="sky-overlay"
     solution={solution}
-    objects={objects}
+    objects={visibleObjects}
     layers={toPackageLayers(layers)}
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}

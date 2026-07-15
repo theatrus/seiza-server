@@ -30,9 +30,9 @@ The consuming application owns:
 - the catalog-to-layer resolver when its groups differ from the defaults; and
 - branding, watermarks, and other PNG decorations.
 
-The split is deliberate. Tenrankai can retain its catalog dropdown and density
-slider, seiza-server can retain its explicit layer buttons, and PSF Guard can
-place controls in its image-detail toolbar without forking the rendering code.
+The split is deliberate. Tenrankai and seiza-server retain their catalog
+dropdowns and application-specific controls, while PSF Guard can place controls
+in its image-detail toolbar without forking the rendering code.
 
 ## Public entry points
 
