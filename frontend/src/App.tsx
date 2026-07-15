@@ -4,6 +4,7 @@ import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import type { OverlayLayers } from './AstroOverlay'
+import type { DeepSkyCatalogId } from './catalogs'
 
 const pending = new Set(['queued', 'solving'])
 const defaultOverlayLayers: OverlayLayers = {
@@ -254,6 +255,7 @@ function SolutionContent({ job }: { job: Job }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState(defaultOverlayLayers)
+  const [hiddenCatalogs, setHiddenCatalogs] = useState<DeepSkyCatalogId[]>([])
   const [expanded, setExpanded] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
@@ -317,7 +319,16 @@ function SolutionContent({ job }: { job: Job }) {
     {solution && <>
       {job.preview_url ? <section className="overlay-card">
         <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Explore the solved field</h2></div><div className="overlay-actions"><button className="button small secondary" type="button" onClick={() => setExpanded(true)}>Expand image</button><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div></div>
-        <OverlayControls layers={layers} counts={overlayCounts} available={overlayAvailability} disabledReasons={disabledReasons} onChange={setLayers} />
+        <OverlayControls
+          layers={layers}
+          counts={overlayCounts}
+          available={overlayAvailability}
+          disabledReasons={disabledReasons}
+          objects={overlayObjects}
+          hiddenCatalogs={hiddenCatalogs}
+          onChange={setLayers}
+          onHiddenCatalogsChange={setHiddenCatalogs}
+        />
         {unavailableLayers && unavailableLayers.length > 0 && <p className="overlay-warning">Catalog data unavailable for this solution: {unavailableLayers.join(', ')}.</p>}
         {minorBodiesNeedCaptureTime && <p className="overlay-warning">Solar system positions require an acquisition time for this image. The minor-body catalog is installed.</p>}
         {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
@@ -326,7 +337,7 @@ function SolutionContent({ job }: { job: Job }) {
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
-            <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} />
+            <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} />
           </div>
         </div>
         <p className="retention-note">The SVG annotations are rendered interactively over the image. The temporary image expires after one day; WCS and catalog metadata remain available.</p>
