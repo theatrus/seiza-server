@@ -56,7 +56,7 @@ Admission is separate and uses a token bucket per client/IP. It returns HTTP
 | Concern | Local baseline | AWS deployment | Horizontal production step |
 | --- | --- | --- | --- |
 | Original image | `SEIZA_DATA_DIR/objects` | S3 | Server sweep plus lifecycle defense-in-depth |
-| Donated validation image | protected object namespace | S3 prefix outside temporary lifecycle | explicit image grant plus durable donation metadata |
+| Contributed validation image | protected object namespace | S3 prefix outside temporary lifecycle | explicit image grant plus durable contribution metadata |
 | In-progress upload | object-store manifest + chunks | S3 manifest + chunks | Shared object store; resumable across API restarts |
 | Catalog | local readonly path | EFS or immutable image layer | Versioned catalog release |
 | Job record | SQLx SQLite file | DynamoDB or SQLx PostgreSQL | DynamoDB or SQLx PostgreSQL |

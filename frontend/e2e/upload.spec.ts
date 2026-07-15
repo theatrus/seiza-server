@@ -497,7 +497,7 @@ test('retries a failed retained image with hints without uploading it again', as
 })
 
 for (const status of ['succeeded', 'failed'] as const) {
-  test(`donates a ${status} solve to the validation set with an explicit image grant`, async ({ page }) => {
+  test(`contributes a ${status} solve to the validation set with an explicit image grant`, async ({ page }) => {
     let donationRequests = 0
     let current = {
       ...queuedJob(publicId, `${status}-validation.jpg`),
@@ -549,10 +549,10 @@ for (const status of ['succeeded', 'failed'] as const) {
     await page.getByLabel('Optional comment').fill('Useful sparse-field regression image')
     await page.getByLabel('Mark this solve result as invalid').check()
     await page.getByLabel('I attest that I own this image or have authority to grant this license.').check()
-    await page.getByRole('button', { name: 'Donate image to validation set' }).click()
+    await page.getByRole('button', { name: 'Contribute image for validation' }).click()
 
-    await expect(page.getByText('Donated to Seiza’s validation set')).toBeVisible()
-    await expect(page.getByText('donated for long-term validation')).toBeVisible()
+    await expect(page.getByText('Contributed to Seiza’s validation set')).toBeVisible()
+    await expect(page.getByText('contributed for long-term validation')).toBeVisible()
     await expect(page.getByText('This result was marked invalid for validation.')).toBeVisible()
     await expect(page.getByText('Useful sparse-field regression image')).toBeVisible()
     expect(donationRequests).toBe(1)
