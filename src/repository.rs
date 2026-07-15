@@ -1,6 +1,8 @@
 use crate::{
     config::{Config, JobBackend},
-    models::{JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions},
+    models::{
+        JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions, ValidationDonation,
+    },
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -38,6 +40,7 @@ pub trait JobRepository: Send + Sync {
         error: Option<String>,
     ) -> Result<bool>;
     async fn retry_failed(&self, job_id: JobId, options: SolveOptions) -> Result<bool>;
+    async fn donate_validation(&self, job_id: JobId, donation: ValidationDonation) -> Result<bool>;
     async fn pending_notifications(&self, limit: usize) -> Result<Vec<JobId>>;
     async fn mark_notification_delivered(&self, job_id: JobId) -> Result<()>;
 }
@@ -92,6 +95,7 @@ impl SqlxJobRepository {
             "CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at)",
             "CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status, lease_expires_at)",
             "CREATE UNIQUE INDEX IF NOT EXISTS jobs_object_key_idx ON jobs(object_key)",
+            "CREATE TABLE IF NOT EXISTS validation_donations (job_id BIGINT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS client_service (owner TEXT PRIMARY KEY, last_served_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS queue_outbox (job_id BIGINT PRIMARY KEY, delivered_at TEXT)",
             "INSERT INTO queue_counters (name, value) VALUES ('jobs', 0) ON CONFLICT(name) DO NOTHING",
@@ -99,6 +103,24 @@ impl SqlxJobRepository {
             sqlx::query(statement).execute(&self.pool).await?;
         }
         Ok(())
+    }
+
+    async fn validation_donation(&self, job_id: JobId) -> Result<Option<ValidationDonation>> {
+        sqlx::query(
+            "SELECT object_key, comment, license_version, donated_at FROM validation_donations WHERE job_id = $1",
+        )
+        .bind(as_i64(job_id)?)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| {
+            Ok(ValidationDonation {
+                object_key: row.try_get("object_key")?,
+                comment: row.try_get("comment")?,
+                license_version: row.try_get("license_version")?,
+                donated_at: decode_time(&row.try_get::<String, _>("donated_at")?)?,
+            })
+        })
+        .transpose()
     }
 
     async fn reclaim_expired(
@@ -217,21 +239,29 @@ impl JobRepository for SqlxJobRepository {
     }
 
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>> {
-        sqlx::query("SELECT * FROM jobs WHERE id = $1")
+        let mut job = sqlx::query("SELECT * FROM jobs WHERE id = $1")
             .bind(as_i64(job_id)?)
             .fetch_optional(&self.pool)
             .await?
             .map(record_from_row)
-            .transpose()
+            .transpose()?;
+        if let Some(job) = &mut job {
+            job.validation_donation = self.validation_donation(job.id).await?;
+        }
+        Ok(job)
     }
 
     async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>> {
-        sqlx::query("SELECT * FROM jobs WHERE object_key = $1")
+        let mut job = sqlx::query("SELECT * FROM jobs WHERE object_key = $1")
             .bind(object_key)
             .fetch_optional(&self.pool)
             .await?
             .map(record_from_row)
-            .transpose()
+            .transpose()?;
+        if let Some(job) = &mut job {
+            job.validation_donation = self.validation_donation(job.id).await?;
+        }
+        Ok(job)
     }
 
     async fn queue_depth(&self) -> Result<usize> {
@@ -318,7 +348,7 @@ impl JobRepository for SqlxJobRepository {
     }
 
     async fn input_key(&self, job_id: JobId, lease_token: String) -> Result<Option<String>> {
-        sqlx::query("SELECT object_key FROM jobs WHERE id = $1 AND status = 'solving' AND lease_token = $2 AND lease_expires_at > $3")
+        sqlx::query("SELECT COALESCE((SELECT object_key FROM validation_donations WHERE job_id = jobs.id), object_key) AS object_key FROM jobs WHERE id = $1 AND status = 'solving' AND lease_token = $2 AND lease_expires_at > $3")
             .bind(as_i64(job_id)?)
             .bind(lease_token)
             .bind(encode_time(Utc::now()))
@@ -370,6 +400,35 @@ impl JobRepository for SqlxJobRepository {
             transaction.rollback().await?;
             Ok(false)
         }
+    }
+
+    async fn donate_validation(&self, job_id: JobId, donation: ValidationDonation) -> Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        let status_query = if self.dialect == SqlDialect::Postgres {
+            "SELECT status FROM jobs WHERE id = $1 FOR UPDATE"
+        } else {
+            "SELECT status FROM jobs WHERE id = $1"
+        };
+        let status = sqlx::query(status_query)
+            .bind(as_i64(job_id)?)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .map(|row| row.try_get::<String, _>("status"))
+            .transpose()?;
+        if !status.is_some_and(|status| status == "succeeded" || status == "failed") {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("INSERT INTO validation_donations (job_id, object_key, comment, license_version, donated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment")
+            .bind(as_i64(job_id)?)
+            .bind(donation.object_key)
+            .bind(donation.comment)
+            .bind(donation.license_version)
+            .bind(encode_time(donation.donated_at))
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(true)
     }
 
     async fn pending_notifications(&self, limit: usize) -> Result<Vec<JobId>> {
@@ -443,6 +502,7 @@ fn record_from_row(row: sqlx::any::AnyRow) -> Result<JobRecord> {
             .map(serde_json::from_str)
             .transpose()?,
         error: row.try_get("error")?,
+        validation_donation: None,
     })
 }
 
@@ -490,6 +550,7 @@ mod tests {
             completed_at: None,
             solution: None,
             error: None,
+            validation_donation: None,
         }
     }
 

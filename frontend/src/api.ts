@@ -73,6 +73,12 @@ export interface Annotations {
   objects: OverlayObject[]
 }
 
+export interface ValidationDonation {
+  comment: string | null
+  license_version: string
+  donated_at: string
+}
+
 export interface Job {
   id: string
   status: JobStatus
@@ -89,6 +95,7 @@ export interface Job {
   wcs_url: string | null
   solution: Solution | null
   error: string | null
+  validation_donation: ValidationDonation | null
 }
 
 interface ApiFailure { error?: { message?: string } }
@@ -195,6 +202,18 @@ export async function retrySolve(jobId: string, options: SolveOptions): Promise<
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
+  }))
+}
+
+export async function donateValidationImage(
+  jobId: string,
+  comment: string,
+  licenseAgreed: boolean,
+): Promise<Job> {
+  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}/validation-donation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment, license_agreed: licenseAgreed }),
   }))
 }
 

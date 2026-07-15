@@ -56,6 +56,7 @@ Admission is separate and uses a token bucket per client/IP. It returns HTTP
 | Concern | Local baseline | AWS deployment | Horizontal production step |
 | --- | --- | --- | --- |
 | Original image | `SEIZA_DATA_DIR/objects` | S3 | Server sweep plus lifecycle defense-in-depth |
+| Donated validation image | protected object namespace | S3 prefix outside temporary lifecycle | explicit image grant plus durable donation metadata |
 | In-progress upload | object-store manifest + chunks | S3 manifest + chunks | Shared object store; resumable across API restarts |
 | Catalog | local readonly path | EFS or immutable image layer | Versioned catalog release |
 | Job record | SQLx SQLite file | DynamoDB or SQLx PostgreSQL | DynamoDB or SQLx PostgreSQL |
@@ -82,6 +83,17 @@ Catalog annotations are regenerated from that WCS, so catalog upgrades do not
 require a new solve. No schema-specific expiration process is required, so the
 same policy works with SQLite, PostgreSQL, and DynamoDB. Production S3 buckets
 should also use a matching lifecycle rule to cover interrupted cleanup.
+
+Ordinary image submission does not transfer ownership and does not opt the
+image into long-term storage. Once a job reaches `succeeded` or `failed`, its
+opaque result page can submit an optional comment plus an affirmative,
+versioned image grant. The object-store abstraction copies the original into
+`SEIZA_VALIDATION_PREFIX`; local and S3 cleanup both exclude that namespace.
+SQLx records the durable object key, comment, grant version, and acceptance
+time in `validation_donations`; DynamoDB stores the same fields on the job
+item. Subsequent preview and retry reads prefer the durable copy, while the
+temporary original remains eligible for normal cleanup. S3 deployments should
+keep the validation prefix outside the temporary-upload lifecycle rule.
 
 The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. Files of
 at least 10 MiB are split into three concurrent TUS partial uploads and joined

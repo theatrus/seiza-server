@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve, retrySolve, submitSolve } from './api'
+import { Annotations, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getSolve, retrySolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import type { OverlayLayers } from './AstroOverlay'
@@ -221,6 +221,7 @@ function SolvePage() {
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Queue a new image.</h1>
       <p className="intro">Only the image is required. Large files upload in parallel, resumable parts, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly donate it afterward.</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -268,7 +269,7 @@ function SolutionPage({ jobId }: { jobId: string }) {
     {job && <SolutionContent job={job} onRetried={(retried) => {
       setJob(retried)
       setPollVersion((version) => version + 1)
-    }} />}
+    }} onDonated={setJob} />}
   </main>
 }
 
@@ -279,7 +280,7 @@ function titleForStatus(status: Job['status']) {
   return 'The field is solved.'
 }
 
-function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
+function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (job: Job) => void; onDonated: (job: Job) => void }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState(defaultOverlayLayers)
@@ -340,11 +341,12 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
     <section className="job-meta">
       <div><span>File</span><strong>{job.original_filename}</strong></div>
       <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
-      <div><span>Image retention</span><strong>{job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
+      <div><span>Image retention</span><strong>{job.validation_donation ? 'donated for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
     </section>
     {job.error && <p className="error">{job.error}</p>}
     {job.status === 'failed' && job.input_available && <RetrySolveForm job={job} onRetried={onRetried} />}
     {job.status === 'failed' && !job.input_available && <p className="expired-note">This image can no longer be retried because its one-day upload retention period has ended. Upload it again to start a new solve.</p>}
+    {!pending.has(job.status) && <ValidationDonationPanel job={job} onDonated={onDonated} />}
     {pending.has(job.status) && <section className="panel waiting"><div className="orbit" aria-hidden="true"><span /></div><p>This durable page refreshes automatically. You can bookmark it or come back later.</p></section>}
     {solution && <>
       {job.preview_url ? <section className="overlay-card">
@@ -370,7 +372,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
             <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} />
           </div>
         </div>
-        <p className="retention-note">The SVG annotations are rendered interactively over the image. The temporary image expires after one day; WCS and catalog metadata remain available.</p>
+        <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This donated image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
       <section className="metric-grid">
         <Metric label="Center RA" value={`${solution.center_ra_deg.toFixed(8)}°`} />
@@ -381,6 +383,57 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
       <WcsDetails job={job} />
     </>}
   </>
+}
+
+function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job: Job) => void }) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (job.validation_donation) {
+    return <section className="panel donation-panel donated-panel">
+      <div><p className="eyebrow">VALIDATION SET</p><h2>Thank you for donating this image.</h2></div>
+      <p>Seiza will retain it under the image grant accepted on {new Date(job.validation_donation.donated_at).toLocaleString()}. You still own the image.</p>
+      {job.validation_donation.comment && <p className="donation-comment"><strong>Your note</strong>{job.validation_donation.comment}</p>}
+    </section>
+  }
+
+  if (!job.input_available) {
+    return <section className="panel donation-panel">
+      <div><p className="eyebrow">VALIDATION SET</p><h2>This image is no longer available to donate.</h2></div>
+      <p>Temporary uploads are deleted after about one day. Upload it again if you would like to contribute it to Seiza’s long-term validation set.</p>
+    </section>
+  }
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    setSubmitting(true)
+    setError(null)
+    try {
+      onDonated(await donateValidationImage(
+        job.id,
+        String(form.get('validation_comment') ?? ''),
+        form.get('validation_license_agreed') === 'on',
+      ))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Image donation failed')
+      setSubmitting(false)
+    }
+  }
+
+  return <section className="panel donation-panel">
+    <div><p className="eyebrow">VALIDATION SET</p><h2>Donate this image to improve Seiza</h2></div>
+    <p className="donation-intro">Ordinary uploads remain yours and are deleted after about one day. If you opt in here, Seiza will keep this image for its long-term validation and training set. A note about why the solve succeeded or failed is optional.</p>
+    <form onSubmit={onSubmit}>
+      <label>Optional comment<textarea name="validation_comment" maxLength={2000} rows={4} placeholder="What makes this image useful for solver validation?" /></label>
+      <label className="license-consent">
+        <input name="validation_license_agreed" type="checkbox" required />
+        <span>I own this image or have authority to grant this license. I keep ownership and grant Seiza and its maintainers a non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable license to store, use, reproduce, modify, create derivative works from, publish, distribute, and otherwise use this image for any purpose, including validation, training, testing, research, documentation, and improving Seiza.</span>
+      </label>
+      <button className="button" disabled={submitting}>{submitting ? 'Donating image…' : 'Donate image to validation set'}</button>
+      {error && <p className="error" role="alert">{error}</p>}
+    </form>
+  </section>
 }
 
 function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
@@ -411,7 +464,7 @@ function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) =>
       <div><p className="eyebrow">TRY AGAIN</p><h2>Re-solve the retained image</h2></div>
       <span className="no-upload-badge">No re-upload</span>
     </div>
-    <p className="retry-intro">Add a position or scale hint and place this same image back in the queue. Its private solution URL and original image-retention deadline stay unchanged.</p>
+    <p className="retry-intro">Add a position or scale hint and place this same image back in the queue. Its private solution URL stays unchanged. {job.validation_donation ? 'The donated validation copy remains available for this retry.' : 'The original image-retention deadline also stays unchanged.'}</p>
     <form onSubmit={onSubmit}>
       <SolveOptionsFields defaults={job.options} />
       <button className="button" disabled={submitting}>{submitting ? 'Queueing retry…' : 'Retry retained image'}</button>

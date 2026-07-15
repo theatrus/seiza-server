@@ -258,6 +258,31 @@ impl SolutionResponse {
 }
 
 #[derive(Debug, Clone)]
+pub struct ValidationDonation {
+    pub object_key: String,
+    pub comment: Option<String>,
+    pub license_version: String,
+    pub donated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationDonationResponse {
+    pub comment: Option<String>,
+    pub license_version: String,
+    pub donated_at: DateTime<Utc>,
+}
+
+impl From<&ValidationDonation> for ValidationDonationResponse {
+    fn from(donation: &ValidationDonation) -> Self {
+        Self {
+            comment: donation.comment.clone(),
+            license_version: donation.license_version.clone(),
+            donated_at: donation.donated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct JobRecord {
     pub id: JobId,
     pub owner: String,
@@ -272,6 +297,15 @@ pub struct JobRecord {
     pub completed_at: Option<DateTime<Utc>>,
     pub solution: Option<SolutionResponse>,
     pub error: Option<String>,
+    pub validation_donation: Option<ValidationDonation>,
+}
+
+impl JobRecord {
+    pub fn input_object_key(&self) -> &str {
+        self.validation_donation
+            .as_ref()
+            .map_or(&self.object_key, |donation| &donation.object_key)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +327,7 @@ pub struct JobResponse {
     pub wcs_url: Option<String>,
     pub solution: Option<SolutionResponse>,
     pub error: Option<String>,
+    pub validation_donation: Option<ValidationDonationResponse>,
 }
 
 /// A short-lived, exclusive worker reservation. The lease token is required
