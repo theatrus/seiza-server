@@ -227,7 +227,7 @@ function SolvePage() {
       <form onSubmit={onSubmit}>
         <div className="file-submit-row">
           <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
-          <button className="button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : 'Queue solve'}</button>
+          <button className="button solve-submit-button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : <><span>Solve</span><span className="go-arrow" aria-hidden="true">→</span></>}</button>
         </div>
         {submitting && <div className="upload-progress" aria-live="polite">
           <progress max="100" value={uploadProgress} />
@@ -345,10 +345,10 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
       <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
       <div><span>Image retention</span><strong>{job.validation_donation ? 'donated for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
     </section>
+    {!pending.has(job.status) && <ValidationDonationPanel job={job} onDonated={onDonated} />}
     {job.error && <p className="error">{job.error}</p>}
     {job.status === 'failed' && job.input_available && <RetrySolveForm job={job} onRetried={onRetried} />}
     {job.status === 'failed' && !job.input_available && <p className="expired-note">This image can no longer be retried because its one-day upload retention period has ended. Upload it again to start a new solve.</p>}
-    {!pending.has(job.status) && <ValidationDonationPanel job={job} onDonated={onDonated} />}
     {pending.has(job.status) && <section className="panel waiting"><div className="orbit" aria-hidden="true"><span /></div><p>This durable page refreshes automatically. You can bookmark it or come back later.</p></section>}
     {solution && <>
       {job.preview_url ? <section className="overlay-card">
@@ -383,6 +383,7 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
         <Metric label="Fit quality" value={`${solution.matched_stars} stars · ${solution.rms_arcsec.toFixed(4)}″ RMS`} />
       </section>
       <WcsDetails job={job} />
+      <ValidationDonationReminder job={job} />
     </>}
   </>
 }
@@ -392,18 +393,21 @@ function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job
   const [error, setError] = useState<string | null>(null)
 
   if (job.validation_donation) {
-    return <section className="panel donation-panel donated-panel">
-      <div><p className="eyebrow">VALIDATION SET</p><h2>Thank you for donating this image.</h2></div>
-      <p>Seiza will retain it under the image grant accepted on {new Date(job.validation_donation.donated_at).toLocaleString()}. You still own the image.</p>
-      {job.validation_donation.solve_is_invalid && <p className="donation-invalid"><strong>Invalid solve</strong>This result was marked invalid for validation.</p>}
-      {job.validation_donation.comment && <p className="donation-comment"><strong>Your note</strong>{job.validation_donation.comment}</p>}
+    return <section className="donation-cta donated-cta" id="validation-donation">
+      <details className="donation-details">
+        <summary><span className="donation-cta-copy"><span className="eyebrow">VALIDATION SET</span><strong>Donated to Seiza’s validation set</strong></span><span className="donation-cta-action">View details</span></summary>
+        <div className="donation-form">
+          <p>Seiza will retain this image under the grant accepted on {new Date(job.validation_donation.donated_at).toLocaleString()}. You still own it.</p>
+          {job.validation_donation.solve_is_invalid && <p className="donation-invalid"><strong>Invalid solve</strong>This result was marked invalid for validation.</p>}
+          {job.validation_donation.comment && <p className="donation-comment"><strong>Your note</strong>{job.validation_donation.comment}</p>}
+        </div>
+      </details>
     </section>
   }
 
   if (!job.input_available) {
-    return <section className="panel donation-panel">
-      <div><p className="eyebrow">VALIDATION SET</p><h2>This image is no longer available to donate.</h2></div>
-      <p>Temporary uploads are deleted after about one day. Upload it again if you would like to contribute it to Seiza’s long-term validation set.</p>
+    return <section className="donation-cta unavailable-cta" id="validation-donation">
+      <span className="donation-cta-copy"><span className="eyebrow">VALIDATION SET</span><strong>Image no longer available to donate</strong></span>
     </section>
   }
 
@@ -425,23 +429,35 @@ function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job
     }
   }
 
-  return <section className="panel donation-panel">
-    <div><p className="eyebrow">VALIDATION SET</p><h2>Donate this image to improve Seiza</h2></div>
-    <p className="donation-intro">Ordinary uploads remain yours and are deleted after about one day. If you opt in here, Seiza will keep this image for its long-term validation and training set. A note about why the solve succeeded or failed is optional.</p>
-    <form onSubmit={onSubmit}>
-      <label>Optional comment<textarea name="validation_comment" maxLength={2000} rows={4} placeholder="What makes this image useful for solver validation?" /></label>
-      <label className="validation-quality">
-        <input name="validation_solve_is_invalid" type="checkbox" />
-        <span><strong>Mark this solve result as invalid</strong><small>Use this for an incorrect WCS, a false positive, or a failed solve that should have succeeded.</small></span>
-      </label>
-      <label className="license-consent">
-        <input name="validation_license_agreed" type="checkbox" required />
-        <span>I own this image or have authority to grant this license. I keep ownership and grant Seiza and its maintainers a non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable license to store, use, reproduce, modify, create derivative works from, publish, distribute, and otherwise use this image for any purpose, including validation, training, testing, research, documentation, and improving Seiza.</span>
-      </label>
-      <button className="button" disabled={submitting}>{submitting ? 'Donating image…' : 'Donate image to validation set'}</button>
-      {error && <p className="error" role="alert">{error}</p>}
-    </form>
+  return <section className="donation-cta" id="validation-donation">
+    <details className="donation-details">
+      <summary><span className="donation-cta-copy"><span className="eyebrow">VALIDATION SET</span><strong>Help improve Seiza with this image</strong></span><span className="donation-cta-action">Review and donate</span></summary>
+      <div className="donation-form">
+        <p className="donation-intro">Ordinary uploads remain yours and are deleted after about one day. If you opt in here, Seiza will keep this image for its long-term validation and training set. A note about why the solve succeeded or failed is optional.</p>
+        <form onSubmit={onSubmit}>
+          <label>Optional comment<textarea name="validation_comment" maxLength={2000} rows={4} placeholder="What makes this image useful for solver validation?" /></label>
+          <label className="validation-quality">
+            <input name="validation_solve_is_invalid" type="checkbox" />
+            <span><strong>Mark this solve result as invalid</strong><small>Use this for an incorrect WCS, a false positive, or a failed solve that should have succeeded.</small></span>
+          </label>
+          <label className="license-consent">
+            <input name="validation_license_agreed" type="checkbox" required />
+            <span><strong>I attest that I own this image or have authority to grant this license.</strong><small>I keep ownership and grant Seiza and its maintainers a non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable license to store, use, reproduce, modify, create derivative works from, publish, distribute, and otherwise use this image for any purpose, including validation, training, testing, research, documentation, and improving Seiza.</small></span>
+          </label>
+          <button className="button" disabled={submitting}>{submitting ? 'Donating image…' : 'Donate image to validation set'}</button>
+          {error && <p className="error" role="alert">{error}</p>}
+        </form>
+      </div>
+    </details>
   </section>
+}
+
+function ValidationDonationReminder({ job }: { job: Job }) {
+  if (job.validation_donation) {
+    return <aside className="donation-reminder"><span>Thank you—this solved image is part of Seiza’s long-term validation set.</span><a href="#validation-donation">View donation details ↑</a></aside>
+  }
+  if (!job.input_available) return null
+  return <aside className="donation-reminder"><span>Help improve future solves by contributing this field to Seiza’s validation set.</span><a href="#validation-donation">Donate this solved image ↑</a></aside>
 }
 
 function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
