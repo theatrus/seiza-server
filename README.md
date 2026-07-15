@@ -125,6 +125,9 @@ Health and queue state:
 curl http://127.0.0.1:8080/api/v1/health
 ```
 
+The health response includes the running `seiza-server` version and the exact
+locked `seiza` crate version under `versions`.
+
 The web client uploads through the TUS 1.0 endpoint at `/api/v1/uploads` using
 5 MiB chunks, automatic retries, and offset-based resume. In-progress manifests
 and chunks live in the configured local or S3 object store, so an API-process

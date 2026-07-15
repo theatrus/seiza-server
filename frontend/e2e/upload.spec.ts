@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { mockHealth } from './health'
 
 const publicId = '91-550e8400-e29b-41d4-a716-446655440000'
 const uploadId = '8c741b20-3c42-4e75-95d4-fbc87cc68730'
@@ -12,6 +13,10 @@ interface UploadConcurrencyState {
 type InstrumentedWindow = Window & {
   __seizaUploadConcurrency?: UploadConcurrencyState
 }
+
+test.beforeEach(async ({ page }) => {
+  await mockHealth(page)
+})
 
 async function instrumentUploadConcurrency(page: Page) {
   await page.addInitScript(() => {
@@ -87,6 +92,22 @@ function queuedJob(id: string, filename: string) {
     validation_donation: null,
   }
 }
+
+test('places the solve action beside the file selector', async ({ page }) => {
+  await page.goto('/solve')
+  const row = page.locator('.file-submit-row')
+  const fileSelector = row.locator('.file-input')
+  const solveButton = row.getByRole('button', { name: 'Queue solve' })
+
+  await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
+  await expect(solveButton).toBeVisible()
+  const fileBox = await fileSelector.boundingBox()
+  const buttonBox = await solveButton.boundingBox()
+  expect(fileBox).not.toBeNull()
+  expect(buttonBox).not.toBeNull()
+  expect(buttonBox!.x).toBeGreaterThan(fileBox!.x + fileBox!.width)
+  expect(Math.abs((buttonBox!.y + buttonBox!.height) - (fileBox!.y + fileBox!.height))).toBeLessThan(2)
+})
 
 test('uploads large images as parallel TUS parts and concatenates them', async ({ page, browserName }) => {
   await instrumentUploadConcurrency(page)

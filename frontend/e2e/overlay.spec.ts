@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
+import { mockHealth } from './health'
 
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => console.error(`[page error] ${error.stack ?? error.message}`))
+  await mockHealth(page)
 })
 
 const publicId = '42-550e8400-e29b-41d4-a716-446655440000'

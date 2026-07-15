@@ -596,6 +596,10 @@ async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
     };
     Ok(Json(json!({
         "status": status,
+        "versions": {
+            "seiza_server": env!("CARGO_PKG_VERSION"),
+            "seiza": env!("SEIZA_DEP_VERSION"),
+        },
         "solver_ready": state.solver.is_ready(),
         "queue_depth": state.repository.queue_depth().await.map_err(ApiError::internal)?,
         "auth_mode": match state.config.auth_mode { AuthMode::Public => "public", AuthMode::StubApiKey => "stub-api-key" },
@@ -2456,6 +2460,21 @@ mod tests {
         assert!(!public_id_matches_job(&locator, 43, &new_key));
         assert_eq!(public_job_sequence("42"), None);
         assert_eq!(public_job_sequence("42-not-a-token"), None);
+    }
+
+    #[tokio::test]
+    async fn health_reports_server_and_solver_versions() {
+        let root = std::env::temp_dir().join(format!("seiza-api-health-{}", Uuid::now_v7()));
+        let state = AppState::new(test_config(&root)).await.unwrap();
+
+        let Json(health) = get_health(State(state)).await.unwrap();
+        assert_eq!(
+            health["versions"]["seiza_server"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(health["versions"]["seiza"], env!("SEIZA_DEP_VERSION"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
