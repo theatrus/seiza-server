@@ -179,6 +179,6 @@ export async function getSolve(jobId: string): Promise<Job> {
 export async function getAnnotations(url: string): Promise<Annotations> {
   const separator = url.includes('?') ? '&' : '?'
   return expectJson<Annotations>(await fetch(
-    `${url}${separator}field_stars=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300`,
+    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150`,
   ))
 }

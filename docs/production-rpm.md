@@ -29,8 +29,9 @@ and change on a different cadence than the server; install them on durable
 storage such as `/srv/seiza/catalog/` and make them readable by the systemd
 service. The packaged `SEIZA_CATALOG_DIR` prefers `stars-deep-gaia17.bin` and
 discovers its matching `blind-gaia16.idx`, with `stars-gaia.bin` and the lite
-catalog as fallbacks. It also discovers `objects.bin`, `transients.bin`, and
-`minor-bodies.bin` there automatically; explicit per-catalog variables
+catalog as fallbacks. It also discovers `objects.bin`,
+`stars-lite-tycho2.ids.bin`, `transients.bin`, and `minor-bodies.bin` there
+automatically; explicit per-catalog variables
 override discovery.
 This also keeps an application upgrade from silently changing solver results.
 
@@ -100,8 +101,9 @@ sudo chgrp -R seiza-server /srv/seiza/catalog
 sudo chmod -R g+rX /srv/seiza/catalog
 ```
 
-The hosted prebuilt set supplies the star, deep-sky/named-star, and transient
-catalogs. The v3 object files are memory-mapped and contain their spatial and
+The hosted prebuilt set supplies the star, stellar-identifier,
+deep-sky/named-star, and transient catalogs. The v3 object files are
+memory-mapped and contain their spatial and
 name indices; downloading in place is safe because the CLI verifies a temporary
 file and atomically renames it into place. The server notices that replacement
 and reloads it without a restart. A minor-body catalog is built separately from

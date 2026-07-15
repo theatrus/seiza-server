@@ -8,6 +8,7 @@ const pending = new Set(['queued', 'solving'])
 const defaultOverlayLayers: OverlayLayers = {
   deepSky: true,
   namedStars: true,
+  starIdentifiers: false,
   fieldStars: false,
   transients: true,
   minorBodies: true,
@@ -284,6 +285,7 @@ function SolutionContent({ job }: { job: Job }) {
   const unavailableLayers = overlayAvailability && [
     ['deep_sky', 'Deep sky'],
     ['named_stars', 'Named stars'],
+    ['star_identifiers', 'Star identifiers'],
     ['transients', 'Transients'],
     ['minor_bodies', 'Solar system'],
   ].filter(([key]) => overlayAvailability[key] === false
@@ -450,6 +452,8 @@ function countObjects(objects: OverlayObject[]) {
   for (const object of objects) {
     const layer = object.kind === 'field-star'
       ? 'field_stars'
+      : object.kind === 'identified-star'
+        ? 'star_identifiers'
       : object.kind === 'star' || object.kind === 'double-star'
         ? 'named_stars'
         : object.kind === 'transient'

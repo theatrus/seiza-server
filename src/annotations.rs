@@ -1,4 +1,7 @@
-use crate::models::{AnnotationResponse, OverlayObject, SolutionResponse};
+use crate::{
+    models::{AnnotationResponse, OverlayObject, SolutionResponse},
+    star_identifiers::{StarIdentifierLayer, StarIdentifierMatch},
+};
 use chrono::{DateTime, NaiveDate, Utc};
 use seiza::{
     catalog::{StarCatalog, TileCatalog, angular_separation_deg},
@@ -21,12 +24,24 @@ use std::{
 pub struct AnnotationOptions {
     pub deep_sky: bool,
     pub named_stars: bool,
+    pub star_identifiers: bool,
     pub field_stars: bool,
     pub transients: bool,
     pub minor_bodies: bool,
     pub historical_transients: bool,
     pub field_star_mag_limit: f32,
     pub max_field_stars: usize,
+    pub star_identifier_mag_limit: f32,
+    pub max_star_identifiers: usize,
+}
+
+pub struct StarIdentifierCatalogSearch {
+    pub matches: Vec<StarIdentifierMatch>,
+    pub catalog_version: String,
+    pub catalog_entries: usize,
+    pub spatial_labels: usize,
+    pub attribution: String,
+    pub epoch: f64,
 }
 
 impl Default for AnnotationOptions {
@@ -34,12 +49,15 @@ impl Default for AnnotationOptions {
         Self {
             deep_sky: true,
             named_stars: true,
+            star_identifiers: false,
             field_stars: false,
             transients: true,
             minor_bodies: true,
             historical_transients: false,
             field_star_mag_limit: 10.0,
             max_field_stars: 300,
+            star_identifier_mag_limit: 10.0,
+            max_star_identifiers: 150,
         }
     }
 }
@@ -49,6 +67,7 @@ pub struct AnnotationEngine {
     stars: Option<Arc<TileCatalog>>,
     star_version: Option<String>,
     objects: Option<ReloadingCatalog<ObjectCatalog>>,
+    star_identifiers: Option<ReloadingCatalog<StarIdentifierLayer>>,
     transients: Option<ReloadingCatalog<ObjectCatalog>>,
     minor_bodies: Option<ReloadingCatalog<MinorBodyCatalog>>,
 }
@@ -58,6 +77,7 @@ impl AnnotationEngine {
         stars: Option<Arc<TileCatalog>>,
         star_path: Option<&Path>,
         object_path: Option<&Path>,
+        star_identifier_path: Option<&Path>,
         transient_path: Option<&Path>,
         minor_body_path: Option<&Path>,
     ) -> Self {
@@ -68,6 +88,13 @@ impl AnnotationEngine {
                 .map(|value| value.version()),
             objects: object_path.map(|path| {
                 ReloadingCatalog::new(path.to_owned(), "deep-sky", ObjectCatalog::open)
+            }),
+            star_identifiers: star_identifier_path.map(|path| {
+                ReloadingCatalog::new(
+                    path.to_owned(),
+                    "star-identifier",
+                    StarIdentifierLayer::open,
+                )
             }),
             transients: transient_path.map(|path| {
                 ReloadingCatalog::new(path.to_owned(), "transient", ObjectCatalog::open)
@@ -81,7 +108,10 @@ impl AnnotationEngine {
     }
 
     pub fn is_configured(&self) -> bool {
-        self.objects.is_some() || self.transients.is_some() || self.minor_bodies.is_some()
+        self.objects.is_some()
+            || self.star_identifiers.is_some()
+            || self.transients.is_some()
+            || self.minor_bodies.is_some()
     }
 
     pub fn annotate(
@@ -106,6 +136,7 @@ impl AnnotationEngine {
         let mut available = BTreeMap::from([
             ("deep_sky".into(), false),
             ("named_stars".into(), false),
+            ("star_identifiers".into(), false),
             ("field_stars".into(), self.stars.is_some()),
             ("transients".into(), false),
             ("historical_transients".into(), false),
@@ -131,6 +162,15 @@ impl AnnotationEngine {
                 options,
                 false,
             );
+        }
+        if let Some(catalog) = &self.star_identifiers
+            && let Some((catalog, version)) = catalog.current()
+        {
+            available.insert("star_identifiers".into(), true);
+            versions.push(format!("star-identifiers:{version}"));
+            if options.star_identifiers {
+                append_star_identifier_catalog(&mut objects, &catalog, &wcs, dimensions, options);
+            }
         }
         if let Some(catalog) = &self.transients
             && let Some((catalog, version)) = catalog.current()
@@ -174,6 +214,7 @@ impl AnnotationEngine {
         let mut counts = BTreeMap::from([
             ("deep_sky".into(), 0),
             ("named_stars".into(), 0),
+            ("star_identifiers".into(), 0),
             ("field_stars".into(), 0),
             ("transients".into(), 0),
             ("historical_transients".into(), 0),
@@ -243,8 +284,34 @@ impl AnnotationEngine {
         Ok(Some((matches, version, catalog_objects)))
     }
 
+    pub fn search_star_identifiers(
+        &self,
+        query: &str,
+        prefix: bool,
+        limit: usize,
+    ) -> io::Result<Option<StarIdentifierCatalogSearch>> {
+        let Some(catalog) = &self.star_identifiers else {
+            return Ok(None);
+        };
+        let Some((catalog, version)) = catalog.current() else {
+            return Ok(None);
+        };
+        let matches = catalog.search(query, prefix, limit)?;
+        Ok(Some(StarIdentifierCatalogSearch {
+            matches,
+            catalog_version: version,
+            catalog_entries: catalog.len(),
+            spatial_labels: catalog.label_count(),
+            attribution: catalog.attribution().to_owned(),
+            epoch: catalog.epoch(),
+        }))
+    }
+
     fn warm_catalogs(&self) {
         if let Some(catalog) = &self.objects {
+            let _ = catalog.current();
+        }
+        if let Some(catalog) = &self.star_identifiers {
             let _ = catalog.current();
         }
         if let Some(catalog) = &self.transients {
@@ -315,6 +382,63 @@ fn append_object_catalog(
             direction_pa_deg: None,
             direction_angle_deg: None,
         });
+    }
+}
+
+fn append_star_identifier_catalog(
+    output: &mut Vec<OverlayObject>,
+    catalog: &StarIdentifierLayer,
+    wcs: &Wcs,
+    dimensions: (u32, u32),
+    options: &AnnotationOptions,
+) {
+    let labels = catalog.labels_in_footprint(
+        wcs,
+        dimensions,
+        options.star_identifier_mag_limit,
+        options.max_star_identifiers.saturating_mul(8),
+    );
+    let mut added = 0usize;
+    for label in labels {
+        // `objects.bin` already carries IAU and bright-star labels. Avoid
+        // drawing a second label at the same position when both layers are
+        // enabled, while still exposing variables and double stars that only
+        // exist in the identifier sidecar.
+        let already_labeled = output.iter().any(|object| {
+            matches!(object.kind.as_str(), "star" | "double-star")
+                && object.ra_deg.zip(object.dec_deg).is_some_and(|(ra, dec)| {
+                    angular_separation_deg(ra, dec, label.ra, label.dec) <= 3.0 / 3_600.0
+                })
+        });
+        if already_labeled {
+            continue;
+        }
+        let Some((x, y)) = wcs.world_to_pixel(label.ra, label.dec) else {
+            continue;
+        };
+        output.push(OverlayObject {
+            name: label.designation,
+            common_name: label.detail,
+            kind: "identified-star".into(),
+            mag: label.mag,
+            x,
+            y,
+            semi_major_px: 0.0,
+            semi_minor_px: 0.0,
+            angle_deg: 0.0,
+            source: Some(format!("star_identifiers:{}", label.catalog.as_str())),
+            ra_deg: Some(label.ra),
+            dec_deg: Some(label.dec),
+            discovered: None,
+            near_capture: None,
+            distance_au: None,
+            direction_pa_deg: None,
+            direction_angle_deg: None,
+        });
+        added += 1;
+        if added >= options.max_star_identifiers {
+            break;
+        }
     }
 }
 
@@ -453,6 +577,7 @@ fn transient_near_capture(discovered: Option<&str>, capture: Option<DateTime<Utc
 
 fn layer_name(kind: &str) -> &'static str {
     match kind {
+        "identified-star" => "star_identifiers",
         "field-star" => "field_stars",
         "star" | "double-star" => "named_stars",
         "transient" => "transients",
@@ -552,7 +677,10 @@ impl<T> ReloadingCatalog<T> {
 mod tests {
     use super::*;
     use crate::models::WcsResponse;
-    use seiza::objects::{ObjectMetadata, SkyObject};
+    use seiza::{
+        objects::{ObjectMetadata, SkyObject},
+        star_ids::{StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind},
+    };
 
     #[test]
     fn transient_dates_are_scoped_around_capture_time() {
@@ -593,7 +721,7 @@ mod tests {
         ObjectCatalog::new(vec![object("M 1", 10.0)])
             .write_to(&path)
             .unwrap();
-        let engine = AnnotationEngine::new(None, None, Some(&path), None, None);
+        let engine = AnnotationEngine::new(None, None, Some(&path), None, None, None);
         let solution = SolutionResponse {
             center_ra_deg: 10.0,
             center_dec_deg: 20.0,
@@ -625,6 +753,69 @@ mod tests {
         let second = engine.annotate(1, &solution, None, &AnnotationOptions::default());
         assert_eq!(second.objects.len(), 2);
         assert_ne!(first.catalog_version, second.catalog_version);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stellar_identifier_labels_are_an_independent_annotation_layer() {
+        let path = std::env::temp_dir().join(format!(
+            "seiza-server-annotation-star-ids-{}.bin",
+            uuid::Uuid::now_v7()
+        ));
+        let mut builder = StarIdentifierCatalogBuilder::new(2025.5, "test identifiers");
+        builder
+            .add_name(
+                StarNameCatalog::GeneralCatalogOfVariableStars,
+                StarNameKind::VariableStar,
+                "RR Lyr",
+                "gcvs:RR-Lyr",
+                "RRAB",
+                10.0,
+                20.0,
+                Some(7.1),
+            )
+            .unwrap();
+        builder.write_to(&path).unwrap();
+        let engine = AnnotationEngine::new(None, None, None, Some(&path), None, None);
+        let solution = SolutionResponse {
+            center_ra_deg: 10.0,
+            center_dec_deg: 20.0,
+            pixel_scale_arcsec_per_pixel: 3.6,
+            matched_stars: 10,
+            rms_arcsec: 0.5,
+            image_width: 200,
+            image_height: 200,
+            wcs: WcsResponse {
+                crval: [10.0, 20.0],
+                crpix: [100.0, 100.0],
+                cd: [[-0.001, 0.0], [0.0, -0.001]],
+                ctype: ["RA---TAN".into(), "DEC--TAN".into()],
+                cunit: ["deg".into(), "deg".into()],
+                radesys: "ICRS".into(),
+                equinox: 2000.0,
+            },
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
+        };
+
+        let hidden = engine.annotate(1, &solution, None, &AnnotationOptions::default());
+        assert!(hidden.available["star_identifiers"]);
+        assert_eq!(hidden.counts["star_identifiers"], 0);
+
+        let visible = engine.annotate(
+            1,
+            &solution,
+            None,
+            &AnnotationOptions {
+                star_identifiers: true,
+                ..AnnotationOptions::default()
+            },
+        );
+        assert_eq!(visible.counts["star_identifiers"], 1);
+        assert_eq!(visible.objects[0].kind, "identified-star");
+        assert_eq!(visible.objects[0].name, "RR Lyr");
         std::fs::remove_file(path).unwrap();
     }
 }
