@@ -14,7 +14,11 @@ curl 'https://seiza.fyi/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&k
 curl 'https://seiza.fyi/api/v1/catalog/objects/search?q=M31'
 
 # Prefix search across names, aliases, and stable IDs
-curl 'https://seiza.fyi/api/v1/catalog/objects/search?q=ced&prefix=true&limit=20'`
+curl 'https://seiza.fyi/api/v1/catalog/objects/search?q=ced&prefix=true&limit=20'
+
+# Exact TYC/HIP lookup or stellar-name prefix completion
+curl 'https://seiza.fyi/api/v1/catalog/stars/search?q=TYC%205949-2777-1'
+curl 'https://seiza.fyi/api/v1/catalog/stars/search?q=RR%20L&prefix=true&limit=20'`
 
 const tusExample = `# Create an upload. Upload-Metadata values use base64.
 curl -i -X POST https://seiza.fyi/api/v1/uploads \\
@@ -96,7 +100,8 @@ export function ApiDocsPage() {
           <h3>Annotation and overlay query parameters</h3>
           <div className="option-table">
             <OptionRow name="deep_sky, named_stars, transients, minor_bodies" defaultValue="true">Enable each installed catalog layer.</OptionRow>
-            <OptionRow name="field_stars, historical_transients" defaultValue="false">Enable dense field-star markers or older transient events.</OptionRow>
+            <OptionRow name="star_identifiers, field_stars, historical_transients" defaultValue="false">Enable Tycho-sidecar labels, dense field-star markers, or older transient events.</OptionRow>
+            <OptionRow name="star_identifier_mag_limit / max_star_identifiers" defaultValue="10.0 / 150">Limit stellar-identifier labels by magnitude and count.</OptionRow>
             <OptionRow name="field_star_mag_limit" defaultValue="10.0">Field-star limiting magnitude, clamped from −2 through 20.</OptionRow>
             <OptionRow name="max_field_stars" defaultValue="300">Maximum field stars, clamped from 1 through 2,000.</OptionRow>
             <OptionRow name="objects, grid" defaultValue="true, false">Composite SVG controls; annotation filters above also apply.</OptionRow>
@@ -133,10 +138,11 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="catalog-api" eyebrow="SEIZA 0.4.1 CATALOGS" title="Search the sky without uploading an image.">
-          <p>The object API reads Seiza’s memory-mapped v3 catalog and returns stable IDs, aliases, hierarchy, source provenance, sizes, magnitudes, and predicted prominence. It also remains compatible with legacy v1 files, whose provenance fields are empty.</p>
+          <p>The object API reads Seiza’s memory-mapped v3 catalog and returns stable IDs, aliases, hierarchy, source provenance, sizes, magnitudes, and predicted prominence. The stellar API reads the Tycho identifier sidecar for exact TYC/HIP/catalog lookup and proper, Bayer/Flamsteed, variable, and double-star name completion.</p>
           <div className="endpoint-list compact">
             <Endpoint method="GET" path="/api/v1/catalog/objects">Cone query using required <code>ra</code>, <code>dec</code>, and <code>radius</code>.</Endpoint>
             <Endpoint method="GET" path="/api/v1/catalog/objects/search">Exact or prefix lookup across designations, aliases, common names, and stable IDs.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/catalog/stars/search">Exact TYC/HIP/name lookup or textual stellar-name prefix completion.</Endpoint>
           </div>
           <div className="option-table">
             <OptionRow name="kinds" defaultValue="all">Comma-separated kinds such as <code>galaxy</code>, <code>nebula</code>, <code>dark-nebula</code>, or <code>hii-region</code>.</OptionRow>
@@ -176,7 +182,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="errors" eyebrow="BEHAVIOR" title="Structured failures and explicit retention.">
-          <p>JSON failures use a stable envelope. Admission limits return <code>429</code> with <code>Retry-After</code>; invalid requests return <code>400</code>; expired image artifacts return <code>410</code>; catalog endpoints return <code>503</code> when no object catalog is installed.</p>
+          <p>JSON failures use a stable envelope. Admission limits return <code>429</code> with <code>Retry-After</code>; invalid requests return <code>400</code>; expired image artifacts return <code>410</code>; catalog endpoints return <code>503</code> when their corresponding catalog is not installed.</p>
           <CodeExample label="Error response" code={errorExample} />
           <div className="api-facts">
             <div><strong>100 MB</strong><span>Default complete-image limit, configurable by the operator.</span></div>

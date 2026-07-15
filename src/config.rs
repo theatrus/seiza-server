@@ -86,6 +86,7 @@ pub struct Config {
     pub catalog_path: Option<PathBuf>,
     pub blind_index_path: Option<PathBuf>,
     pub object_catalog_path: Option<PathBuf>,
+    pub star_identifier_catalog_path: Option<PathBuf>,
     pub transient_catalog_path: Option<PathBuf>,
     pub minor_body_catalog_path: Option<PathBuf>,
     pub job_backend: JobBackend,
@@ -170,6 +171,11 @@ impl Config {
                 env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
                 &catalog_dirs,
                 &["objects.bin", "objects-openngc.bin"],
+            ),
+            star_identifier_catalog_path: resolve_catalog_path(
+                env::var_os("SEIZA_STAR_IDENTIFIER_DATA").map(PathBuf::from),
+                &catalog_dirs,
+                &["stars-lite-tycho2.ids.bin", "stars.ids.bin"],
             ),
             transient_catalog_path: resolve_catalog_path(
                 env::var_os("SEIZA_TRANSIENT_DATA").map(PathBuf::from),
@@ -275,11 +281,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let catalog = directory.join("objects.bin");
+        let identifiers = directory.join("stars-lite-tycho2.ids.bin");
         std::fs::write(&catalog, b"catalog").unwrap();
+        std::fs::write(&identifiers, b"identifiers").unwrap();
 
         assert_eq!(
             resolve_catalog_path(None, std::slice::from_ref(&directory), &["objects.bin"]),
             Some(catalog)
+        );
+        assert_eq!(
+            resolve_catalog_path(
+                None,
+                std::slice::from_ref(&directory),
+                &["stars-lite-tycho2.ids.bin", "stars.ids.bin"]
+            ),
+            Some(identifiers)
         );
 
         std::fs::remove_dir_all(directory).unwrap();

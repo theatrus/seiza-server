@@ -9,6 +9,7 @@ use crate::{
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
     solver::{SolverEngine, capture_time_from_bytes, dimensions_from_bytes, full_png, preview_png},
+    star_identifiers::StarIdentifierMatch,
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
     uploads::{ResumableUpload, ResumableUploadError, TUS_EXTENSIONS, TUS_VERSION},
@@ -69,6 +70,7 @@ impl AppState {
             solver.catalog(),
             config.catalog_path.as_deref(),
             config.object_catalog_path.as_deref(),
+            config.star_identifier_catalog_path.as_deref(),
             config.transient_catalog_path.as_deref(),
             config.minor_body_catalog_path.as_deref(),
         );
@@ -455,6 +457,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/catalog/objects/search",
             get(search_catalog_objects),
         )
+        .route("/api/v1/catalog/stars/search", get(search_star_identifiers))
         .route("/api/v1/solves", post(post_solve))
         .route(
             "/api/v1/uploads",
@@ -601,6 +604,15 @@ struct CatalogObjectSearchQuery {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct StarIdentifierSearchQuery {
+    q: String,
+    #[serde(default)]
+    prefix: bool,
+    #[serde(default = "default_catalog_search_limit")]
+    limit: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct CatalogObjectsResponse {
     catalog_version: String,
@@ -615,6 +627,17 @@ struct CatalogObjectSearchResponse {
     catalog_objects: usize,
     returned: usize,
     matches: Vec<CatalogObjectNameResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct StarIdentifierSearchResponse {
+    catalog_version: String,
+    catalog_entries: usize,
+    spatial_labels: usize,
+    attribution: String,
+    epoch: f64,
+    returned: usize,
+    matches: Vec<StarIdentifierMatch>,
 }
 
 #[derive(Debug, Serialize)]
@@ -765,9 +788,43 @@ async fn search_catalog_objects(
     }))
 }
 
+async fn search_star_identifiers(
+    State(state): State<AppState>,
+    Query(params): Query<StarIdentifierSearchQuery>,
+) -> Result<Json<StarIdentifierSearchResponse>, ApiError> {
+    validate_catalog_limit(params.limit, MAX_CATALOG_SEARCH_LIMIT)?;
+    let query = params.q.trim();
+    if query.is_empty() {
+        return Err(ApiError::bad_request("q must not be empty"));
+    }
+    if query.len() > 256 {
+        return Err(ApiError::bad_request("q must be at most 256 bytes"));
+    }
+    let result = state
+        .annotations
+        .search_star_identifiers(query, params.prefix, params.limit)
+        .map_err(ApiError::internal)?
+        .ok_or_else(star_identifier_catalog_unavailable)?;
+    Ok(Json(StarIdentifierSearchResponse {
+        catalog_version: result.catalog_version,
+        catalog_entries: result.catalog_entries,
+        spatial_labels: result.spatial_labels,
+        attribution: result.attribution,
+        epoch: result.epoch,
+        returned: result.matches.len(),
+        matches: result.matches,
+    }))
+}
+
 fn catalog_unavailable() -> ApiError {
     ApiError::service_unavailable(
         "object catalog is not configured or could not be opened; set SEIZA_OBJECT_DATA",
+    )
+}
+
+fn star_identifier_catalog_unavailable() -> ApiError {
+    ApiError::service_unavailable(
+        "stellar identifier catalog is not configured or could not be opened; set SEIZA_STAR_IDENTIFIER_DATA",
     )
 }
 
@@ -1281,6 +1338,8 @@ struct AnnotationQuery {
     #[serde(default = "default_true")]
     named_stars: bool,
     #[serde(default)]
+    star_identifiers: bool,
+    #[serde(default)]
     field_stars: bool,
     #[serde(default = "default_true")]
     transients: bool,
@@ -1292,6 +1351,10 @@ struct AnnotationQuery {
     field_star_mag_limit: f32,
     #[serde(default = "default_field_star_limit")]
     max_field_stars: usize,
+    #[serde(default = "default_star_identifier_magnitude")]
+    star_identifier_mag_limit: f32,
+    #[serde(default = "default_star_identifier_limit")]
+    max_star_identifiers: usize,
 }
 
 impl AnnotationQuery {
@@ -1299,12 +1362,15 @@ impl AnnotationQuery {
         AnnotationOptions {
             deep_sky: self.deep_sky,
             named_stars: self.named_stars,
+            star_identifiers: self.star_identifiers,
             field_stars: self.field_stars,
             transients: self.transients,
             minor_bodies: self.minor_bodies,
             historical_transients: self.historical_transients,
             field_star_mag_limit: self.field_star_mag_limit.clamp(-2.0, 20.0),
             max_field_stars: self.max_field_stars.clamp(1, 2_000),
+            star_identifier_mag_limit: self.star_identifier_mag_limit.clamp(-2.0, 20.0),
+            max_star_identifiers: self.max_star_identifiers.clamp(1, 1_000),
         }
     }
 }
@@ -1315,6 +1381,14 @@ fn default_field_star_magnitude() -> f32 {
 
 fn default_field_star_limit() -> usize {
     300
+}
+
+fn default_star_identifier_magnitude() -> f32 {
+    10.0
+}
+
+fn default_star_identifier_limit() -> usize {
+    150
 }
 
 fn default_true() -> bool {
@@ -1993,6 +2067,9 @@ mod tests {
     use super::*;
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
     use seiza::objects::{ObjectCatalog, ObjectMetadata};
+    use seiza::star_ids::{
+        StarIdentifier, StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind,
+    };
 
     #[test]
     fn public_solution_locators_require_the_random_upload_token() {
@@ -2182,6 +2259,71 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn stellar_identifier_api_resolves_tycho_and_name_prefixes() {
+        let root = std::env::temp_dir().join(format!("seiza-api-star-ids-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        let catalog_path = root.join("stars-lite-tycho2.ids.bin");
+        let mut builder = StarIdentifierCatalogBuilder::new(2025.5, "test identifiers");
+        builder
+            .add(
+                StarIdentifier::Tycho2 {
+                    region: 5949,
+                    number: 2777,
+                    component: 1,
+                },
+                291.366,
+                42.784,
+                7.1,
+            )
+            .unwrap();
+        builder
+            .add_name(
+                StarNameCatalog::GeneralCatalogOfVariableStars,
+                StarNameKind::VariableStar,
+                "RR Lyr",
+                "gcvs:RR-Lyr",
+                "RRAB",
+                291.366,
+                42.784,
+                Some(7.1),
+            )
+            .unwrap();
+        builder.write_to(&catalog_path).unwrap();
+
+        let mut config = test_config(&root);
+        config.star_identifier_catalog_path = Some(catalog_path);
+        let state = AppState::new(config).await.unwrap();
+        let Json(tycho) = search_star_identifiers(
+            State(state.clone()),
+            Query(StarIdentifierSearchQuery {
+                q: "TYC 5949-2777-1".into(),
+                prefix: false,
+                limit: 10,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tycho.matches[0].stable_id, "tycho2:5949-2777-1");
+        assert_eq!(tycho.attribution, "test identifiers");
+
+        let Json(names) = search_star_identifiers(
+            State(state.clone()),
+            Query(StarIdentifierSearchQuery {
+                q: "RR L".into(),
+                prefix: true,
+                limit: 10,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(names.returned, 1);
+        assert_eq!(names.matches[0].designation, "RR Lyr");
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn tus_request_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert("tus-resumable", HeaderValue::from_static(TUS_VERSION));
@@ -2209,6 +2351,7 @@ mod tests {
             catalog_path: None,
             blind_index_path: None,
             object_catalog_path: None,
+            star_identifier_catalog_path: None,
             transient_catalog_path: None,
             minor_body_catalog_path: None,
             job_backend: JobBackend::Sqlx,

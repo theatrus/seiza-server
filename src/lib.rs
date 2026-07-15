@@ -8,6 +8,7 @@ pub mod overlay;
 pub mod rate_limit;
 pub mod repository;
 pub mod solver;
+pub mod star_identifiers;
 pub mod storage;
 pub mod transport;
 pub mod uploads;

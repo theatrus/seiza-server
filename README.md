@@ -17,9 +17,9 @@ disappears on a process restart.
 
 - Native JSON API: resumable TUS uploads (with multipart fallback), job polling,
   explicit WCS/quality output, refreshable catalog annotations, downloadable
-  FITS-style WCS headers, indexed coordinate/name catalog queries, an optional
-  composite overlay endpoint, a 100 MB default file limit, structured errors,
-  and CORS.
+  FITS-style WCS headers, indexed object and stellar-identifier queries,
+  optional Tycho/Bright Star/GCVS/WDS/IAU label overlays, a composite overlay
+  endpoint, a 100 MB default file limit, structured errors, and CORS.
 - Astrometry.net-compatible API subset: `POST /api/login`, `POST /api/upload`,
   `GET /api/submissions/:id`, `GET /api/jobs/:id`,
   `GET /api/jobs/:id/calibration`, and `GET /api/jobs/:id/info`.
@@ -51,7 +51,10 @@ Install Seiza CLI 0.4.1 or newer, then get the prebuilt catalogs and maintained
 blind index. The server automatically prefers the deep Gaia G<=17 catalog and
 its matching G<=16 index when both are present. Seiza 0.4.1's prebuilt object
 catalog is memory-mapped, includes the expanded LBN and Cederblad datasets, and
-provides embedded spatial and designation indices.
+provides embedded spatial and designation indices. The prebuilt bundle also
+includes `stars-lite-tycho2.ids.bin`; the server turns its proper,
+Bayer/Flamsteed, variable, and double-star designations into a separate,
+magnitude-limited overlay layer.
 
 ```bash
 cargo install seiza-cli
@@ -160,16 +163,17 @@ The grid is projected through the solved TAN WCS rather than drawn in image
 coordinates, so its meridians and parallels reflect field curvature, rotation,
 parity, and RA wraparound. The solution page draws that grid and catalog
 markers as a transparent React SVG over the preview, with independent controls
-for deep-sky objects, named stars, field stars, transients, minor bodies, and
-historical transients. **Download rendered PNG** fetches the retained image at
+for deep-sky objects, named stars, Tycho-sidecar star identifiers, field stars,
+transients, minor bodies, and historical transients. **Download rendered PNG** fetches the retained image at
 full resolution and composites the currently selected layers into a PNG in the
 browser. The exported image carries a small Seiza logo, “Solved with Seiza,”
 and `seiza.fyi` mark; it does not download an SVG.
 
 `GET /api/v1/solves/:public_id/overlay.svg` remains as an optional self-contained
 image output for API clients. Its query supports `objects`, `grid`,
-`deep_sky`, `named_stars`, `field_stars`, `transients`, `minor_bodies`,
-`historical_transients`, `field_star_mag_limit`, and `max_field_stars`.
+`deep_sky`, `named_stars`, `star_identifiers`, `field_stars`, `transients`,
+`minor_bodies`, `historical_transients`, `star_identifier_mag_limit`,
+`max_star_identifiers`, `field_star_mag_limit`, and `max_field_stars`.
 
 The JSON solution includes the full TAN/ICRS WCS (`CTYPE`, `CUNIT`, `CRVAL`,
 zero-indexed internal `CRPIX`, CD matrix, `RADESYS`, and `EQUINOX`), the four
@@ -186,6 +190,8 @@ common-name, extent-overlap, result-limit, and sort controls:
 curl "http://127.0.0.1:8080/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&kinds=galaxy,nebula&max_mag=14&sort=prominence&limit=100"
 curl "http://127.0.0.1:8080/api/v1/catalog/objects/search?q=M31"
 curl "http://127.0.0.1:8080/api/v1/catalog/objects/search?q=ced&prefix=true&limit=20"
+curl "http://127.0.0.1:8080/api/v1/catalog/stars/search?q=TYC%205949-2777-1"
+curl "http://127.0.0.1:8080/api/v1/catalog/stars/search?q=RR%20L&prefix=true&limit=20"
 ```
 
 `sort` accepts `prominence`, `size`, `magnitude`, `distance`, or `name`.
@@ -253,6 +259,7 @@ are currently supported:
 | `SEIZA_STAR_DATA` | unset | Seiza tile catalog path; automatic discovery prefers `stars-deep-gaia17.bin` |
 | `SEIZA_BLIND_INDEX` | unset | Seiza persisted blind-index path; automatic discovery uses `blind-gaia16.idx` |
 | `SEIZA_OBJECT_DATA` | unset | Optional Seiza object catalog for named overlay annotations |
+| `SEIZA_STAR_IDENTIFIER_DATA` | unset | Optional Tycho/Bright Star/GCVS/WDS/IAU identifier sidecar; automatic discovery uses `stars-lite-tycho2.ids.bin` |
 | `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |
 | `SEIZA_MINOR_BODY_DATA` | unset | Optional reloadable Seiza minor-body orbital-elements catalog |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |

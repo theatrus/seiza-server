@@ -367,6 +367,7 @@ fn format_dec(dec_degrees: f64) -> String {
 fn render_object(output: &mut String, object: &OverlayObject, width: f64, height: f64) {
     let color = match object.kind.as_str() {
         "star" | "double-star" => "#ffe45e",
+        "identified-star" => "#b7a6ff",
         "transient" => "#ff4fd8",
         "comet" => "#6df2a2",
         "asteroid" => "#ffad5c",
@@ -404,7 +405,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
     }
 
     match object.kind.as_str() {
-        "star" | "double-star" => {
+        "star" | "double-star" | "identified-star" => {
             let _ = write!(
                 output,
                 r#"<path class="marker" stroke="{color}" d="M {x1:.2} {y:.2} H {x2:.2} M {x3:.2} {y:.2} H {x4:.2}" />"#,

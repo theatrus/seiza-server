@@ -112,6 +112,12 @@ catalog files are checked for replacement and reloaded without a server
 restart. Minor bodies are propagated to the capture time; FITS `DATE-OBS` is
 captured during submission and non-FITS clients can provide it explicitly.
 
+The optional `SEIZASI1` stellar-identifier sidecar is likewise memory-mapped
+and hot-reloaded. At open time the server chooses one preferred human-facing
+designation per stable stellar ID and builds a small sky-bin index. Annotation
+requests project only the matching bins through the WCS, while
+`/api/v1/catalog/stars/search` retains exact TYC/HIP and indexed textual lookup.
+
 Seiza 0.4.1 object catalogs are read-only memory maps with embedded spatial and
 designation indices. Overlay projection and `/api/v1/catalog/objects` cone
 queries therefore materialize only matching records, while
@@ -123,8 +129,10 @@ the full catalog size.
 
 This boundary keeps HTTP and cloud-queue workers interchangeable while catalog
 updates immediately improve old solution pages. Named stars come from the
-object catalog; an optional field-star layer projects the solve tile catalog
-with a magnitude threshold and result cap.
+object catalog; the independent Star identifiers layer adds proper,
+Bayer/Flamsteed, variable, and double-star labels from the Tycho sidecar; and
+an optional field-star layer projects the solve tile catalog with a magnitude
+threshold and result cap.
 
 Native result URLs use `<internal sequence>-<random UUID>`. The sequence keeps
 repository lookups efficient, while the UUID must match the random token stored

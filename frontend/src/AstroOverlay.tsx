@@ -4,6 +4,7 @@ import { OverlayObject, Solution } from './api'
 export interface OverlayLayers {
   deepSky: boolean
   namedStars: boolean
+  starIdentifiers: boolean
   fieldStars: boolean
   transients: boolean
   minorBodies: boolean
@@ -14,6 +15,7 @@ export interface OverlayLayers {
 const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
   ['deepSky', 'Deep sky', 'deep_sky'],
   ['namedStars', 'Named stars', 'named_stars'],
+  ['starIdentifiers', 'Star identifiers', 'star_identifiers'],
   ['fieldStars', 'Field stars', 'field_stars'],
   ['transients', 'Transients', 'transients'],
   ['minorBodies', 'Solar system', 'minor_bodies'],
@@ -141,6 +143,7 @@ export function AstroOverlay({
     <g className="catalog-objects">
       {visible.map((object, index) => {
         const namedStar = object.kind === 'star' || object.kind === 'double-star'
+        const identifiedStar = object.kind === 'identified-star'
         const transient = object.kind === 'transient'
         const moving = object.kind === 'comet' || object.kind === 'asteroid'
         const color = object.kind === 'comet'
@@ -149,7 +152,9 @@ export function AstroOverlay({
             ? '#ffb36b'
             : transient
               ? '#ff7be0'
-              : namedStar
+              : identifiedStar
+                ? '#b7a6ff'
+                : namedStar
                 ? '#ffd479'
                 : '#5fd3ff'
         const a = Math.max(object.semi_major_px, fontSize)
@@ -174,7 +179,7 @@ export function AstroOverlay({
               strokeLinejoin="round"
               d={directionTail}
             />}
-          </> : namedStar ? <path
+          </> : namedStar || identifiedStar ? <path
             className="object-marker"
             stroke={color}
             strokeWidth={stroke}
@@ -209,6 +214,7 @@ export function AstroOverlay({
 
 function layerVisible(object: OverlayObject, layers: OverlayLayers) {
   if (object.kind === 'field-star') return layers.fieldStars
+  if (object.kind === 'identified-star') return layers.starIdentifiers
   if (object.kind === 'star' || object.kind === 'double-star') return layers.namedStars
   if (object.kind === 'transient') {
     return layers.transients && (object.near_capture !== false || layers.historicalTransients)

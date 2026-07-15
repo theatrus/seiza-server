@@ -39,6 +39,11 @@ const baseObjects = [
     source: 'deep_sky', ra_deg: 2.1, dec_deg: 29.1,
   },
   {
+    name: 'RR Lyr', common_name: 'RRAB', kind: 'identified-star', mag: 7.1,
+    x: 350, y: 270, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
+    source: 'star_identifiers:General Catalog of Variable Stars', ra_deg: 291.36, dec_deg: 42.78,
+  },
+  {
     name: '', common_name: '', kind: 'field-star', mag: 8.2,
     x: 700, y: 250, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
     source: 'star_catalog', ra_deg: 10.4, dec_deg: 41.5,
@@ -90,8 +95,8 @@ async function mockSolution(page: Page, inputAvailable = true) {
       job_id: publicId,
       catalog_version: 'objects:test;stars:test',
       capture_time: '2026-07-13T04:05:06Z',
-      available: { deep_sky: true, named_stars: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
-      counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
+      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
+      counts: { deep_sky: 1, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
       objects: baseObjects,
     }),
   }))
@@ -168,6 +173,7 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(1)
   await expect(page.locator('[data-kind="galaxy"]')).toBeVisible()
   await expect(page.locator('[data-kind="star"]')).toBeVisible()
+  await expect(page.locator('[data-kind="identified-star"]')).toHaveCount(0)
   await expect(page.locator('[data-kind="comet"]')).toBeVisible()
   await expect(page.locator('[data-kind="asteroid"]')).toBeVisible()
   const cometTail = page.locator('[data-kind="comet"] .comet-tail')
@@ -179,6 +185,9 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await expect(page.locator('.field-stars circle')).toHaveCount(0)
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toHaveCount(0)
 
+  await page.getByRole('button', { name: /Star identifiers/ }).click()
+  await expect(page.locator('[data-kind="identified-star"]')).toBeVisible()
+  await expect(page.getByText('RR Lyr · RRAB', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: /Field stars/ }).click()
   await expect(page.locator('.field-stars circle')).toHaveCount(1)
   await page.getByRole('button', { name: /Older transients/ }).click()
@@ -203,16 +212,17 @@ test('explains and disables catalog layers that are unavailable', async ({ page 
       job_id: publicId,
       catalog_version: 'stars:test',
       capture_time: null,
-      available: { deep_sky: false, named_stars: false, field_stars: true, transients: false, historical_transients: false, minor_bodies: false, grid: true },
-      counts: { deep_sky: 0, named_stars: 0, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      available: { deep_sky: false, named_stars: false, star_identifiers: false, field_stars: true, transients: false, historical_transients: false, minor_bodies: false, grid: true },
+      counts: { deep_sky: 0, named_stars: 0, star_identifiers: 0, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
       objects: baseObjects.filter((object) => object.kind === 'field-star'),
     }),
   }))
   await page.goto(`/solutions/${publicId}`)
 
-  await expect(page.getByText(/Catalog data unavailable for this solution/)).toContainText('Deep sky, Named stars, Transients, Solar system')
+  await expect(page.getByText(/Catalog data unavailable for this solution/)).toContainText('Deep sky, Named stars, Star identifiers, Transients, Solar system')
   await expect(page.getByRole('button', { name: 'Deep sky · 0' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Named stars · 0' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Star identifiers · 0' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Field stars · 1' })).toBeEnabled()
 })
 
@@ -224,8 +234,8 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
       job_id: publicId,
       catalog_version: 'objects:test;stars:test;transients:test;minor-bodies:test',
       capture_time: null,
-      available: { deep_sky: true, named_stars: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, grid: true },
-      counts: { deep_sky: 1, named_stars: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, grid: true },
+      counts: { deep_sky: 1, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
       objects: baseObjects.filter((object) => object.kind !== 'comet' && object.kind !== 'asteroid'),
     }),
   }))
