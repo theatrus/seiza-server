@@ -1,5 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
 import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve, submitSolve } from './api'
+import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import type { OverlayLayers } from './AstroOverlay'
 
@@ -47,8 +48,9 @@ export default function App() {
     <SiteHeader />
     {path === '/' && <HomePage />}
     {path === '/solve' && <SolvePage />}
+    {path === '/docs/api' && <ApiDocsPage />}
     {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
-    {path !== '/' && path !== '/solve' && !solutionMatch && <NotFoundPage />}
+    {path !== '/' && path !== '/solve' && path !== '/docs/api' && !solutionMatch && <NotFoundPage />}
     <SiteFooter />
   </div>
 }
@@ -61,6 +63,7 @@ function SiteHeader() {
     </Link>
     <div className="nav-links">
       <Link to="/">About</Link>
+      <Link to="/docs/api">API</Link>
       <Link to="/solve" className="button small">Solve an image</Link>
     </div>
   </nav>

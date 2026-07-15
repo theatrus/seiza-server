@@ -23,7 +23,11 @@ use axum::{
 use base64::Engine;
 use bytes::Bytes;
 use chrono::{Duration as ChronoDuration, Utc};
-use serde::Deserialize;
+use seiza::objects::{
+    ObjectHit, ObjectKind, ObjectNameMatch, ObjectQuery, ObjectQueryError, ObjectSort, SkyObject,
+    SkyRegion,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -446,6 +450,11 @@ pub fn router(state: AppState) -> Router {
     let frontend_dir = state.config.frontend_dir.clone();
     Router::new()
         .route("/api/v1/health", get(get_health))
+        .route("/api/v1/catalog/objects", get(get_catalog_objects))
+        .route(
+            "/api/v1/catalog/objects/search",
+            get(search_catalog_objects),
+        )
         .route("/api/v1/solves", post(post_solve))
         .route(
             "/api/v1/uploads",
@@ -557,6 +566,283 @@ async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
         "queue_transport": match state.config.queue_transport { crate::config::QueueDelivery::Local => "local", crate::config::QueueDelivery::Sqs => "sqs" },
         "embedded_workers": state.config.embedded_workers,
     })))
+}
+
+const DEFAULT_CATALOG_QUERY_LIMIT: usize = 100;
+const DEFAULT_CATALOG_SEARCH_LIMIT: usize = 20;
+const MAX_CATALOG_QUERY_LIMIT: usize = 1_000;
+const MAX_CATALOG_SEARCH_LIMIT: usize = 100;
+
+#[derive(Debug, Deserialize)]
+struct CatalogObjectsQuery {
+    ra: f64,
+    dec: f64,
+    radius: f64,
+    /// Comma-separated ObjectKind names, such as `galaxy,nebula`.
+    kinds: Option<String>,
+    max_mag: Option<f32>,
+    min_major_arcmin: Option<f32>,
+    #[serde(default)]
+    common_name_only: bool,
+    #[serde(default = "default_true")]
+    include_extent_overlaps: bool,
+    #[serde(default = "default_catalog_query_limit")]
+    limit: usize,
+    #[serde(default = "default_catalog_sort")]
+    sort: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogObjectSearchQuery {
+    q: String,
+    #[serde(default)]
+    prefix: bool,
+    #[serde(default = "default_catalog_search_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogObjectsResponse {
+    catalog_version: String,
+    catalog_objects: usize,
+    returned: usize,
+    objects: Vec<CatalogObjectHitResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogObjectSearchResponse {
+    catalog_version: String,
+    catalog_objects: usize,
+    returned: usize,
+    matches: Vec<CatalogObjectNameResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogObjectHitResponse {
+    #[serde(flatten)]
+    object: CatalogObjectResponse,
+    center_inside: bool,
+    extent_only: bool,
+    distance_from_center_deg: f64,
+    predicted_prominence: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogObjectNameResponse {
+    matched_name: String,
+    #[serde(flatten)]
+    object: CatalogObjectResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogObjectResponse {
+    kind: String,
+    name: String,
+    common_name: String,
+    id: String,
+    source: String,
+    aliases: Vec<String>,
+    parent_ids: Vec<String>,
+    alternate_ids: Vec<String>,
+    alternate_sources: Vec<String>,
+    ra_deg: f64,
+    dec_deg: f64,
+    mag: Option<f32>,
+    major_arcmin: Option<f32>,
+    minor_arcmin: Option<f32>,
+    position_angle_deg: Option<f32>,
+}
+
+impl From<SkyObject> for CatalogObjectResponse {
+    fn from(object: SkyObject) -> Self {
+        Self {
+            kind: object.kind.as_str().into(),
+            name: object.name,
+            common_name: object.common_name,
+            id: object.metadata.id,
+            source: object.metadata.source,
+            aliases: object.metadata.aliases,
+            parent_ids: object.metadata.parent_ids,
+            alternate_ids: object.metadata.alternate_ids,
+            alternate_sources: object.metadata.alternate_sources,
+            ra_deg: object.ra,
+            dec_deg: object.dec,
+            mag: object.mag,
+            major_arcmin: object.major_arcmin,
+            minor_arcmin: object.minor_arcmin,
+            position_angle_deg: object.position_angle_deg,
+        }
+    }
+}
+
+impl From<ObjectHit> for CatalogObjectHitResponse {
+    fn from(hit: ObjectHit) -> Self {
+        Self {
+            object: hit.object.into(),
+            center_inside: hit.center_inside,
+            extent_only: hit.extent_only,
+            distance_from_center_deg: hit.distance_from_center_deg,
+            predicted_prominence: hit.predicted_prominence,
+        }
+    }
+}
+
+impl From<ObjectNameMatch> for CatalogObjectNameResponse {
+    fn from(item: ObjectNameMatch) -> Self {
+        Self {
+            matched_name: item.matched_name,
+            object: item.object.into(),
+        }
+    }
+}
+
+async fn get_catalog_objects(
+    State(state): State<AppState>,
+    Query(params): Query<CatalogObjectsQuery>,
+) -> Result<Json<CatalogObjectsResponse>, ApiError> {
+    validate_catalog_limit(params.limit, MAX_CATALOG_QUERY_LIMIT)?;
+    if params.max_mag.is_some_and(|value| !value.is_finite()) {
+        return Err(ApiError::bad_request("max_mag must be finite"));
+    }
+    if params
+        .min_major_arcmin
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(ApiError::bad_request(
+            "min_major_arcmin must be finite and non-negative",
+        ));
+    }
+    let query = ObjectQuery {
+        kinds: parse_object_kinds(params.kinds.as_deref())?,
+        max_mag: params.max_mag,
+        min_major_arcmin: params.min_major_arcmin,
+        common_name_only: params.common_name_only,
+        include_extent_overlaps: params.include_extent_overlaps,
+        limit: Some(params.limit),
+        sort: parse_object_sort(&params.sort)?,
+    };
+    let region = SkyRegion::Cone {
+        center: (params.ra, params.dec),
+        radius_deg: params.radius,
+    };
+    let (objects, catalog_version, catalog_objects) = state
+        .annotations
+        .query_objects(&region, &query)
+        .map_err(catalog_query_error)?
+        .ok_or_else(catalog_unavailable)?;
+    let objects: Vec<_> = objects.into_iter().map(Into::into).collect();
+    Ok(Json(CatalogObjectsResponse {
+        catalog_version,
+        catalog_objects,
+        returned: objects.len(),
+        objects,
+    }))
+}
+
+async fn search_catalog_objects(
+    State(state): State<AppState>,
+    Query(params): Query<CatalogObjectSearchQuery>,
+) -> Result<Json<CatalogObjectSearchResponse>, ApiError> {
+    validate_catalog_limit(params.limit, MAX_CATALOG_SEARCH_LIMIT)?;
+    let designation = params.q.trim();
+    if designation.is_empty() {
+        return Err(ApiError::bad_request("q must not be empty"));
+    }
+    if designation.len() > 256 {
+        return Err(ApiError::bad_request("q must be at most 256 bytes"));
+    }
+    let (matches, catalog_version, catalog_objects) = state
+        .annotations
+        .search_objects(designation, params.prefix, params.limit)
+        .map_err(ApiError::internal)?
+        .ok_or_else(catalog_unavailable)?;
+    let matches: Vec<_> = matches.into_iter().map(Into::into).collect();
+    Ok(Json(CatalogObjectSearchResponse {
+        catalog_version,
+        catalog_objects,
+        returned: matches.len(),
+        matches,
+    }))
+}
+
+fn catalog_unavailable() -> ApiError {
+    ApiError::service_unavailable(
+        "object catalog is not configured or could not be opened; set SEIZA_OBJECT_DATA",
+    )
+}
+
+fn catalog_query_error(error: ObjectQueryError) -> ApiError {
+    match error {
+        ObjectQueryError::Catalog(_) => ApiError::internal(error),
+        _ => ApiError::bad_request(error),
+    }
+}
+
+fn validate_catalog_limit(limit: usize, maximum: usize) -> Result<(), ApiError> {
+    if !(1..=maximum).contains(&limit) {
+        return Err(ApiError::bad_request(format!(
+            "limit must be between 1 and {maximum}"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_object_kinds(value: Option<&str>) -> Result<Vec<ObjectKind>, ApiError> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(parse_object_kind)
+        .collect()
+}
+
+fn parse_object_kind(value: &str) -> Result<ObjectKind, ApiError> {
+    let normalized = value.to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "galaxy" => Ok(ObjectKind::Galaxy),
+        "open-cluster" => Ok(ObjectKind::OpenCluster),
+        "globular-cluster" => Ok(ObjectKind::GlobularCluster),
+        "nebula" => Ok(ObjectKind::Nebula),
+        "planetary-nebula" => Ok(ObjectKind::PlanetaryNebula),
+        "hii" | "hii-region" => Ok(ObjectKind::HiiRegion),
+        "supernova-remnant" => Ok(ObjectKind::SupernovaRemnant),
+        "dark-nebula" => Ok(ObjectKind::DarkNebula),
+        "cluster-nebula" | "cluster-with-nebula" => Ok(ObjectKind::ClusterWithNebula),
+        "star" => Ok(ObjectKind::Star),
+        "double-star" => Ok(ObjectKind::DoubleStar),
+        "association" => Ok(ObjectKind::Association),
+        "other" => Ok(ObjectKind::Other),
+        "transient" => Ok(ObjectKind::Transient),
+        _ => Err(ApiError::bad_request(format!(
+            "unsupported object kind `{value}`"
+        ))),
+    }
+}
+
+fn parse_object_sort(value: &str) -> Result<ObjectSort, ApiError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "prominence" => Ok(ObjectSort::Prominence),
+        "size" => Ok(ObjectSort::Size),
+        "magnitude" | "mag" => Ok(ObjectSort::Magnitude),
+        "distance" => Ok(ObjectSort::Distance),
+        "name" => Ok(ObjectSort::Name),
+        _ => Err(ApiError::bad_request(format!(
+            "unsupported catalog sort `{value}`"
+        ))),
+    }
+}
+
+fn default_catalog_query_limit() -> usize {
+    DEFAULT_CATALOG_QUERY_LIMIT
+}
+
+fn default_catalog_search_limit() -> usize {
+    DEFAULT_CATALOG_SEARCH_LIMIT
+}
+
+fn default_catalog_sort() -> String {
+    "prominence".into()
 }
 
 async fn resumable_upload_options(State(state): State<AppState>) -> Response {
@@ -1667,6 +1953,14 @@ impl ApiError {
             retry_after: Some(retry_after),
         }
     }
+    fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "catalog_unavailable",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
     fn internal(error: impl std::fmt::Display) -> Self {
         tracing::error!(error = %error, "internal server error");
         Self {
@@ -1698,6 +1992,7 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
+    use seiza::objects::{ObjectCatalog, ObjectMetadata};
 
     #[test]
     fn public_solution_locators_require_the_random_upload_token() {
@@ -1814,6 +2109,76 @@ mod tests {
         assert_eq!(restarted.repository.queue_depth().await.unwrap(), 1);
 
         drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn v3_catalog_api_supports_spatial_and_alias_queries() {
+        let root = std::env::temp_dir().join(format!("seiza-api-catalog-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        let catalog_path = root.join("objects.bin");
+        ObjectCatalog::new(vec![SkyObject {
+            kind: ObjectKind::Galaxy,
+            ra: 10.684793,
+            dec: 41.269065,
+            mag: Some(3.44),
+            major_arcmin: Some(177.83),
+            minor_arcmin: Some(69.66),
+            position_angle_deg: Some(35.0),
+            name: "NGC 224".into(),
+            common_name: "Andromeda Galaxy".into(),
+            metadata: ObjectMetadata {
+                id: "openngc:NGC224".into(),
+                source: "OpenNGC".into(),
+                aliases: vec!["M 31".into(), "UGC 00454".into()],
+                parent_ids: vec!["curated:local-group".into()],
+                alternate_ids: vec!["messier:M31".into()],
+                alternate_sources: vec!["Messier catalog".into()],
+            },
+        }])
+        .write_to(&catalog_path)
+        .unwrap();
+
+        let mut config = test_config(&root);
+        config.object_catalog_path = Some(catalog_path);
+        let state = AppState::new(config).await.unwrap();
+        let Json(objects) = get_catalog_objects(
+            State(state.clone()),
+            Query(CatalogObjectsQuery {
+                ra: 10.684793,
+                dec: 41.269065,
+                radius: 1.0,
+                kinds: Some("galaxy".into()),
+                max_mag: None,
+                min_major_arcmin: None,
+                common_name_only: false,
+                include_extent_overlaps: true,
+                limit: 10,
+                sort: "prominence".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(objects.catalog_objects, 1);
+        assert_eq!(objects.returned, 1);
+        assert_eq!(objects.objects[0].object.id, "openngc:NGC224");
+        assert_eq!(objects.objects[0].object.aliases[0], "M 31");
+
+        let Json(matches) = search_catalog_objects(
+            State(state.clone()),
+            Query(CatalogObjectSearchQuery {
+                q: "andro".into(),
+                prefix: true,
+                limit: 10,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(matches.returned, 1);
+        assert_eq!(matches.matches[0].matched_name, "Andromeda Galaxy");
+        assert_eq!(matches.matches[0].object.source, "OpenNGC");
+
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 
