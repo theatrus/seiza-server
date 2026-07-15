@@ -83,13 +83,22 @@ require a new solve. No schema-specific expiration process is required, so the
 same policy works with SQLite, PostgreSQL, and DynamoDB. Production S3 buckets
 should also use a matching lifecycle rule to cover interrupted cleanup.
 
-The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. A random
-upload-session URL identifies a manifest stored beside its chunks in the
+The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. Files of
+at least 10 MiB are split into three concurrent TUS partial uploads and joined
+with the concatenation extension; smaller files remain sequential. A random
+upload-session URL identifies each manifest stored beside its chunks in the
 selected object store. `HEAD` returns the durable byte offset, so a client can
 resume after a browser, network, or API-process interruption. Finalization is
 idempotent: the jobs table enforces one row per private object key, and a lost
 completion response reuses that row rather than queueing the image twice.
 Partial sessions follow the same retention sweep as completed originals.
+
+A failed job can transition back to `queued` with replacement solve options
+while its input is still retained. The job ID, opaque public URL, object key,
+owner, queue weight, and original expiration do not change. SQLx performs the
+state change and durable-outbox reset in one transaction; DynamoDB uses a
+conditional failed-state update and clears its delivery marker. External queue
+notifications therefore behave the same as first submissions.
 
 Preview PNGs are generated on demand rather than stored as additional durable
 objects. The web client renders the preview as the base image and places a

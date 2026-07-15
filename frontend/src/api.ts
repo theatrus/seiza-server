@@ -4,16 +4,21 @@ import Tus from '@uppy/tus'
 export type JobStatus = 'queued' | 'solving' | 'succeeded' | 'failed'
 
 const uploadChunkBytes = 5 * 1024 * 1024
+const parallelUploadThresholdBytes = uploadChunkBytes * 2
+const parallelUploadParts = 3
 
 export interface SolveOptions {
-  center_ra_deg?: number
-  center_dec_deg?: number
-  radius_deg?: number
-  scale_arcsec_per_pixel?: number
-  scale_tolerance?: number
-  min_scale_arcsec_per_pixel?: number
-  max_scale_arcsec_per_pixel?: number
-  capture_time?: string
+  center_ra_deg?: number | null
+  center_dec_deg?: number | null
+  radius_deg?: number | null
+  scale_arcsec_per_pixel?: number | null
+  scale_tolerance?: number | null
+  min_scale_arcsec_per_pixel?: number | null
+  max_scale_arcsec_per_pixel?: number | null
+  sigma?: number | null
+  ignore_border?: number | null
+  max_stars?: number | null
+  capture_time?: string | null
 }
 
 export interface OverlayObject {
@@ -75,6 +80,7 @@ export interface Job {
   started_at: string | null
   completed_at: string | null
   original_filename: string
+  options: SolveOptions
   input_expires_at: string
   input_available: boolean
   preview_url: string | null
@@ -124,11 +130,19 @@ export async function submitSolve(
     },
   })
   if (onProgress) uppy.on('progress', onProgress)
-  uppy.addFile({
+  const fileId = uppy.addFile({
     name: file.name,
     type: file.type,
     data: file,
   })
+  if (file.size >= parallelUploadThresholdBytes) {
+    uppy.setFileState(fileId, {
+      tus: {
+        ...uppy.getFile(fileId)?.tus,
+        parallelUploads: parallelUploadParts,
+      },
+    })
+  }
   try {
     const result = await uppy.upload()
     const failed = result?.failed ?? []
@@ -174,6 +188,14 @@ function base64Metadata(value: string): string {
 
 export async function getSolve(jobId: string): Promise<Job> {
   return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}`))
+}
+
+export async function retrySolve(jobId: string, options: SolveOptions): Promise<Job> {
+  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  }))
 }
 
 export async function getAnnotations(url: string): Promise<Annotations> {

@@ -7,6 +7,11 @@ const multipartExample = `curl -X POST https://seiza.fyi/api/v1/solves \\
 const pollExample = `PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
 curl "https://seiza.fyi/api/v1/solves/$PUBLIC_ID"`
 
+const retryExample = `# A failed solve can reuse its retained image with better hints.
+curl -X POST "https://seiza.fyi/api/v1/solves/$PUBLIC_ID/retry" \
+  -H 'Content-Type: application/json' \
+  -d '{"center_ra_deg":202.47,"center_dec_deg":47.2,"scale_arcsec_per_pixel":1.35,"radius_deg":3}'`
+
 const catalogExample = `# Objects in a three-degree cone around M31
 curl 'https://seiza.fyi/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&kinds=galaxy,nebula&max_mag=14&sort=prominence&limit=100'
 
@@ -92,11 +97,13 @@ export function ApiDocsPage() {
             <Endpoint method="GET" path="/api/v1/health">Read solver readiness, queue depth, authentication mode, and configured backends.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves">Submit a multipart image and optional solve settings. Returns <code>202</code>.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}">Poll status and retrieve the completed solution.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/solves/{public_id}/retry">Requeue a failed solve with new JSON settings while its original image is retained.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/annotations">Regenerate projected catalog annotations from the stored WCS.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/preview">Return a retained PNG preview. Add <code>?full=true</code> for native dimensions.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/overlay.svg">Return a self-contained composite SVG for API clients.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/wcs">Download a FITS-compatible, 80-column WCS header.</Endpoint>
           </div>
+          <CodeExample label="Retry without another upload" code={retryExample} />
           <h3>Annotation and overlay query parameters</h3>
           <div className="option-table">
             <OptionRow name="deep_sky, named_stars, transients, minor_bodies" defaultValue="true">Enable each installed catalog layer.</OptionRow>
@@ -124,11 +131,11 @@ export function ApiDocsPage() {
           </div>
         </DocSection>
 
-        <DocSection id="resumable-uploads" eyebrow="TUS 1.0" title="Chunk large images and resume interrupted transfers.">
-          <p>The web application uses the same durable TUS flow. Create a session, upload chunks with exact offsets, and read its <code>/result</code> after the declared length is complete. Session manifests and chunks survive API restarts in local or S3 storage.</p>
+        <DocSection id="resumable-uploads" eyebrow="TUS 1.0" title="Upload large images in resumable parallel parts.">
+          <p>The web application uses the same durable TUS flow. It uploads three parts concurrently for files of at least 10 MiB using the TUS concatenation extension; smaller files use a single stream. Session manifests and chunks survive API restarts in local or S3 storage.</p>
           <div className="endpoint-list compact">
             <Endpoint method="OPTIONS" path="/api/v1/uploads">Discover TUS version, extensions, and maximum upload size.</Endpoint>
-            <Endpoint method="POST" path="/api/v1/uploads">Create a session using <code>Upload-Length</code> and <code>Upload-Metadata</code>.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/uploads">Create a normal session, a <code>partial</code> upload, or a <code>final</code> concatenation.</Endpoint>
             <Endpoint method="HEAD" path="/api/v1/uploads/{upload_id}">Read the durable <code>Upload-Offset</code>.</Endpoint>
             <Endpoint method="PATCH" path="/api/v1/uploads/{upload_id}">Append an <code>application/offset+octet-stream</code> chunk.</Endpoint>
             <Endpoint method="DELETE" path="/api/v1/uploads/{upload_id}">Terminate the unfinished session and delete its chunks.</Endpoint>

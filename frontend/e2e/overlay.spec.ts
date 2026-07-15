@@ -149,6 +149,17 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await page.goto(`/solutions/${publicId}`)
   await expect(page.getByRole('heading', { name: 'Explore the solved field' })).toBeVisible()
 
+  const layerButtonRows = await page.locator('.overlay-options > button').evaluateAll((buttons) =>
+    [...new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top)))],
+  )
+  expect(layerButtonRows).toHaveLength(1)
+  await expect(page.locator('.overlay-options .catalog-filter-trigger')).toHaveCount(0)
+  const controlBackgrounds = await page.locator('.overlay-control-row').evaluate((row) => ({
+    deepSky: getComputedStyle(row.querySelector('.overlay-options > button')!).backgroundColor,
+    catalogFilter: getComputedStyle(row.querySelector('.catalog-filter-trigger')!).backgroundColor,
+  }))
+  expect(controlBackgrounds.catalogFilter).not.toBe(controlBackgrounds.deepSky)
+
   const imageBox = await page.locator('.sky-frame img').boundingBox()
   const overlayBox = await page.locator('.sky-overlay').boundingBox()
   expect(imageBox).not.toBeNull()
@@ -231,7 +242,7 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await page.getByRole('button', { name: /Older transients/ }).click()
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toBeVisible()
 
-  await page.getByRole('button', { name: /Catalogs · 4\/4/ }).click()
+  await page.getByRole('button', { name: /Filter catalogs 4\/4/ }).click()
   await expect(page.getByRole('group', { name: 'Deep sky catalogs' })).toBeVisible()
   await expect(page.getByRole('checkbox', { name: 'NGC / IC / Messier · 1' })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'Sharpless / vdB · 1' })).toBeChecked()
@@ -239,7 +250,7 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   const pgcCatalog = page.getByRole('checkbox', { name: 'PGC galaxies · 1' })
   await expect(pgcCatalog).toBeChecked()
   await pgcCatalog.uncheck()
-  await expect(page.getByRole('button', { name: /Catalogs · 3\/4/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: /Filter catalogs 3\/4/ })).toHaveAttribute('data-filtered', 'true')
   const skyOverlay = page.locator('.sky-overlay')
   await expect(skyOverlay.getByText('PGC 12345', { exact: false })).toHaveCount(0)
   await expect(skyOverlay.getByText('M 31 · Andromeda Galaxy', { exact: false })).toBeVisible()
@@ -307,7 +318,7 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
 test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {
   await mockSolution(page)
   await page.goto(`/solutions/${publicId}`)
-  await page.getByRole('button', { name: /Catalogs · 4\/4/ }).click()
+  await page.getByRole('button', { name: /Filter catalogs 4\/4/ }).click()
   await page.getByRole('checkbox', { name: 'PGC galaxies · 1' }).uncheck()
   await page.evaluate(() => {
     const originalCreateObjectUrl = URL.createObjectURL.bind(URL)

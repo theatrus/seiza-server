@@ -4,6 +4,53 @@ const publicId = '91-550e8400-e29b-41d4-a716-446655440000'
 const uploadId = '8c741b20-3c42-4e75-95d4-fbc87cc68730'
 const chunkSize = 5 * 1024 * 1024
 
+interface UploadConcurrencyState {
+  active: number
+  maxActive: number
+}
+
+type InstrumentedWindow = Window & {
+  __seizaUploadConcurrency?: UploadConcurrencyState
+}
+
+async function instrumentUploadConcurrency(page: Page) {
+  await page.addInitScript(() => {
+    const state: UploadConcurrencyState = { active: 0, maxActive: 0 }
+    ;(window as InstrumentedWindow).__seizaUploadConcurrency = state
+
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+      const isUploadBody = body instanceof Blob
+        || body instanceof ArrayBuffer
+        || ArrayBuffer.isView(body)
+      if (isUploadBody) {
+        state.active += 1
+        state.maxActive = Math.max(state.maxActive, state.active)
+        this.addEventListener('loadend', () => {
+          state.active -= 1
+        }, { once: true })
+      }
+      originalSend.call(this, body)
+    }
+  })
+}
+
+function defaultSolveOptions() {
+  return {
+    center_ra_deg: null,
+    center_dec_deg: null,
+    radius_deg: 2,
+    scale_arcsec_per_pixel: null,
+    scale_tolerance: 0.2,
+    min_scale_arcsec_per_pixel: 0.1,
+    max_scale_arcsec_per_pixel: 20,
+    sigma: 4,
+    ignore_border: 0,
+    max_stars: 500,
+    capture_time: null,
+  }
+}
+
 async function setStableFile(page: Page, name: string, size: number) {
   await page.getByLabel('FITS or image file').evaluate((node, file) => {
     const input = node as HTMLInputElement
@@ -28,6 +75,7 @@ function queuedJob(id: string, filename: string) {
     started_at: null,
     completed_at: null,
     original_filename: filename,
+    options: defaultSolveOptions(),
     input_expires_at: '2026-07-15T02:00:00Z',
     input_available: true,
     preview_url: null,
@@ -38,6 +86,106 @@ function queuedJob(id: string, filename: string) {
     error: null,
   }
 }
+
+test('uploads large images as parallel TUS parts and concatenates them', async ({ page, browserName }) => {
+  await instrumentUploadConcurrency(page)
+  const partIds = [
+    '51000000-0000-4000-8000-000000000001',
+    '51000000-0000-4000-8000-000000000002',
+    '51000000-0000-4000-8000-000000000003',
+  ]
+  const finalId = '51000000-0000-4000-8000-000000000004'
+  const partLengths = new Map<string, number>()
+  let partialCreations = 0
+  let finalCreations = 0
+
+  await page.route('**/api/v1/uploads', async (route) => {
+    const request = route.request()
+    const concat = request.headers()['upload-concat']
+    if (concat === 'partial') {
+      const id = partIds[partialCreations++]
+      expect(id).toBeDefined()
+      partLengths.set(id, Number(request.headers()['upload-length']))
+      await route.fulfill({
+        status: 201,
+        headers: {
+          Location: `/api/v1/uploads/${id}`,
+          'Tus-Resumable': '1.0.0',
+          'Upload-Offset': '0',
+        },
+      })
+      return
+    }
+    expect(concat).toBe(`final;${partIds.map((id) => `/api/v1/uploads/${id}`).join(' ')}`)
+    expect(request.headers()['upload-metadata']).toContain('filename ')
+    finalCreations += 1
+    await route.fulfill({
+      status: 201,
+      headers: {
+        Location: `/api/v1/uploads/${finalId}`,
+        'Tus-Resumable': '1.0.0',
+        'Upload-Offset': String(12 * 1024 * 1024),
+      },
+    })
+  })
+  await page.route(/\/api\/v1\/uploads\/51000000-0000-4000-8000-00000000000[1-3]$/, async (route) => {
+    const request = route.request()
+    const id = new URL(request.url()).pathname.split('/').pop()!
+    if (request.method() === 'HEAD') {
+      await route.fulfill({
+        status: 200,
+        headers: {
+          'Tus-Resumable': '1.0.0',
+          'Upload-Length': String(partLengths.get(id)),
+          'Upload-Offset': '0',
+          'Upload-Concat': 'partial',
+        },
+      })
+      return
+    }
+    expect(request.method()).toBe('PATCH')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const interceptedSize = request.postDataBuffer()?.length ?? 0
+    if (browserName === 'chromium') expect(interceptedSize).toBe(partLengths.get(id))
+    await route.fulfill({
+      status: 204,
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Offset': String(partLengths.get(id)),
+      },
+    })
+  })
+  const job = queuedJob(publicId, 'parallel-field.fits')
+  await page.route(`**/api/v1/uploads/${finalId}/result`, async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(job),
+  }))
+  await page.route(`**/api/v1/solves/${publicId}`, async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(job),
+  }))
+
+  await page.goto('/solve')
+  await page.getByLabel('FITS or image file').setInputFiles({
+    name: 'parallel-field.fits',
+    mimeType: 'application/fits',
+    buffer: Buffer.alloc(12 * 1024 * 1024, 42),
+  })
+  await page.getByRole('button', { name: 'Queue solve' }).click()
+
+  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  expect(partialCreations).toBe(3)
+  expect(finalCreations).toBe(1)
+  const uploadConcurrency = await page.evaluate(
+    () => (window as InstrumentedWindow).__seizaUploadConcurrency?.maxActive ?? 0,
+  )
+  expect(uploadConcurrency).toBeGreaterThan(1)
+  expect([...partLengths.values()]).toEqual([
+    4 * 1024 * 1024,
+    4 * 1024 * 1024,
+    4 * 1024 * 1024,
+  ])
+})
 
 test('uploads large images in resumable TUS chunks before queueing', async ({ page, browserName }) => {
   const chunks: Array<{ offset: number; size: number }> = []
@@ -249,9 +397,79 @@ test('changing settings does not resume an interrupted upload with stale metadat
   await page.getByRole('button', { name: 'Queue solve' }).click()
   await expect(page.getByRole('alert')).toBeVisible()
 
-  await page.getByText('Blind solve settings', { exact: true }).click()
+  await page.locator('summary').click()
   await page.getByLabel('Minimum scale (arcsec/px)').fill('0.4')
   await page.getByRole('button', { name: 'Queue solve' }).click()
   await expect(page).toHaveURL(`/solutions/${newJobId}`)
   expect(creations).toBe(2)
+})
+
+test('retries a failed retained image with hints without uploading it again', async ({ page }) => {
+  let uploadRequests = 0
+  let retryRequests = 0
+  const failed = {
+    ...queuedJob(publicId, 'failed-field.jpg'),
+    status: 'failed',
+    completed_at: '2026-07-14T02:01:00Z',
+    options: {
+      ...defaultSolveOptions(),
+      sigma: 5.5,
+      ignore_border: 12,
+      max_stars: 300,
+    },
+    error: 'blind solve did not converge',
+  }
+  let current = failed
+
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/v1/uploads')) {
+      uploadRequests += 1
+    }
+  })
+  await page.route(`**/api/v1/solves/${publicId}**`, async (route) => {
+    const request = route.request()
+    if (new URL(request.url()).pathname.endsWith('/retry')) {
+      expect(request.method()).toBe('POST')
+      const options = request.postDataJSON()
+      expect(options).toMatchObject({
+        center_ra_deg: 202.47,
+        center_dec_deg: 47.2,
+        scale_arcsec_per_pixel: 1.35,
+        radius_deg: 3,
+        sigma: 5.5,
+        ignore_border: 12,
+        max_stars: 300,
+      })
+      retryRequests += 1
+      current = {
+        ...queuedJob(publicId, 'failed-field.jpg'),
+        options: { ...defaultSolveOptions(), ...options },
+      }
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify(current),
+      })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(current),
+    })
+  })
+
+  await page.goto(`/solutions/${publicId}`)
+  await expect(page.getByRole('heading', { name: 'The solve did not converge.' })).toBeVisible()
+  await expect(page.getByText('No re-upload')).toBeVisible()
+  await expect(page.getByText('No coordinates are required.')).toBeVisible()
+  await page.getByLabel('RA (degrees)').fill('202.47')
+  await page.getByLabel('Dec (degrees)').fill('47.2')
+  await page.getByLabel('Pixel scale (arcsec/px)').fill('1.35')
+  await page.getByLabel('Search radius (degrees)').fill('3')
+  await page.getByRole('button', { name: 'Retry retained image' }).click()
+
+  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  await expect(page.getByRole('heading', { name: 'Waiting in the queue.' })).toBeVisible()
+  expect(retryRequests).toBe(1)
+  expect(uploadRequests).toBe(0)
 })

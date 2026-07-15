@@ -284,6 +284,7 @@ pub struct JobResponse {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub original_filename: String,
+    pub options: SolveOptions,
     pub input_expires_at: DateTime<Utc>,
     pub input_available: bool,
     pub preview_url: Option<String>,
