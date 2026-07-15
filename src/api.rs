@@ -1453,6 +1453,8 @@ struct ValidationDonationRequest {
     #[serde(default)]
     comment: Option<String>,
     #[serde(default)]
+    solve_is_invalid: bool,
+    #[serde(default)]
     license_agreed: bool,
 }
 
@@ -1530,6 +1532,7 @@ async fn donate_validation_image(
             ValidationDonation {
                 object_key: validation_object_key,
                 comment,
+                solve_is_invalid: request.solve_is_invalid,
                 license_version: VALIDATION_LICENSE_VERSION.into(),
                 donated_at,
             },
@@ -2787,6 +2790,7 @@ mod tests {
             HeaderMap::new(),
             Json(ValidationDonationRequest {
                 comment: None,
+                solve_is_invalid: false,
                 license_agreed: false,
             }),
         )
@@ -2800,6 +2804,7 @@ mod tests {
             HeaderMap::new(),
             Json(ValidationDonationRequest {
                 comment: Some("Useful example of a sparse field".into()),
+                solve_is_invalid: true,
                 license_agreed: true,
             }),
         )
@@ -2810,10 +2815,13 @@ mod tests {
             donation.comment.as_deref(),
             Some("Useful example of a sparse field")
         );
+        assert!(donation.solve_is_invalid);
         assert_eq!(donation.license_version, VALIDATION_LICENSE_VERSION);
 
         let record = state.repository.get(job.id).await.unwrap().unwrap();
-        let durable_key = record.validation_donation.unwrap().object_key;
+        let record_donation = record.validation_donation.unwrap();
+        assert!(record_donation.solve_is_invalid);
+        let durable_key = record_donation.object_key;
         assert!(durable_key.starts_with("validation/public-"));
         assert_eq!(
             state.store.get(&durable_key).await.unwrap(),

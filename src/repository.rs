@@ -95,7 +95,7 @@ impl SqlxJobRepository {
             "CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at)",
             "CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status, lease_expires_at)",
             "CREATE UNIQUE INDEX IF NOT EXISTS jobs_object_key_idx ON jobs(object_key)",
-            "CREATE TABLE IF NOT EXISTS validation_donations (job_id BIGINT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS validation_donations (job_id BIGINT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, solve_is_invalid BIGINT NOT NULL DEFAULT 0, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS client_service (owner TEXT PRIMARY KEY, last_served_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS queue_outbox (job_id BIGINT PRIMARY KEY, delivered_at TEXT)",
             "INSERT INTO queue_counters (name, value) VALUES ('jobs', 0) ON CONFLICT(name) DO NOTHING",
@@ -107,7 +107,7 @@ impl SqlxJobRepository {
 
     async fn validation_donation(&self, job_id: JobId) -> Result<Option<ValidationDonation>> {
         sqlx::query(
-            "SELECT object_key, comment, license_version, donated_at FROM validation_donations WHERE job_id = $1",
+            "SELECT object_key, comment, solve_is_invalid, license_version, donated_at FROM validation_donations WHERE job_id = $1",
         )
         .bind(as_i64(job_id)?)
         .fetch_optional(&self.pool)
@@ -116,6 +116,7 @@ impl SqlxJobRepository {
             Ok(ValidationDonation {
                 object_key: row.try_get("object_key")?,
                 comment: row.try_get("comment")?,
+                solve_is_invalid: row.try_get::<i64, _>("solve_is_invalid")? != 0,
                 license_version: row.try_get("license_version")?,
                 donated_at: decode_time(&row.try_get::<String, _>("donated_at")?)?,
             })
@@ -419,10 +420,11 @@ impl JobRepository for SqlxJobRepository {
             transaction.rollback().await?;
             return Ok(false);
         }
-        sqlx::query("INSERT INTO validation_donations (job_id, object_key, comment, license_version, donated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment")
+        sqlx::query("INSERT INTO validation_donations (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment, solve_is_invalid = EXCLUDED.solve_is_invalid")
             .bind(as_i64(job_id)?)
             .bind(donation.object_key)
             .bind(donation.comment)
+            .bind(i64::from(donation.solve_is_invalid))
             .bind(donation.license_version)
             .bind(encode_time(donation.donated_at))
             .execute(&mut *transaction)

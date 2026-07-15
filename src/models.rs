@@ -261,6 +261,7 @@ impl SolutionResponse {
 pub struct ValidationDonation {
     pub object_key: String,
     pub comment: Option<String>,
+    pub solve_is_invalid: bool,
     pub license_version: String,
     pub donated_at: DateTime<Utc>,
 }
@@ -268,6 +269,7 @@ pub struct ValidationDonation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationDonationResponse {
     pub comment: Option<String>,
+    pub solve_is_invalid: bool,
     pub license_version: String,
     pub donated_at: DateTime<Utc>,
 }
@@ -276,6 +278,7 @@ impl From<&ValidationDonation> for ValidationDonationResponse {
     fn from(donation: &ValidationDonation) -> Self {
         Self {
             comment: donation.comment.clone(),
+            solve_is_invalid: donation.solve_is_invalid,
             license_version: donation.license_version.clone(),
             donated_at: donation.donated_at,
         }

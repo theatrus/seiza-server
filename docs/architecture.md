@@ -89,11 +89,12 @@ image into long-term storage. Once a job reaches `succeeded` or `failed`, its
 opaque result page can submit an optional comment plus an affirmative,
 versioned image grant. The object-store abstraction copies the original into
 `SEIZA_VALIDATION_PREFIX`; local and S3 cleanup both exclude that namespace.
-SQLx records the durable object key, comment, grant version, and acceptance
-time in `validation_donations`; DynamoDB stores the same fields on the job
-item. Subsequent preview and retry reads prefer the durable copy, while the
-temporary original remains eligible for normal cleanup. S3 deployments should
-keep the validation prefix outside the temporary-upload lifecycle rule.
+SQLx records the durable object key, comment, invalid-solve flag, grant
+version, and acceptance time in `validation_donations`; DynamoDB stores the
+same fields on the job item. Subsequent preview and retry reads prefer the
+durable copy, while the temporary original remains eligible for normal
+cleanup. S3 deployments should keep the validation prefix outside the
+temporary-upload lifecycle rule.
 
 The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. Files of
 at least 10 MiB are split into three concurrent TUS partial uploads and joined

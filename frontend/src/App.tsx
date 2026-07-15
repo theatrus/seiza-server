@@ -393,6 +393,7 @@ function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job
     return <section className="panel donation-panel donated-panel">
       <div><p className="eyebrow">VALIDATION SET</p><h2>Thank you for donating this image.</h2></div>
       <p>Seiza will retain it under the image grant accepted on {new Date(job.validation_donation.donated_at).toLocaleString()}. You still own the image.</p>
+      {job.validation_donation.solve_is_invalid && <p className="donation-invalid"><strong>Invalid solve</strong>This result was marked invalid for validation.</p>}
       {job.validation_donation.comment && <p className="donation-comment"><strong>Your note</strong>{job.validation_donation.comment}</p>}
     </section>
   }
@@ -413,6 +414,7 @@ function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job
       onDonated(await donateValidationImage(
         job.id,
         String(form.get('validation_comment') ?? ''),
+        form.get('validation_solve_is_invalid') === 'on',
         form.get('validation_license_agreed') === 'on',
       ))
     } catch (reason) {
@@ -426,6 +428,10 @@ function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job
     <p className="donation-intro">Ordinary uploads remain yours and are deleted after about one day. If you opt in here, Seiza will keep this image for its long-term validation and training set. A note about why the solve succeeded or failed is optional.</p>
     <form onSubmit={onSubmit}>
       <label>Optional comment<textarea name="validation_comment" maxLength={2000} rows={4} placeholder="What makes this image useful for solver validation?" /></label>
+      <label className="validation-quality">
+        <input name="validation_solve_is_invalid" type="checkbox" />
+        <span><strong>Mark this solve result as invalid</strong><small>Use this for an incorrect WCS, a false positive, or a failed solve that should have succeeded.</small></span>
+      </label>
       <label className="license-consent">
         <input name="validation_license_agreed" type="checkbox" required />
         <span>I own this image or have authority to grant this license. I keep ownership and grant Seiza and its maintainers a non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable license to store, use, reproduce, modify, create derivative works from, publish, distribute, and otherwise use this image for any purpose, including validation, training, testing, research, documentation, and improving Seiza.</span>

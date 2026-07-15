@@ -516,13 +516,17 @@ impl JobRepository for DynamoDbJobRepository {
             .table_name(&self.table)
             .key("pk", string(job_key(job_id)))
             .condition_expression("#status = :succeeded OR #status = :failed")
-            .update_expression("SET validation_object_key = :object_key, validation_donated_at = if_not_exists(validation_donated_at, :donated_at), validation_comment = :comment, validation_license_version = :license_version")
+            .update_expression("SET validation_object_key = :object_key, validation_donated_at = if_not_exists(validation_donated_at, :donated_at), validation_comment = :comment, validation_solve_is_invalid = :solve_is_invalid, validation_license_version = :license_version")
             .expression_attribute_names("#status", "status")
             .expression_attribute_values(":succeeded", string("succeeded"))
             .expression_attribute_values(":failed", string("failed"))
             .expression_attribute_values(":object_key", string(donation.object_key))
             .expression_attribute_values(":donated_at", string(encode_time(donation.donated_at)))
             .expression_attribute_values(":license_version", string(donation.license_version))
+            .expression_attribute_values(
+                ":solve_is_invalid",
+                AttributeValue::Bool(donation.solve_is_invalid),
+            )
             .expression_attribute_values(
                 ":comment",
                 donation
@@ -626,6 +630,8 @@ fn record_from_item(item: &Item) -> Result<JobRecord> {
                 Ok(ValidationDonation {
                     object_key,
                     comment: optional_string(item, "validation_comment"),
+                    solve_is_invalid: optional_bool(item, "validation_solve_is_invalid")
+                        .unwrap_or(false),
                     license_version: required_string(item, "validation_license_version")?,
                     donated_at: decode_time(&required_string(item, "validation_donated_at")?)?,
                 })
@@ -663,6 +669,11 @@ fn decode_time(value: &str) -> Result<DateTime<Utc>> {
 }
 fn optional_string(item: &Item, name: &str) -> Option<String> {
     item.get(name).and_then(|value| value.as_s().ok()).cloned()
+}
+fn optional_bool(item: &Item, name: &str) -> Option<bool> {
+    item.get(name)
+        .and_then(|value| value.as_bool().ok())
+        .copied()
 }
 fn required_string(item: &Item, name: &str) -> Result<String> {
     optional_string(item, name).with_context(|| format!("DynamoDB item is missing string {name}"))

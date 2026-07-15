@@ -485,6 +485,7 @@ for (const status of ['succeeded', 'failed'] as const) {
       error: status === 'failed' ? 'blind solve did not converge' : null,
       validation_donation: null as null | {
         comment: string
+        solve_is_invalid: boolean
         license_version: string
         donated_at: string
       },
@@ -496,6 +497,7 @@ for (const status of ['succeeded', 'failed'] as const) {
         expect(request.method()).toBe('POST')
         expect(request.postDataJSON()).toEqual({
           comment: 'Useful sparse-field regression image',
+          solve_is_invalid: true,
           license_agreed: true,
         })
         donationRequests += 1
@@ -503,6 +505,7 @@ for (const status of ['succeeded', 'failed'] as const) {
           ...current,
           validation_donation: {
             comment: 'Useful sparse-field regression image',
+            solve_is_invalid: true,
             license_version: 'seiza-validation-image-grant-v1',
             donated_at: '2026-07-14T02:05:00Z',
           },
@@ -517,11 +520,13 @@ for (const status of ['succeeded', 'failed'] as const) {
     await page.goto(`/solutions/${publicId}`)
     await expect(page.getByRole('heading', { name: 'Donate this image to improve Seiza' })).toBeVisible()
     await page.getByLabel('Optional comment').fill('Useful sparse-field regression image')
-    await page.getByRole('checkbox').check()
+    await page.getByLabel('Mark this solve result as invalid').check()
+    await page.getByLabel('I own this image or have authority to grant this license.').check()
     await page.getByRole('button', { name: 'Donate image to validation set' }).click()
 
     await expect(page.getByRole('heading', { name: 'Thank you for donating this image.' })).toBeVisible()
     await expect(page.getByText('donated for long-term validation')).toBeVisible()
+    await expect(page.getByText('This result was marked invalid for validation.')).toBeVisible()
     await expect(page.getByText('Useful sparse-field regression image')).toBeVisible()
     expect(donationRequests).toBe(1)
   })

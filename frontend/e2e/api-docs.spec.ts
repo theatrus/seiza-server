@@ -8,6 +8,7 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByRole('heading', { name: 'Plate solving for software, scripts, and observatories.' })).toBeVisible()
   await expect(page.getByText('/api/v1/solves/{public_id}', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/solves/{public_id}/validation-donation', { exact: true })).toBeVisible()
+  await expect(page.getByText('"solve_is_invalid":true', { exact: false })).toBeVisible()
   await expect(page.getByText('/api/v1/catalog/objects/search', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/catalog/stars/search', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()

@@ -86,9 +86,16 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .donation-panel { margin: 1.5rem 0; }
 .donation-panel h2 { margin-bottom: .8rem; font-size: clamp(1.7rem, 3vw, 2.5rem); }
 .donation-panel > p, .donation-intro { color: #8fa9b1; line-height: 1.65; }
+.validation-quality { display: grid; grid-template-columns: 1.15rem minmax(0, 1fr); align-items: start; gap: .75rem; padding: .9rem 1rem; border: 1px solid #744e3c; border-radius: 5px; color: #e5c4af; background: rgb(47 24 18 / 55%); }
+.validation-quality input { width: 1.05rem; height: 1.05rem; margin-top: .15rem; padding: 0; accent-color: #e58258; }
+.validation-quality span { display: grid; gap: .25rem; }
+.validation-quality strong { color: #f0d0bc; }
+.validation-quality small { color: #b79887; font-size: .76rem; font-weight: 500; line-height: 1.5; }
 .license-consent { display: grid; grid-template-columns: 1.15rem minmax(0, 1fr); align-items: start; gap: .75rem; padding: 1rem; border: 1px solid #3e5961; border-radius: 5px; color: #a8bdc3; background: #08171d; font-size: .77rem; font-weight: 600; line-height: 1.55; }
 .license-consent input { width: 1.05rem; height: 1.05rem; margin-top: .15rem; padding: 0; accent-color: #e9c46a; }
 .donated-panel { border-color: #376853; background: rgb(10 39 31 / 88%); }
+.donation-invalid { display: grid; gap: .35rem; padding: .85rem 1rem; border-left: 2px solid #e58258; background: rgb(47 24 18 / 55%); }
+.donation-invalid strong { color: #f0b894; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
 .donation-comment { display: grid; gap: .35rem; padding: .85rem 1rem; border-left: 2px solid #70c69c; background: rgb(4 18 14 / 55%); }
 .donation-comment strong { color: #cce9da; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
 .waiting p { margin: 0; color: #97adb5; }

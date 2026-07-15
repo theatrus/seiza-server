@@ -161,8 +161,12 @@ retained image to the long-term validation set with an optional comment:
 ```bash
 curl -X POST "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/validation-donation" \
   -H 'Content-Type: application/json' \
-  -d '{"comment":"Sparse field that failed blind solving","license_agreed":true}'
+  -d '{"comment":"Sparse field that failed blind solving","solve_is_invalid":true,"license_agreed":true}'
 ```
+
+Set the optional `solve_is_invalid` flag for an incorrect WCS, a false
+positive, or a failed solve that should have succeeded. It defaults to
+`false` and is stored with the validation record.
 
 The affirmative grant is recorded as `seiza-validation-image-grant-v1`. The
 contributor retains ownership while granting Seiza and its maintainers a

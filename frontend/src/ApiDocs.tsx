@@ -15,7 +15,7 @@ curl -X POST "https://seiza.fyi/api/v1/solves/$PUBLIC_ID/retry" \\
 const donationExample = `# Available after either a successful or failed solve, while the image exists.
 curl -X POST "https://seiza.fyi/api/v1/solves/$PUBLIC_ID/validation-donation" \\
   -H 'Content-Type: application/json' \\
-  -d '{"comment":"Sparse field that failed blind solving","license_agreed":true}'`
+  -d '{"comment":"Sparse field that failed blind solving","solve_is_invalid":true,"license_agreed":true}'`
 
 const catalogExample = `# Objects in a three-degree cone around M31
 curl 'https://seiza.fyi/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&kinds=galaxy,nebula&max_mag=14&sort=prominence&limit=100'
@@ -104,7 +104,7 @@ export function ApiDocsPage() {
             <Endpoint method="POST" path="/api/v1/solves">Submit a multipart image and optional solve settings. Returns <code>202</code>.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}">Poll status and retrieve the completed solution.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves/{public_id}/retry">Requeue a failed solve with new JSON settings while its original image is retained.</Endpoint>
-            <Endpoint method="POST" path="/api/v1/solves/{public_id}/validation-donation">Preserve a completed solve’s image in the long-term validation set. Requires <code>license_agreed: true</code>; <code>comment</code> is optional.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/solves/{public_id}/validation-donation">Preserve a completed solve’s image in the long-term validation set. Requires <code>license_agreed: true</code>; <code>comment</code> and <code>solve_is_invalid</code> are optional.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/annotations">Regenerate projected catalog annotations from the stored WCS.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/preview">Return a retained PNG preview. Add <code>?full=true</code> for native dimensions.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/overlay.svg">Return a self-contained composite SVG for API clients.</Endpoint>
@@ -112,6 +112,7 @@ export function ApiDocsPage() {
           </div>
           <CodeExample label="Retry without another upload" code={retryExample} />
           <CodeExample label="Donate a validation image" code={donationExample} />
+          <div className="api-note"><strong>Invalid solve reports</strong><span>Set <code>solve_is_invalid: true</code> for an incorrect WCS, a false positive, or a failed solve that should have succeeded. The flag defaults to <code>false</code> and is returned with the donation metadata.</span></div>
           <div className="api-note"><strong>Validation image grant</strong><span>By setting <code>license_agreed</code>, the contributor confirms they own the image or can grant the license. They retain ownership while granting Seiza and its maintainers a non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable license to store, use, reproduce, modify, create derivative works from, publish, distribute, and otherwise use the image for any purpose, including validation, training, testing, research, documentation, and improving Seiza. The recorded grant version is <code>seiza-validation-image-grant-v1</code>.</span></div>
           <h3>Annotation and overlay query parameters</h3>
           <div className="option-table">
