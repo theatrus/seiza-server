@@ -112,7 +112,7 @@ catalog files are checked for replacement and reloaded without a server
 restart. Minor bodies are propagated to the capture time; FITS `DATE-OBS` is
 captured during submission and non-FITS clients can provide it explicitly.
 
-Seiza 0.4 object catalogs are read-only memory maps with embedded spatial and
+Seiza 0.4.1 object catalogs are read-only memory maps with embedded spatial and
 designation indices. Overlay projection and `/api/v1/catalog/objects` cone
 queries therefore materialize only matching records, while
 `/api/v1/catalog/objects/search` uses the exact/prefix name index. Legacy v1

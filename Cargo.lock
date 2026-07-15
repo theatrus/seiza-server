@@ -2435,9 +2435,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d7e8466c4404da861fe289819a374a7dbf822e7a0a7b6034d8d13714746614"
+checksum = "09b3715fccd6fcae8b6be90cd0da5a97107bee1f36433c104bd8bd70c847c3be"
 dependencies = [
  "image",
  "memmap2",
