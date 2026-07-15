@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve, submitSolve } from './api'
+import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve, retrySolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import type { OverlayLayers } from './AstroOverlay'
@@ -22,6 +22,70 @@ function numberOrUndefined(value: FormDataEntryValue | null): number | undefined
   if (typeof value !== 'string' || value.trim() === '') return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOptions {
+  const ra = numberOrUndefined(form.get('center_ra_deg'))
+  const dec = numberOrUndefined(form.get('center_dec_deg'))
+  const scale = numberOrUndefined(form.get('scale_arcsec_per_pixel'))
+  if ([ra, dec, scale].some((value) => value !== undefined) && [ra, dec, scale].some((value) => value === undefined)) {
+    throw new Error('A hinted solve needs RA, Dec, and pixel scale together. Leave all three blank for a blind solve.')
+  }
+  const options: SolveOptions = {
+    center_ra_deg: ra,
+    center_dec_deg: dec,
+    scale_arcsec_per_pixel: scale,
+    radius_deg: numberOrUndefined(form.get('radius_deg')),
+    scale_tolerance: numberOrUndefined(form.get('scale_tolerance')),
+    min_scale_arcsec_per_pixel: numberOrUndefined(form.get('min_scale')),
+    max_scale_arcsec_per_pixel: numberOrUndefined(form.get('max_scale')),
+    sigma: defaults?.sigma,
+    ignore_border: defaults?.ignore_border,
+    max_stars: defaults?.max_stars,
+  }
+  const captureTime = form.get('capture_time')
+  if (typeof captureTime === 'string' && captureTime !== '') {
+    const parsed = new Date(captureTime)
+    if (Number.isNaN(parsed.getTime())) throw new Error('Acquisition time is not a valid date and time.')
+    options.capture_time = parsed.toISOString()
+  }
+  return options
+}
+
+function localDateTimeValue(value?: string | null) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 19)
+}
+
+function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
+  return <>
+    <fieldset className="optional-fields">
+      <legend>Position and scale <span className="optional-badge">Optional</span></legend>
+      <p><strong>No coordinates are required.</strong> Leave RA, Dec, and pixel scale blank for a blind solve. If you add a position hint, provide all three; hints can make narrow fields faster and more reliable.</p>
+      <div className="form-grid">
+        <label>RA (degrees)<input name="center_ra_deg" type="number" min="0" max="360" step="any" placeholder="Optional · 210.802" defaultValue={defaults?.center_ra_deg ?? ''} /></label>
+        <label>Dec (degrees)<input name="center_dec_deg" type="number" min="-90" max="90" step="any" placeholder="Optional · 54.349" defaultValue={defaults?.center_dec_deg ?? ''} /></label>
+        <label>Pixel scale (arcsec/px)<input name="scale_arcsec_per_pixel" type="number" min="0.01" step="any" placeholder="Optional · 1.24" defaultValue={defaults?.scale_arcsec_per_pixel ?? ''} /></label>
+        <label>Search radius (degrees)<input name="radius_deg" type="number" min="0.1" step="any" placeholder="Optional · 2" defaultValue={defaults?.radius_deg ?? ''} /></label>
+      </div>
+    </fieldset>
+    <fieldset className="optional-fields">
+      <legend>Acquisition time <span className="optional-badge">Optional</span></legend>
+      <p><strong>FITS DATE-OBS is used automatically.</strong> For JPEG, PNG, and other images, add the capture time when known so Seiza can position comets and asteroids and scope transient events.</p>
+      <label>Acquisition time<input name="capture_time" type="datetime-local" step="1" defaultValue={localDateTimeValue(defaults?.capture_time)} /></label>
+    </fieldset>
+    <details>
+      <summary>Advanced blind-solve limits <span className="optional-badge">Optional</span></summary>
+      <div className="form-grid">
+        <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="0.1" defaultValue={defaults?.min_scale_arcsec_per_pixel ?? ''} /></label>
+        <label>Maximum scale (arcsec/px)<input name="max_scale" type="number" min="0.01" step="any" placeholder="20" defaultValue={defaults?.max_scale_arcsec_per_pixel ?? ''} /></label>
+        <label>Hint scale tolerance<input name="scale_tolerance" type="number" min="0.01" max="1" step="0.01" placeholder="0.2" defaultValue={defaults?.scale_tolerance ?? ''} /></label>
+      </div>
+    </details>
+  </>
 }
 
 function navigate(path: string) {
@@ -109,7 +173,7 @@ function HomePage() {
         <h2>A small, inspectable engine for astronomical software.</h2>
       </div>
       <div className="about-copy">
-        <p>Seiza (星座, せいざ) is Japanese for “constellation.” The library and this service were created by <strong>Yann Ramin</strong> to provide a modern, embeddable plate solver for observatories, imaging tools, and curious skywatchers.</p>
+        <p>Seiza (星座, せいざ) is Japanese for “constellation.” The library and this service were created by <strong><a href="https://theatr.us">Yann Ramin</a></strong> to provide a modern, embeddable plate solver for observatories, imaging tools, and curious skywatchers.</p>
         <p>The project is released under the Apache License 2.0. Use the Rust crate directly, integrate the HTTP API, or run this server on your own infrastructure.</p>
         <div className="text-links">
           <a href="https://crates.io/crates/seiza">seiza on crates.io <span aria-hidden="true">↗</span></a>
@@ -133,30 +197,12 @@ function SolvePage() {
       setError('Choose an image to solve.')
       return
     }
-    const ra = numberOrUndefined(form.get('center_ra_deg'))
-    const dec = numberOrUndefined(form.get('center_dec_deg'))
-    const scale = numberOrUndefined(form.get('scale_arcsec_per_pixel'))
-    if ([ra, dec, scale].some((value) => value !== undefined) && [ra, dec, scale].some((value) => value === undefined)) {
-      setError('A hinted solve needs RA, Dec, and pixel scale together.')
+    let options: SolveOptions
+    try {
+      options = solveOptionsFromForm(form)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
       return
-    }
-    const options: SolveOptions = {
-      center_ra_deg: ra,
-      center_dec_deg: dec,
-      scale_arcsec_per_pixel: scale,
-      radius_deg: numberOrUndefined(form.get('radius_deg')),
-      scale_tolerance: numberOrUndefined(form.get('scale_tolerance')),
-      min_scale_arcsec_per_pixel: numberOrUndefined(form.get('min_scale')),
-      max_scale_arcsec_per_pixel: numberOrUndefined(form.get('max_scale')),
-    }
-    const captureTime = form.get('capture_time')
-    if (typeof captureTime === 'string' && captureTime !== '') {
-      const parsed = new Date(captureTime)
-      if (Number.isNaN(parsed.getTime())) {
-        setError('Capture time is not a valid date and time.')
-        return
-      }
-      options.capture_time = parsed.toISOString()
     }
     setSubmitting(true)
     setUploadProgress(0)
@@ -174,34 +220,12 @@ function SolvePage() {
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Queue a new image.</h1>
-      <p className="intro">Your image uploads in resumable chunks, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="intro">Only the image is required. Large files upload in parallel, resumable parts, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
         <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
-        <fieldset>
-          <legend>Optional position hint</legend>
-          <p>Leave all three blank for a blind solve. Hints make narrow fields faster and more reliable.</p>
-          <div className="form-grid">
-            <label>RA (degrees)<input name="center_ra_deg" type="number" min="0" max="360" step="any" placeholder="210.802" /></label>
-            <label>Dec (degrees)<input name="center_dec_deg" type="number" min="-90" max="90" step="any" placeholder="54.349" /></label>
-            <label>Pixel scale (arcsec/px)<input name="scale_arcsec_per_pixel" type="number" min="0.01" step="any" placeholder="1.24" /></label>
-            <label>Search radius (degrees)<input name="radius_deg" type="number" min="0.1" step="any" placeholder="2" /></label>
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>Acquisition time</legend>
-          <p>FITS DATE-OBS is used automatically. For other images, provide the local capture time to position comets and asteroids and scope transient events.</p>
-          <label>Capture time<input name="capture_time" type="datetime-local" step="1" /></label>
-        </fieldset>
-        <details>
-          <summary>Blind solve settings</summary>
-          <div className="form-grid">
-            <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="0.1" /></label>
-            <label>Maximum scale (arcsec/px)<input name="max_scale" type="number" min="0.01" step="any" placeholder="20" /></label>
-            <label>Hint scale tolerance<input name="scale_tolerance" type="number" min="0.01" max="1" step="0.01" placeholder="0.2" /></label>
-          </div>
-        </details>
+        <SolveOptionsFields />
         {submitting && <div className="upload-progress" aria-live="polite">
           <progress max="100" value={uploadProgress} />
           <span>Uploading resumably · {uploadProgress}%</span>
@@ -216,6 +240,7 @@ function SolvePage() {
 function SolutionPage({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [pollVersion, setPollVersion] = useState(0)
   useEffect(() => {
     let active = true
     let timer: number | undefined
@@ -232,7 +257,7 @@ function SolutionPage({ jobId }: { jobId: string }) {
     }
     void refresh()
     return () => { active = false; if (timer) window.clearTimeout(timer) }
-  }, [jobId])
+  }, [jobId, pollVersion])
 
   return <main className="solution-page">
     <header className="solution-heading">
@@ -240,7 +265,10 @@ function SolutionPage({ jobId }: { jobId: string }) {
       {job && <span className={`status ${job.status}`}>{job.status}</span>}
     </header>
     {error && <p className="error" role="alert">{error}</p>}
-    {job && <SolutionContent job={job} />}
+    {job && <SolutionContent job={job} onRetried={(retried) => {
+      setJob(retried)
+      setPollVersion((version) => version + 1)
+    }} />}
   </main>
 }
 
@@ -251,7 +279,7 @@ function titleForStatus(status: Job['status']) {
   return 'The field is solved.'
 }
 
-function SolutionContent({ job }: { job: Job }) {
+function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState(defaultOverlayLayers)
@@ -315,6 +343,8 @@ function SolutionContent({ job }: { job: Job }) {
       <div><span>Image retention</span><strong>{job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
     </section>
     {job.error && <p className="error">{job.error}</p>}
+    {job.status === 'failed' && job.input_available && <RetrySolveForm job={job} onRetried={onRetried} />}
+    {job.status === 'failed' && !job.input_available && <p className="expired-note">This image can no longer be retried because its one-day upload retention period has ended. Upload it again to start a new solve.</p>}
     {pending.has(job.status) && <section className="panel waiting"><div className="orbit" aria-hidden="true"><span /></div><p>This durable page refreshes automatically. You can bookmark it or come back later.</p></section>}
     {solution && <>
       {job.preview_url ? <section className="overlay-card">
@@ -351,6 +381,43 @@ function SolutionContent({ job }: { job: Job }) {
       <WcsDetails job={job} />
     </>}
   </>
+}
+
+function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    let options: SolveOptions
+    try {
+      options = solveOptionsFromForm(new FormData(event.currentTarget), job.options)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      onRetried(await retrySolve(job.id, options))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Retry failed')
+      setSubmitting(false)
+    }
+  }
+
+  return <section className="panel retry-panel">
+    <div className="section-heading">
+      <div><p className="eyebrow">TRY AGAIN</p><h2>Re-solve the retained image</h2></div>
+      <span className="no-upload-badge">No re-upload</span>
+    </div>
+    <p className="retry-intro">Add a position or scale hint and place this same image back in the queue. Its private solution URL and original image-retention deadline stay unchanged.</p>
+    <form onSubmit={onSubmit}>
+      <SolveOptionsFields defaults={job.options} />
+      <button className="button" disabled={submitting}>{submitting ? 'Queueing retry…' : 'Retry retained image'}</button>
+      {error && <p className="error" role="alert">{error}</p>}
+    </form>
+  </section>
 }
 
 async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, solution: NonNullable<Job['solution']>, jobId: string) {
@@ -490,5 +557,13 @@ function NotFoundPage() {
 }
 
 function SiteFooter() {
-  return <footer><span>Seiza · 星座 · せいざ</span><span>Apache-2.0 · Built by Yann Ramin</span></footer>
+  return <footer>
+    <span>Seiza · 星座 · せいざ</span>
+    <nav className="footer-links" aria-label="Project links">
+      <span>Apache-2.0</span>
+      <a href="https://theatr.us">Built by Yann Ramin</a>
+      <a href="https://github.com/theatrus/seiza">Seiza GitHub <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/theatrus/seiza-server">Server GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </footer>
 }

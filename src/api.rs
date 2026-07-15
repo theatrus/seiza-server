@@ -276,6 +276,7 @@ impl AppState {
             started_at: job.started_at,
             completed_at: job.completed_at,
             original_filename: job.original_filename.clone(),
+            options: job.options.clone(),
             input_expires_at: self.input_expires_at(job),
             input_available,
             preview_url: input_available.then(|| format!("/api/v1/solves/{public_id}/preview")),
@@ -474,6 +475,7 @@ pub fn router(state: AppState) -> Router {
             get(get_resumable_upload_result),
         )
         .route("/api/v1/solves/{job_id}", get(get_solve))
+        .route("/api/v1/solves/{job_id}/retry", post(retry_solve))
         .route(
             "/api/v1/solves/{job_id}/annotations",
             get(get_solve_annotations),
@@ -543,12 +545,14 @@ pub fn router(state: AppState) -> Router {
                     http::HeaderName::from_static("upload-length"),
                     http::HeaderName::from_static("upload-offset"),
                     http::HeaderName::from_static("upload-metadata"),
+                    http::HeaderName::from_static("upload-concat"),
                 ])
                 .expose_headers([
                     header::LOCATION,
                     http::HeaderName::from_static("tus-resumable"),
                     http::HeaderName::from_static("upload-length"),
                     http::HeaderName::from_static("upload-offset"),
+                    http::HeaderName::from_static("upload-concat"),
                 ]),
         )
         .layer(TraceLayer::new_for_http())
@@ -916,19 +920,131 @@ async fn create_resumable_upload(
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
     let client = client_from_headers(&state, &headers, None)?;
-    state
-        .limiter
-        .check(&client.id)
+    let upload_concat = headers
+        .get("upload-concat")
+        .and_then(|value| value.to_str().ok());
+    let mut upload = match upload_concat {
+        Some("partial") => {
+            let total_size = checked_upload_length(&state, &headers)?;
+            ResumableUpload::new_partial(total_size, client.id, client.queue_weight)
+        }
+        Some(value) if value.starts_with("final;") => {
+            state
+                .limiter
+                .check(&client.id)
+                .await
+                .map_err(ApiError::rate_limited)?;
+            let part_ids = parse_concat_part_ids(value)?;
+            let mut parts = Vec::with_capacity(part_ids.len());
+            for part_id in &part_ids {
+                let part = ResumableUpload::load(&state.store, &state.config.s3_prefix, part_id)
+                    .await
+                    .map_err(resumable_api_error)?;
+                ensure_upload_owner(&part, &client)?;
+                if !part.partial || part.offset != part.total_size || part.job_id.is_some() {
+                    return Err(ApiError::upload_conflict(
+                        "Upload-Concat references an incomplete or non-partial upload",
+                    ));
+                }
+                parts.push(part);
+            }
+            let total_size = parts.iter().try_fold(0_u64, |total, part| {
+                total
+                    .checked_add(part.total_size)
+                    .ok_or_else(ApiError::payload_too_large)
+            })?;
+            if total_size == 0 {
+                return Err(ApiError::bad_request("uploaded image must not be empty"));
+            }
+            if total_size > state.config.max_upload_bytes as u64 {
+                return Err(ApiError::payload_too_large());
+            }
+            let (original_filename, content_type, options) = upload_metadata(&headers)?;
+            let object_key = state.new_object_key(&original_filename);
+            ResumableUpload::concatenate(
+                original_filename,
+                content_type,
+                object_key,
+                options,
+                client.id,
+                client.queue_weight,
+                &parts,
+            )
+            .map_err(resumable_api_error)?
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "Upload-Concat must be `partial` or `final;<upload URLs>`",
+            ));
+        }
+        None => {
+            state
+                .limiter
+                .check(&client.id)
+                .await
+                .map_err(ApiError::rate_limited)?;
+            let total_size = checked_upload_length(&state, &headers)?;
+            let (original_filename, content_type, options) = upload_metadata(&headers)?;
+            let object_key = state.new_object_key(&original_filename);
+            ResumableUpload::new(
+                original_filename,
+                content_type,
+                total_size,
+                object_key,
+                options,
+                client.id,
+                client.queue_weight,
+            )
+        }
+    };
+    upload
+        .save(&state.store, &state.config.s3_prefix)
         .await
-        .map_err(ApiError::rate_limited)?;
-    let total_size = required_u64_header(&headers, "upload-length")?;
+        .map_err(resumable_api_error)?;
+
+    if !upload.partial && !upload.concat_parts.is_empty() {
+        state.finalize_resumable(&mut upload).await?;
+        for part_id in &upload.concat_parts {
+            let part = ResumableUpload::load(&state.store, &state.config.s3_prefix, part_id)
+                .await
+                .map_err(resumable_api_error)?;
+            if let Err(error) = part
+                .delete_state(&state.store, &state.config.s3_prefix)
+                .await
+            {
+                tracing::warn!(upload_id = %part.id, %error, "could not remove concatenated upload state");
+            }
+        }
+    }
+
+    let mut response_headers = tus_headers(state.config.max_upload_bytes);
+    response_headers.insert(
+        header::LOCATION,
+        HeaderValue::from_str(&format!("/api/v1/uploads/{}", upload.id))
+            .map_err(ApiError::internal)?,
+    );
+    response_headers.insert(
+        http::HeaderName::from_static("upload-offset"),
+        HeaderValue::from_str(&upload.offset.to_string()).map_err(ApiError::internal)?,
+    );
+    Ok((StatusCode::CREATED, response_headers).into_response())
+}
+
+fn checked_upload_length(state: &AppState, headers: &HeaderMap) -> Result<u64, ApiError> {
+    let total_size = required_u64_header(headers, "upload-length")?;
     if total_size == 0 {
         return Err(ApiError::bad_request("uploaded image must not be empty"));
     }
     if total_size > state.config.max_upload_bytes as u64 {
         return Err(ApiError::payload_too_large());
     }
-    let metadata = parse_upload_metadata(&headers)?;
+    Ok(total_size)
+}
+
+fn upload_metadata(
+    headers: &HeaderMap,
+) -> Result<(String, Option<String>, SolveOptions), ApiError> {
+    let metadata = parse_upload_metadata(headers)?;
     let original_filename = metadata
         .get("filename")
         .map(|filename| safe_filename(filename))
@@ -947,32 +1063,39 @@ async fn create_resumable_upload(
         .transpose()?
         .unwrap_or_default();
     options.validate().map_err(ApiError::bad_request)?;
-    let object_key = state.new_object_key(&original_filename);
-    let upload = ResumableUpload::new(
-        original_filename,
-        content_type,
-        total_size,
-        object_key,
-        options,
-        client.id,
-        client.queue_weight,
-    );
-    upload
-        .save(&state.store, &state.config.s3_prefix)
-        .await
-        .map_err(resumable_api_error)?;
+    Ok((original_filename, content_type, options))
+}
 
-    let mut response_headers = tus_headers(state.config.max_upload_bytes);
-    response_headers.insert(
-        header::LOCATION,
-        HeaderValue::from_str(&format!("/api/v1/uploads/{}", upload.id))
-            .map_err(ApiError::internal)?,
-    );
-    response_headers.insert(
-        http::HeaderName::from_static("upload-offset"),
-        HeaderValue::from_static("0"),
-    );
-    Ok((StatusCode::CREATED, response_headers).into_response())
+fn parse_concat_part_ids(value: &str) -> Result<Vec<String>, ApiError> {
+    let raw_parts = value
+        .strip_prefix("final;")
+        .ok_or_else(|| ApiError::bad_request("invalid Upload-Concat header"))?;
+    let mut ids = Vec::new();
+    for raw in raw_parts.split_ascii_whitespace() {
+        let path = raw
+            .parse::<http::Uri>()
+            .map_err(|_| ApiError::bad_request("Upload-Concat contains an invalid upload URL"))?
+            .path()
+            .to_owned();
+        let id = path
+            .strip_prefix("/api/v1/uploads/")
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+            .ok_or_else(|| {
+                ApiError::bad_request("Upload-Concat may only reference this server's uploads")
+            })?;
+        if Uuid::parse_str(id).is_err() || ids.iter().any(|existing| existing == id) {
+            return Err(ApiError::bad_request(
+                "Upload-Concat contains an invalid or duplicate upload URL",
+            ));
+        }
+        ids.push(id.to_owned());
+    }
+    if ids.is_empty() {
+        return Err(ApiError::bad_request(
+            "Upload-Concat must reference at least one partial upload",
+        ));
+    }
+    Ok(ids)
 }
 
 async fn head_resumable_upload(
@@ -989,6 +1112,26 @@ async fn head_resumable_upload(
     let mut response_headers = tus_headers(state.config.max_upload_bytes);
     insert_u64_header(&mut response_headers, "upload-offset", upload.offset)?;
     insert_u64_header(&mut response_headers, "upload-length", upload.total_size)?;
+    if upload.partial {
+        response_headers.insert(
+            http::HeaderName::from_static("upload-concat"),
+            HeaderValue::from_static("partial"),
+        );
+    } else if !upload.concat_parts.is_empty() {
+        let value = format!(
+            "final;{}",
+            upload
+                .concat_parts
+                .iter()
+                .map(|id| format!("/api/v1/uploads/{id}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        response_headers.insert(
+            http::HeaderName::from_static("upload-concat"),
+            HeaderValue::from_str(&value).map_err(ApiError::internal)?,
+        );
+    }
     response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok((StatusCode::OK, response_headers).into_response())
 }
@@ -1021,7 +1164,7 @@ async fn patch_resumable_upload(
         .append(&state.store, &state.config.s3_prefix, offset, body)
         .await
         .map_err(resumable_api_error)?;
-    if new_offset == upload.total_size {
+    if new_offset == upload.total_size && !upload.partial {
         state.finalize_resumable(&mut upload).await?;
     }
     let mut response_headers = tus_headers(state.config.max_upload_bytes);
@@ -1206,6 +1349,73 @@ async fn get_solve(
         .await?
         .ok_or_else(ApiError::not_found)?;
     Ok(Json(state.job_response(&job)?))
+}
+
+async fn retry_solve(
+    State(state): State<AppState>,
+    Path(public_id): Path<String>,
+    headers: HeaderMap,
+    Json(mut options): Json<SolveOptions>,
+) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
+    let client = client_from_headers(&state, &headers, None)?;
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if job.status != JobStatus::Failed {
+        return Err(ApiError::retry_conflict(
+            "only a failed solve can be retried",
+        ));
+    }
+    ensure_input_available(&state, &job)?;
+    if !state
+        .store
+        .exists(&job.object_key)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::gone(
+            "the retained upload is no longer available; upload the image again",
+        ));
+    }
+    if options.capture_time.is_none() {
+        options.capture_time = job.options.capture_time;
+    }
+    options.validate().map_err(ApiError::bad_request)?;
+    state
+        .limiter
+        .check(&client.id)
+        .await
+        .map_err(ApiError::rate_limited)?;
+    if !state
+        .repository
+        .retry_failed(job.id, options)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::retry_conflict(
+            "the solve is no longer in a failed state",
+        ));
+    }
+    if state.transport.uses_external_queue() {
+        match state.transport.publish(job.id).await {
+            Ok(()) => state
+                .repository
+                .mark_notification_delivered(job.id)
+                .await
+                .map_err(ApiError::internal)?,
+            Err(error) => {
+                tracing::warn!(job_id = job.id, %error, "retry queue publish deferred to durable outbox")
+            }
+        }
+    }
+    let retried = state
+        .repository
+        .get(job.id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::internal("retried solve job is missing"))?;
+    Ok((StatusCode::ACCEPTED, Json(state.job_response(&retried)?)))
 }
 
 async fn get_solve_preview(
@@ -1995,6 +2205,14 @@ impl ApiError {
             retry_after: None,
         }
     }
+    fn retry_conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "retry_conflict",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
     fn artifact_not_ready(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -2186,6 +2404,198 @@ mod tests {
         assert_eq!(restarted.repository.queue_depth().await.unwrap(), 1);
 
         drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn concatenates_parallel_tus_parts_into_one_solve() {
+        let root = std::env::temp_dir().join(format!("seiza-api-concat-{}", Uuid::now_v7()));
+        let state = AppState::new(test_config(&root)).await.unwrap();
+        let mut part_ids = Vec::new();
+        for bytes in [Bytes::from_static(b"abcd"), Bytes::from_static(b"efgh")] {
+            let mut headers = tus_request_headers();
+            headers.insert("upload-length", HeaderValue::from_static("4"));
+            headers.insert("upload-concat", HeaderValue::from_static("partial"));
+            let response = create_resumable_upload(State(state.clone()), headers)
+                .await
+                .unwrap();
+            let id = response.headers()[header::LOCATION]
+                .to_str()
+                .unwrap()
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_owned();
+            patch_resumable_upload(
+                State(state.clone()),
+                Path(id.clone()),
+                chunk_headers(0),
+                bytes,
+            )
+            .await
+            .unwrap();
+            let partial = ResumableUpload::load(&state.store, &state.config.s3_prefix, &id)
+                .await
+                .unwrap();
+            assert!(partial.partial);
+            assert!(partial.job_id.is_none());
+            part_ids.push(id);
+        }
+
+        let metadata = [("filename", "parallel.fits"), ("options", "{}")]
+            .map(|(key, value)| {
+                format!(
+                    "{key} {}",
+                    base64::engine::general_purpose::STANDARD.encode(value)
+                )
+            })
+            .join(",");
+        let mut final_headers = tus_request_headers();
+        final_headers.insert(
+            "upload-concat",
+            HeaderValue::from_str(&format!(
+                "final;/api/v1/uploads/{} /api/v1/uploads/{}",
+                part_ids[0], part_ids[1]
+            ))
+            .unwrap(),
+        );
+        final_headers.insert("upload-metadata", HeaderValue::from_str(&metadata).unwrap());
+        let response = create_resumable_upload(State(state.clone()), final_headers)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()["upload-offset"], "8");
+        let final_id = response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_owned();
+        let Json(result) =
+            get_resumable_upload_result(State(state.clone()), Path(final_id), HeaderMap::new())
+                .await
+                .unwrap();
+        assert_eq!(result.original_filename, "parallel.fits");
+        assert_eq!(state.repository.queue_depth().await.unwrap(), 1);
+        let job = state.repository.get(1).await.unwrap().unwrap();
+        assert_eq!(
+            state.store.get(&job.object_key).await.unwrap(),
+            b"abcdefgh"[..]
+        );
+        for id in part_ids {
+            assert!(matches!(
+                ResumableUpload::load(&state.store, &state.config.s3_prefix, &id).await,
+                Err(ResumableUploadError::NotFound)
+            ));
+        }
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_solve_retries_with_hints_without_a_new_upload() {
+        let root = std::env::temp_dir().join(format!("seiza-api-retry-{}", Uuid::now_v7()));
+        let state = AppState::new(test_config(&root)).await.unwrap();
+        let capture_time = "2026-07-14T02:30:00Z";
+        let metadata = [
+            ("filename", "retry.fits"),
+            (
+                "options",
+                &format!(r#"{{"capture_time":"{capture_time}"}}"#),
+            ),
+        ]
+        .map(|(key, value)| {
+            format!(
+                "{key} {}",
+                base64::engine::general_purpose::STANDARD.encode(value)
+            )
+        })
+        .join(",");
+        let mut create_headers = tus_request_headers();
+        create_headers.insert("upload-length", HeaderValue::from_static("4"));
+        create_headers.insert("upload-metadata", HeaderValue::from_str(&metadata).unwrap());
+        let response = create_resumable_upload(State(state.clone()), create_headers)
+            .await
+            .unwrap();
+        let upload_id = response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_owned();
+        patch_resumable_upload(
+            State(state.clone()),
+            Path(upload_id.clone()),
+            chunk_headers(0),
+            Bytes::from_static(b"data"),
+        )
+        .await
+        .unwrap();
+        let Json(job) =
+            get_resumable_upload_result(State(state.clone()), Path(upload_id), HeaderMap::new())
+                .await
+                .unwrap();
+        let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        assert!(
+            state
+                .repository
+                .complete(
+                    lease.job_id,
+                    lease.lease_token,
+                    None,
+                    Some("no match".into())
+                )
+                .await
+                .unwrap()
+        );
+        let object_key = state
+            .repository
+            .get(lease.job_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .object_key;
+
+        let hints = SolveOptions {
+            center_ra_deg: Some(210.802),
+            center_dec_deg: Some(54.349),
+            scale_arcsec_per_pixel: Some(1.24),
+            ..SolveOptions::default()
+        };
+        let (status, Json(retried)) = retry_solve(
+            State(state.clone()),
+            Path(job.id.clone()),
+            HeaderMap::new(),
+            Json(hints),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(retried.id, job.id);
+        assert_eq!(retried.status, JobStatus::Queued);
+        assert_eq!(retried.options.center_ra_deg, Some(210.802));
+        assert_eq!(
+            retried.options.capture_time.unwrap(),
+            chrono::DateTime::parse_from_rfc3339(capture_time)
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert_eq!(state.repository.queue_depth().await.unwrap(), 1);
+        assert_eq!(
+            state
+                .repository
+                .get(lease.job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .object_key,
+            object_key
+        );
+
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 

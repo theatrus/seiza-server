@@ -29,3 +29,12 @@ test('keeps the API reference readable on a narrow screen', async ({ page }) => 
   }))
   expect(dimensions.page).toBeLessThanOrEqual(dimensions.viewport)
 })
+
+test('links the author and both source repositories from the footer', async ({ page }) => {
+  await page.goto('/solve')
+  const footer = page.locator('footer')
+
+  await expect(footer.getByRole('link', { name: 'Built by Yann Ramin' })).toHaveAttribute('href', 'https://theatr.us')
+  await expect(footer.getByRole('link', { name: 'Seiza GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza')
+  await expect(footer.getByRole('link', { name: 'Server GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-server')
+})

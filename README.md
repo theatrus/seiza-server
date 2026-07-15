@@ -131,7 +131,9 @@ and chunks live in the configured local or S3 object store, so an API-process
 restart does not discard progress. Once the declared length is complete, the
 server assembles the object, creates exactly one queued solve, and exposes the
 job from `GET /api/v1/uploads/:upload_id/result`. Any standard TUS client can
-use the same creation, `HEAD`, `PATCH`, and termination flow.
+use the same creation, `HEAD`, `PATCH`, concatenation, and termination flow.
+The browser sends three partial uploads concurrently for files of at least
+10 MiB, then creates one final concatenated upload and solve job.
 
 The original multipart endpoint remains available for small scripts and
 Astrometry-compatible clients. Submit a blind solve with `options` as a JSON
@@ -149,6 +151,15 @@ The response is `202 Accepted` with an opaque ID and artifact URLs. Poll it unti
 ```bash
 PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
 curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID"
+```
+
+While the input is retained, a failed job can be requeued at the same opaque
+URL with new solve hints and no second upload:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/retry" \
+  -H 'Content-Type: application/json' \
+  -d '{"center_ra_deg":202.47,"center_dec_deg":47.2,"scale_arcsec_per_pixel":1.35,"radius_deg":3}'
 ```
 
 Successful jobs expose an on-demand PNG preview while the uploaded image is

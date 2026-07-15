@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    models::{JobId, JobLease, JobRecord, JobStatus, SolutionResponse},
+    models::{JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions},
     repository::JobRepository,
 };
 use anyhow::{Context, Result, bail};
@@ -476,6 +476,34 @@ impl JobRepository for DynamoDbJobRepository {
                 Ok(false)
             }
             Err(error) => Err(error).context("completing DynamoDB job"),
+        }
+    }
+
+    async fn retry_failed(&self, job_id: JobId, options: SolveOptions) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(job_key(job_id)))
+            .condition_expression("#status = :failed")
+            .update_expression("SET #status = :queued, options_json = :options_json REMOVE started_at, completed_at, solution_json, #error, lease_token, lease_expires_at, notification_delivered_at")
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_names("#error", "error")
+            .expression_attribute_values(":failed", string("failed"))
+            .expression_attribute_values(":queued", string("queued"))
+            .expression_attribute_values(":options_json", string(serde_json::to_string(&options)?))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error).context("retrying failed DynamoDB job"),
         }
     }
 

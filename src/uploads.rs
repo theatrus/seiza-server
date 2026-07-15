@@ -11,7 +11,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const TUS_VERSION: &str = "1.0.0";
-pub const TUS_EXTENSIONS: &str = "creation,termination";
+pub const TUS_EXTENSIONS: &str = "creation,termination,concatenation";
 
 #[derive(Debug, Error)]
 pub enum ResumableUploadError {
@@ -48,6 +48,10 @@ pub struct ResumableUpload {
     pub queue_weight: f64,
     pub created_at: DateTime<Utc>,
     pub job_id: Option<JobId>,
+    #[serde(default)]
+    pub partial: bool,
+    #[serde(default)]
+    pub concat_parts: Vec<String>,
     chunks: Vec<UploadChunk>,
 }
 
@@ -74,8 +78,65 @@ impl ResumableUpload {
             queue_weight,
             created_at: Utc::now(),
             job_id: None,
+            partial: false,
+            concat_parts: Vec::new(),
             chunks: Vec::new(),
         }
+    }
+
+    pub fn new_partial(total_size: u64, owner: String, queue_weight: f64) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            original_filename: String::new(),
+            content_type: None,
+            total_size,
+            offset: 0,
+            object_key: String::new(),
+            options: SolveOptions::default(),
+            owner,
+            queue_weight,
+            created_at: Utc::now(),
+            job_id: None,
+            partial: true,
+            concat_parts: Vec::new(),
+            chunks: Vec::new(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn concatenate(
+        original_filename: String,
+        content_type: Option<String>,
+        object_key: String,
+        options: SolveOptions,
+        owner: String,
+        queue_weight: f64,
+        parts: &[Self],
+    ) -> Result<Self, ResumableUploadError> {
+        let total_size = parts.iter().try_fold(0_u64, |total, part| {
+            total
+                .checked_add(part.total_size)
+                .ok_or_else(|| anyhow::anyhow!("concatenated upload length overflow"))
+        })?;
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            original_filename,
+            content_type,
+            total_size,
+            offset: total_size,
+            object_key,
+            options,
+            owner,
+            queue_weight,
+            created_at: Utc::now(),
+            job_id: None,
+            partial: false,
+            concat_parts: parts.iter().map(|part| part.id.clone()).collect(),
+            chunks: parts
+                .iter()
+                .flat_map(|part| part.chunks.iter().cloned())
+                .collect(),
+        })
     }
 
     pub async fn load(
@@ -119,7 +180,7 @@ impl ResumableUpload {
         offset: u64,
         data: Bytes,
     ) -> Result<u64, ResumableUploadError> {
-        if self.job_id.is_some() {
+        if self.job_id.is_some() || self.offset == self.total_size {
             return Err(ResumableUploadError::Completed);
         }
         if offset != self.offset {
@@ -194,6 +255,15 @@ impl ResumableUpload {
         for chunk in &self.chunks {
             store.delete(&chunk.key).await?;
         }
+        store.delete(&state_key(storage_prefix, &self.id)).await?;
+        Ok(())
+    }
+
+    pub async fn delete_state(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        storage_prefix: &str,
+    ) -> Result<(), ResumableUploadError> {
         store.delete(&state_key(storage_prefix, &self.id)).await?;
         Ok(())
     }

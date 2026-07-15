@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react'
+import { useState } from 'react'
 import { AstroOverlay as ReusableAstroOverlay } from '@seiza/astro-overlay/react'
 import {
   defaultOverlayDensity,
@@ -50,25 +50,26 @@ export function OverlayControls({
   onChange: (layers: OverlayLayers) => void
   onHiddenCatalogsChange: (catalogs: DeepSkyCatalogId[]) => void
 }) {
-  return <div className="overlay-options" role="group" aria-label="Overlay layers">
-    {layerLabels.map(([key, label, countKey]) => {
-      const enabled = available?.[countKey] !== false
-      return <Fragment key={key}>
-        <button
+  return <div className="overlay-control-row">
+    <div className="overlay-options" role="group" aria-label="Overlay layers">
+      {layerLabels.map(([key, label, countKey]) => {
+        const enabled = available?.[countKey] !== false
+        return <button
+          key={key}
           type="button"
           aria-pressed={enabled && layers[key]}
           disabled={!enabled}
           title={enabled ? undefined : disabledReasons?.[countKey] ?? `${label} data is unavailable for this solution`}
           onClick={() => onChange({ ...layers, [key]: !layers[key] })}
         >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>
-        {key === 'deepSky' && <DeepSkyCatalogMenu
-          objects={objects}
-          disabled={!enabled || !layers.deepSky}
-          hiddenCatalogs={hiddenCatalogs}
-          onChange={onHiddenCatalogsChange}
-        />}
-      </Fragment>
-    })}
+      })}
+    </div>
+    <DeepSkyCatalogMenu
+      objects={objects}
+      disabled={available?.deep_sky === false || !layers.deepSky}
+      hiddenCatalogs={hiddenCatalogs}
+      onChange={onHiddenCatalogsChange}
+    />
   </div>
 }
 
@@ -100,14 +101,15 @@ function DeepSkyCatalogMenu({
 
   return <span className="catalog-filter">
     <button
+      className="catalog-filter-trigger"
       type="button"
       aria-expanded={open}
       aria-haspopup="true"
-      aria-pressed={hiddenCatalogs.length > 0}
+      data-filtered={hiddenCatalogs.length > 0}
       disabled={disabled}
       title="Choose which deep-sky catalogs to label"
       onClick={() => setOpen(!open)}
-    >Catalogs · {activeCatalogs}/{availableCatalogs.length} {open ? '▴' : '▾'}</button>
+    >Filter catalogs <span>{activeCatalogs}/{availableCatalogs.length}</span> <span aria-hidden="true">{open ? '▴' : '▾'}</span></button>
     {open && !disabled && <span className="catalog-menu" role="group" aria-label="Deep sky catalogs">
       {availableCatalogs.map(([id, label]) => <label key={id}>
         <input
