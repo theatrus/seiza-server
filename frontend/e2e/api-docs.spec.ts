@@ -1,4 +1,9 @@
 import { expect, test } from '@playwright/test'
+import { mockHealth } from './health'
+
+test.beforeEach(async ({ page }) => {
+  await mockHealth(page)
+})
 
 test('documents the public, catalog, compatibility, and worker APIs', async ({ page }) => {
   await page.goto('/')
@@ -42,4 +47,5 @@ test('links the author and both source repositories from the footer', async ({ p
   await expect(footer.getByRole('link', { name: 'Built by Yann Ramin' })).toHaveAttribute('href', 'https://theatr.us')
   await expect(footer.getByRole('link', { name: 'Seiza GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza')
   await expect(footer.getByRole('link', { name: 'Server GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-server')
+  await expect(footer.getByLabel('Software versions')).toHaveText('Seiza Server v0.1.0 · Seiza v0.4.1')
 })

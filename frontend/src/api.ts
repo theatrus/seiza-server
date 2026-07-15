@@ -99,12 +99,30 @@ export interface Job {
   validation_donation: ValidationDonation | null
 }
 
+export interface Health {
+  status: 'ready' | 'degraded'
+  versions: {
+    seiza_server: string
+    seiza: string
+  }
+  solver_ready: boolean
+  queue_depth: number
+  auth_mode: 'public' | 'stub-api-key'
+  job_backend: 'sqlx' | 'dynamodb'
+  queue_transport: 'local' | 'sqs'
+  embedded_workers: number
+}
+
 interface ApiFailure { error?: { message?: string } }
 
 async function expectJson<T>(response: Response): Promise<T> {
   const payload = await response.json() as T & ApiFailure
   if (!response.ok) throw new Error(payload.error?.message ?? `Request failed (${response.status})`)
   return payload
+}
+
+export async function getHealth(): Promise<Health> {
+  return expectJson<Health>(await fetch('/api/v1/health'))
 }
 
 export async function submitSolve(

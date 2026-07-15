@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { Annotations, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getSolve, retrySolve, submitSolve } from './api'
+import { Annotations, Health, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getHealth, getSolve, retrySolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import type { OverlayLayers } from './AstroOverlay'
@@ -225,13 +225,15 @@ function SolvePage() {
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
-        <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
-        <SolveOptionsFields />
+        <div className="file-submit-row">
+          <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
+          <button className="button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : 'Queue solve'}</button>
+        </div>
         {submitting && <div className="upload-progress" aria-live="polite">
           <progress max="100" value={uploadProgress} />
           <span>Uploading resumably · {uploadProgress}%</span>
         </div>}
-        <button className="button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : 'Queue solve'}</button>
+        <SolveOptionsFields />
       </form>
     </section>
     {error && <p className="error" role="alert">{error}</p>}
@@ -616,8 +618,20 @@ function NotFoundPage() {
 }
 
 function SiteFooter() {
+  const [versions, setVersions] = useState<Health['versions'] | null>(null)
+  useEffect(() => {
+    let active = true
+    getHealth().then((health) => {
+      if (active) setVersions(health.versions)
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [])
+
   return <footer>
-    <span>Seiza · 星座 · せいざ</span>
+    <div className="footer-product">
+      <span>Seiza · 星座 · せいざ</span>
+      {versions && <span className="footer-versions" aria-label="Software versions">Seiza Server v{versions.seiza_server} · Seiza v{versions.seiza}</span>}
+    </div>
     <nav className="footer-links" aria-label="Project links">
       <span>Apache-2.0</span>
       <a href="https://theatr.us">Built by Yann Ramin</a>
