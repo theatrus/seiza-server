@@ -97,7 +97,7 @@ test('places the solve action beside the file selector', async ({ page }) => {
   await page.goto('/solve')
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
-  const solveButton = row.getByRole('button', { name: 'Queue solve' })
+  const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
 
   await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
   await expect(solveButton).toBeVisible()
@@ -193,7 +193,7 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
     mimeType: 'application/fits',
     buffer: Buffer.alloc(12 * 1024 * 1024, 42),
   })
-  await page.getByRole('button', { name: 'Queue solve' }).click()
+  await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
   await expect(page).toHaveURL(`/solutions/${publicId}`)
   expect(partialCreations).toBe(3)
@@ -283,7 +283,7 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
     mimeType: 'application/fits',
     buffer: Buffer.alloc(6 * 1024 * 1024, 42),
   })
-  await page.getByRole('button', { name: 'Queue solve' }).click()
+  await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
   await expect(page).toHaveURL(`/solutions/${publicId}`)
   await expect(page.getByRole('heading', { name: 'Waiting in the queue.' })).toBeVisible()
@@ -359,7 +359,7 @@ test('submitting the same completed file creates a new upload and solve job', as
   for (const jobId of jobIds) {
     await page.goto('/solve')
     await setStableFile(page, 'repeat.fits', 1024)
-    await page.getByRole('button', { name: 'Queue solve' }).click()
+    await page.getByRole('button', { name: 'Solve', exact: true }).click()
     await expect(page).toHaveURL(`/solutions/${jobId}`)
   }
   expect(creations).toBe(2)
@@ -416,12 +416,12 @@ test('changing settings does not resume an interrupted upload with stale metadat
 
   await page.goto('/solve')
   await setStableFile(page, 'settings.fits', 1024)
-  await page.getByRole('button', { name: 'Queue solve' }).click()
+  await page.getByRole('button', { name: 'Solve', exact: true }).click()
   await expect(page.getByRole('alert')).toBeVisible()
 
   await page.locator('summary').click()
   await page.getByLabel('Minimum scale (arcsec/px)').fill('0.4')
-  await page.getByRole('button', { name: 'Queue solve' }).click()
+  await page.getByRole('button', { name: 'Solve', exact: true }).click()
   await expect(page).toHaveURL(`/solutions/${newJobId}`)
   expect(creations).toBe(2)
 })
@@ -539,13 +539,19 @@ for (const status of ['succeeded', 'failed'] as const) {
     })
 
     await page.goto(`/solutions/${publicId}`)
-    await expect(page.getByRole('heading', { name: 'Donate this image to improve Seiza' })).toBeVisible()
+    const donationCta = page.locator('#validation-donation')
+    const donationDetails = donationCta.locator('details')
+    await expect(donationCta.getByText('Help improve Seiza with this image')).toBeVisible()
+    await expect(page.getByLabel('Optional comment')).toBeHidden()
+    await donationCta.locator('summary').click()
+    await expect(donationDetails).toHaveAttribute('open', '')
+    await expect(page.getByText('I attest that I own this image or have authority to grant this license.')).toBeVisible()
     await page.getByLabel('Optional comment').fill('Useful sparse-field regression image')
     await page.getByLabel('Mark this solve result as invalid').check()
-    await page.getByLabel('I own this image or have authority to grant this license.').check()
+    await page.getByLabel('I attest that I own this image or have authority to grant this license.').check()
     await page.getByRole('button', { name: 'Donate image to validation set' }).click()
 
-    await expect(page.getByRole('heading', { name: 'Thank you for donating this image.' })).toBeVisible()
+    await expect(page.getByText('Donated to Seiza’s validation set')).toBeVisible()
     await expect(page.getByText('donated for long-term validation')).toBeVisible()
     await expect(page.getByText('This result was marked invalid for validation.')).toBeVisible()
     await expect(page.getByText('Useful sparse-field regression image')).toBeVisible()

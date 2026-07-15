@@ -171,9 +171,11 @@ Set the optional `solve_is_invalid` flag for an incorrect WCS, a false
 positive, or a failed solve that should have succeeded. It defaults to
 `false` and is stored with the validation record.
 
-The affirmative grant is recorded as `seiza-validation-image-grant-v1`. The
-contributor retains ownership while granting Seiza and its maintainers a
-non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable
+The submitter attests that they own the image or have authority to grant the
+license. The affirmative grant is recorded as
+`seiza-validation-image-grant-v1`. The contributor retains ownership while
+granting Seiza and its maintainers a non-exclusive, worldwide, perpetual,
+irrevocable, royalty-free, sublicensable
 license to store, use, reproduce, modify, create derivative works from,
 publish, distribute, and otherwise use the image for any purpose, including
 validation, training, testing, research, documentation, and improving Seiza.
