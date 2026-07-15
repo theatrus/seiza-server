@@ -1,4 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
+import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
 import { Annotations, Job, OverlayObject, SolveOptions, getAnnotations, getSolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
@@ -345,48 +346,22 @@ async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, so
   const separator = previewUrl.includes('?') ? '&' : '?'
   const response = await fetch(`${previewUrl}${separator}full=true`)
   if (!response.ok) throw new Error(`full-resolution image request failed (${response.status})`)
-  const sourceUrl = URL.createObjectURL(await response.blob())
   const overlay = frame.querySelector('svg')
-  if (!overlay) {
-    URL.revokeObjectURL(sourceUrl)
-    throw new Error('the overlay is not ready')
-  }
-  const serialized = overlay.cloneNode(true) as SVGSVGElement
-  serialized.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-  serialized.setAttribute('width', String(solution.image_width))
-  serialized.setAttribute('height', String(solution.image_height))
-  const overlayUrl = URL.createObjectURL(new Blob(
-    [new XMLSerializer().serializeToString(serialized)],
-    { type: 'image/svg+xml;charset=utf-8' },
-  ))
-  try {
-    const [sourceImage, overlayImage, seizaMark] = await Promise.all([
-      loadImage(sourceUrl),
-      loadImage(overlayUrl),
-      loadImage('/seiza-mark.png?watermark=1'),
-    ])
-    const canvas = document.createElement('canvas')
-    canvas.width = solution.image_width
-    canvas.height = solution.image_height
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('this browser does not provide a 2D canvas')
-    context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
-    context.drawImage(overlayImage, 0, 0, canvas.width, canvas.height)
-    drawSeizaWatermark(context, seizaMark, canvas.width, canvas.height)
-    const png = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
-      (value) => value ? resolve(value) : reject(new Error('the browser could not encode the PNG')),
-      'image/png',
-    ))
-    const downloadUrl = URL.createObjectURL(png)
-    const link = document.createElement('a')
-    link.href = downloadUrl
-    link.download = `seiza-solution-${jobId}.png`
-    link.click()
-    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0)
-  } finally {
-    URL.revokeObjectURL(sourceUrl)
-    URL.revokeObjectURL(overlayUrl)
-  }
+  if (!overlay) throw new Error('the overlay is not ready')
+  const seizaMark = await loadImage('/seiza-mark.png?watermark=1')
+  const png = await renderOverlayPng({
+    background: await response.blob(),
+    overlay,
+    width: solution.image_width,
+    height: solution.image_height,
+    decorate: (context, size) => drawSeizaWatermark(
+      context,
+      seizaMark,
+      size.width,
+      size.height,
+    ),
+  })
+  downloadBlob(png, `seiza-solution-${jobId}.png`)
 }
 
 function drawSeizaWatermark(

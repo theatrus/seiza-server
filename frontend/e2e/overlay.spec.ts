@@ -1,6 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
+test.beforeEach(async ({ page }) => {
+  page.on('pageerror', (error) => console.error(`[page error] ${error.stack ?? error.message}`))
+})
+
 const publicId = '42-550e8400-e29b-41d4-a716-446655440000'
 const starFieldSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
@@ -138,6 +142,25 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   expect(Math.abs(imageBox!.y - overlayBox!.y)).toBeLessThan(1)
   expect(Math.abs(imageBox!.width - overlayBox!.width)).toBeLessThan(1)
   expect(Math.abs(imageBox!.height - overlayBox!.height)).toBeLessThan(1)
+
+  const visualWeights = await page.locator('.sky-overlay').evaluate((overlay) => {
+    const label = overlay.querySelector<SVGTextElement>('.seiza-overlay__label')
+    const gridLabel = overlay.querySelector<SVGTextElement>('.seiza-overlay__grid-label')
+    const marker = overlay.querySelector<SVGGeometryElement>('.seiza-overlay__marker')
+    const gridLine = overlay.querySelector<SVGGeometryElement>('.seiza-overlay__grid-line')
+    return {
+      labelFontWeight: label ? getComputedStyle(label).fontWeight : '',
+      gridFontWeight: gridLabel ? getComputedStyle(gridLabel).fontWeight : '',
+      markerStrokeWidth: marker ? Number.parseFloat(getComputedStyle(marker).strokeWidth) : 0,
+      gridStrokeWidth: gridLine ? Number.parseFloat(getComputedStyle(gridLine).strokeWidth) : 0,
+    }
+  })
+  expect(visualWeights).toEqual({
+    labelFontWeight: '400',
+    gridFontWeight: '500',
+    markerStrokeWidth: 0.7,
+    gridStrokeWidth: 0.65,
+  })
 
   const gridLabels = page.locator('.coordinate-grid text')
   await expect(gridLabels.first()).toBeVisible()
@@ -277,9 +300,16 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
   expect(png.readUInt32BE(16)).toBe(solution.image_width)
   expect(png.readUInt32BE(20)).toBe(solution.image_height)
 
-  const renderedLabels = await page.evaluate(async () => {
+  const renderedOverlay = await page.evaluate(async () => {
     const state = window as typeof window & { __seizaSerializedOverlay?: Promise<string> }
-    if (!state.__seizaSerializedOverlay) return []
+    if (!state.__seizaSerializedOverlay) return {
+      labels: [],
+      markerStroke: '',
+      gridStroke: '',
+      labelWeight: '',
+      gridWeight: '',
+      haloWidth: '',
+    }
     const markup = await state.__seizaSerializedOverlay
     const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml')
     const host = document.createElement('div')
@@ -297,11 +327,21 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
         fontSize: Number.parseFloat(getComputedStyle(label).fontSize),
       }
     })
+    const markerStroke = svg.style.getPropertyValue('--seiza-overlay-marker-stroke-width')
+    const gridStroke = svg.style.getPropertyValue('--seiza-overlay-grid-stroke-width')
+    const labelWeight = svg.style.getPropertyValue('--seiza-overlay-label-font-weight')
+    const gridWeight = svg.style.getPropertyValue('--seiza-overlay-grid-font-weight')
+    const haloWidth = svg.style.getPropertyValue('--seiza-overlay-label-halo-width')
     host.remove()
-    return labels
+    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth }
   })
-  expect(renderedLabels.length).toBeGreaterThan(0)
-  for (const label of renderedLabels) {
+  expect(renderedOverlay.markerStroke).toBe('0.7')
+  expect(renderedOverlay.gridStroke).toBe('0.65')
+  expect(renderedOverlay.labelWeight).toBe('400')
+  expect(renderedOverlay.gridWeight).toBe('500')
+  expect(renderedOverlay.haloWidth).toBe('0.1em')
+  expect(renderedOverlay.labels.length).toBeGreaterThan(0)
+  for (const label of renderedOverlay.labels) {
     expect(label.x).toBeGreaterThanOrEqual(0)
     expect(label.y).toBeGreaterThanOrEqual(0)
     expect(label.right).toBeLessThanOrEqual(solution.image_width)
