@@ -73,6 +73,14 @@ durable outbox publishes only job IDs to SQS; the API remains the lease
 authority and protects worker operations with a shared token. This makes
 duplicate SQS messages and worker crashes safe.
 
+The AWS-enabled `migrate-store` command copies the complete logical job-store
+snapshot between SQLx and DynamoDB while the service is quiesced. It preserves
+the scheduler counter, fairness state, leases, attempts, results, and outbox
+delivery timestamps, includes validation-donation metadata, rebuilds DynamoDB
+object-key indexes, and verifies the destination snapshot before a deployment
+changes backends. Donation metadata includes the invalid-solve classification;
+uploaded image objects remain a separate object-store migration concern.
+
 Uploaded objects have a deliberately short lifecycle independent of job
 durability. The API reports `input_expires_at`, denies preview/overlay access
 after the configured retention window, and periodically deletes old objects

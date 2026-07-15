@@ -55,7 +55,7 @@ pub struct SqlxJobRepository {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SqlDialect {
+pub(crate) enum SqlDialect {
     Sqlite,
     Postgres,
 }
@@ -84,6 +84,16 @@ impl SqlxJobRepository {
         let repository = Self { pool, dialect };
         repository.migrate().await?;
         Ok(repository)
+    }
+
+    #[cfg(feature = "aws")]
+    pub(crate) fn pool(&self) -> &AnyPool {
+        &self.pool
+    }
+
+    #[cfg(feature = "aws")]
+    pub(crate) fn dialect(&self) -> SqlDialect {
+        self.dialect
     }
 
     async fn migrate(&self) -> Result<()> {
