@@ -153,6 +153,28 @@ PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
 curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID"
 ```
 
+Ordinary uploads remain the user’s property. Seiza does not claim ownership
+and stores the original only temporarily to process and present the solve.
+After either success or failure, the user may explicitly donate the still-
+retained image to the long-term validation set with an optional comment:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/validation-donation" \
+  -H 'Content-Type: application/json' \
+  -d '{"comment":"Sparse field that failed blind solving","solve_is_invalid":true,"license_agreed":true}'
+```
+
+Set the optional `solve_is_invalid` flag for an incorrect WCS, a false
+positive, or a failed solve that should have succeeded. It defaults to
+`false` and is stored with the validation record.
+
+The affirmative grant is recorded as `seiza-validation-image-grant-v1`. The
+contributor retains ownership while granting Seiza and its maintainers a
+non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable
+license to store, use, reproduce, modify, create derivative works from,
+publish, distribute, and otherwise use the image for any purpose, including
+validation, training, testing, research, documentation, and improving Seiza.
+
 While the input is retained, a failed job can be requeued at the same opaque
 URL with new solve hints and no second upload:
 
@@ -293,6 +315,7 @@ are currently supported:
 | `SEIZA_STORAGE_BACKEND` | `local` | `local` or `s3` |
 | `SEIZA_S3_BUCKET` | unset | Required when storage is `s3` |
 | `SEIZA_S3_PREFIX` | `uploads` | S3 object-key prefix |
+| `SEIZA_VALIDATION_PREFIX` | `validation` | Object-key prefix protected from temporary-upload cleanup for donated validation images |
 | `SEIZA_SQS_QUEUE_URL` | unset | Required when queue transport is `sqs` |
 
 `X-Forwarded-For`/`X-Real-IP` are used for anonymous fairness and rate limits.

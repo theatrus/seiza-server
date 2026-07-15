@@ -107,6 +107,7 @@ pub struct Config {
     pub storage_backend: StorageBackend,
     pub s3_bucket: Option<String>,
     pub s3_prefix: String,
+    pub validation_prefix: String,
 }
 
 impl Config {
@@ -147,6 +148,25 @@ impl Config {
             .unwrap_or_else(|| data_dir.join("jobs.sqlite3"));
         let sql_database_url = env::var("SEIZA_SQL_DATABASE_URL")
             .unwrap_or_else(|_| format!("sqlite://{}?mode=rwc", queue_database.display()));
+        let s3_prefix = env_or("SEIZA_S3_PREFIX", "uploads")
+            .trim_matches('/')
+            .to_owned();
+        let validation_prefix = env_or("SEIZA_VALIDATION_PREFIX", "validation")
+            .trim_matches('/')
+            .to_owned();
+        if validation_prefix.is_empty()
+            || validation_prefix
+                .split('/')
+                .any(|component| component.is_empty() || component == "." || component == "..")
+        {
+            bail!("SEIZA_VALIDATION_PREFIX must be a non-empty safe object-key prefix");
+        }
+        if s3_prefix == validation_prefix
+            || (!s3_prefix.is_empty() && s3_prefix.starts_with(&format!("{validation_prefix}/")))
+            || (!s3_prefix.is_empty() && validation_prefix.starts_with(&format!("{s3_prefix}/")))
+        {
+            bail!("SEIZA_VALIDATION_PREFIX and SEIZA_S3_PREFIX must not overlap");
+        }
 
         Ok(Self {
             bind_addr,
@@ -217,9 +237,8 @@ impl Config {
             s3_bucket: env::var("SEIZA_S3_BUCKET")
                 .ok()
                 .filter(|value| !value.is_empty()),
-            s3_prefix: env_or("SEIZA_S3_PREFIX", "uploads")
-                .trim_matches('/')
-                .to_owned(),
+            s3_prefix,
+            validation_prefix,
         })
     }
 }

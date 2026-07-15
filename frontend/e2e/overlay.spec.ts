@@ -140,6 +140,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       wcs_url: `/api/v1/solves/${publicId}/wcs`,
       solution,
       error: null,
+      validation_donation: null,
     }),
   }))
 }

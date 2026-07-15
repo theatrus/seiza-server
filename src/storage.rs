@@ -18,8 +18,21 @@ pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, content: Bytes, content_type: Option<&str>) -> Result<()>;
     async fn get(&self, key: &str) -> Result<Bytes>;
     async fn exists(&self, key: &str) -> Result<bool>;
+    async fn copy(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+        content_type: Option<&str>,
+    ) -> Result<()> {
+        let content = self.get(source_key).await?;
+        self.put(destination_key, content, content_type).await
+    }
     async fn delete(&self, key: &str) -> Result<()>;
-    async fn delete_older_than(&self, cutoff: SystemTime) -> Result<usize>;
+    async fn delete_older_than(
+        &self,
+        cutoff: SystemTime,
+        protected_prefixes: &[String],
+    ) -> Result<usize>;
 }
 
 pub struct LocalObjectStore {
@@ -80,15 +93,24 @@ impl ObjectStore for LocalObjectStore {
         }
     }
 
-    async fn delete_older_than(&self, cutoff: SystemTime) -> Result<usize> {
+    async fn delete_older_than(
+        &self,
+        cutoff: SystemTime,
+        protected_prefixes: &[String],
+    ) -> Result<usize> {
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || sweep_directory(&root, cutoff))
+        let protected_prefixes = protected_prefixes.to_vec();
+        tokio::task::spawn_blocking(move || sweep_directory(&root, cutoff, &protected_prefixes))
             .await
             .context("local object-store cleanup worker panicked")?
     }
 }
 
-fn sweep_directory(root: &Path, cutoff: SystemTime) -> Result<usize> {
+fn sweep_directory(
+    root: &Path,
+    cutoff: SystemTime,
+    protected_prefixes: &[String],
+) -> Result<usize> {
     let mut removed = 0;
     let mut directories = vec![root.to_path_buf()];
     let mut visited = Vec::new();
@@ -100,8 +122,11 @@ fn sweep_directory(root: &Path, cutoff: SystemTime) -> Result<usize> {
             let entry = entry?;
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                directories.push(entry.path());
+                if !path_is_protected(root, &entry.path(), protected_prefixes) {
+                    directories.push(entry.path());
+                }
             } else if file_type.is_file()
+                && !path_is_protected(root, &entry.path(), protected_prefixes)
                 && entry
                     .metadata()?
                     .modified()
@@ -118,6 +143,20 @@ fn sweep_directory(root: &Path, cutoff: SystemTime) -> Result<usize> {
         }
     }
     Ok(removed)
+}
+
+fn path_is_protected(root: &Path, path: &Path, protected_prefixes: &[String]) -> bool {
+    path.strip_prefix(root)
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .is_some_and(|key| key_is_protected(&key, protected_prefixes))
+}
+
+fn key_is_protected(key: &str, protected_prefixes: &[String]) -> bool {
+    protected_prefixes.iter().any(|prefix| {
+        let prefix = prefix.trim_matches('/');
+        !prefix.is_empty() && (key == prefix || key.starts_with(&format!("{prefix}/")))
+    })
 }
 
 #[cfg(feature = "aws")]
@@ -202,6 +241,27 @@ impl ObjectStore for S3ObjectStore {
         }
     }
 
+    async fn copy(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+        _content_type: Option<&str>,
+    ) -> Result<()> {
+        self.client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(destination_key)
+            .copy_source(format!(
+                "{}/{}",
+                self.bucket,
+                urlencoding::encode(source_key)
+            ))
+            .send()
+            .await
+            .with_context(|| format!("copying S3 upload {source_key} to {destination_key}"))?;
+        Ok(())
+    }
+
     async fn delete(&self, key: &str) -> Result<()> {
         self.client
             .delete_object()
@@ -213,7 +273,11 @@ impl ObjectStore for S3ObjectStore {
         Ok(())
     }
 
-    async fn delete_older_than(&self, cutoff: SystemTime) -> Result<usize> {
+    async fn delete_older_than(
+        &self,
+        cutoff: SystemTime,
+        protected_prefixes: &[String],
+    ) -> Result<usize> {
         let cutoff = cutoff.duration_since(UNIX_EPOCH)?.as_secs() as i64;
         let mut continuation_token = None;
         let mut removed = 0;
@@ -229,6 +293,9 @@ impl ObjectStore for S3ObjectStore {
             let response = request.send().await.context("listing uploads in S3")?;
             for object in response.contents() {
                 let Some(key) = object.key() else { continue };
+                if key_is_protected(key, protected_prefixes) {
+                    continue;
+                }
                 let Some(modified) = object.last_modified() else {
                     continue;
                 };
@@ -291,12 +358,42 @@ mod tests {
             .unwrap();
 
         let removed = store
-            .delete_older_than(SystemTime::now() + std::time::Duration::from_secs(1))
+            .delete_older_than(SystemTime::now() + std::time::Duration::from_secs(1), &[])
             .await
             .unwrap();
 
         assert_eq!(removed, 1);
         assert!(store.get("nested/image.fits").await.is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_store_preserves_protected_validation_objects() {
+        let root = std::env::temp_dir().join(format!("seiza-store-{}", uuid::Uuid::now_v7()));
+        let store = LocalObjectStore::new(root.clone()).await.unwrap();
+        store
+            .put("uploads/image.fits", Bytes::from_static(b"temporary"), None)
+            .await
+            .unwrap();
+        store
+            .copy("uploads/image.fits", "validation/image.fits", None)
+            .await
+            .unwrap();
+
+        let removed = store
+            .delete_older_than(
+                SystemTime::now() + std::time::Duration::from_secs(1),
+                &["validation".into()],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!store.exists("uploads/image.fits").await.unwrap());
+        assert_eq!(
+            store.get("validation/image.fits").await.unwrap(),
+            b"temporary"[..]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

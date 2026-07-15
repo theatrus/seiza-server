@@ -1,6 +1,8 @@
 use crate::{
     config::Config,
-    models::{JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions},
+    models::{
+        JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions, ValidationDonation,
+    },
     repository::JobRepository,
 };
 use anyhow::{Context, Result, bail};
@@ -435,7 +437,7 @@ impl JobRepository for DynamoDbJobRepository {
                     .and_then(|value| decode_time(&value).ok())
                     .is_some_and(|expires_at| expires_at > Utc::now())
         });
-        Ok((job.status == JobStatus::Solving && active).then_some(job.object_key))
+        Ok((job.status == JobStatus::Solving && active).then(|| job.input_object_key().to_owned()))
     }
 
     async fn complete(
@@ -504,6 +506,45 @@ impl JobRepository for DynamoDbJobRepository {
                 Ok(false)
             }
             Err(error) => Err(error).context("retrying failed DynamoDB job"),
+        }
+    }
+
+    async fn donate_validation(&self, job_id: JobId, donation: ValidationDonation) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(job_key(job_id)))
+            .condition_expression("#status = :succeeded OR #status = :failed")
+            .update_expression("SET validation_object_key = :object_key, validation_donated_at = if_not_exists(validation_donated_at, :donated_at), validation_comment = :comment, validation_solve_is_invalid = :solve_is_invalid, validation_license_version = :license_version")
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_values(":succeeded", string("succeeded"))
+            .expression_attribute_values(":failed", string("failed"))
+            .expression_attribute_values(":object_key", string(donation.object_key))
+            .expression_attribute_values(":donated_at", string(encode_time(donation.donated_at)))
+            .expression_attribute_values(":license_version", string(donation.license_version))
+            .expression_attribute_values(
+                ":solve_is_invalid",
+                AttributeValue::Bool(donation.solve_is_invalid),
+            )
+            .expression_attribute_values(
+                ":comment",
+                donation
+                    .comment
+                    .map_or(AttributeValue::Null(true), string),
+            )
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error).context("donating DynamoDB job to validation set"),
         }
     }
 
@@ -584,6 +625,18 @@ fn record_from_item(item: &Item) -> Result<JobRecord> {
             .map(|value| serde_json::from_str(&value))
             .transpose()?,
         error: optional_string(item, "error"),
+        validation_donation: optional_string(item, "validation_object_key")
+            .map(|object_key| -> Result<ValidationDonation> {
+                Ok(ValidationDonation {
+                    object_key,
+                    comment: optional_string(item, "validation_comment"),
+                    solve_is_invalid: optional_bool(item, "validation_solve_is_invalid")
+                        .unwrap_or(false),
+                    license_version: required_string(item, "validation_license_version")?,
+                    donated_at: decode_time(&required_string(item, "validation_donated_at")?)?,
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -616,6 +669,11 @@ fn decode_time(value: &str) -> Result<DateTime<Utc>> {
 }
 fn optional_string(item: &Item, name: &str) -> Option<String> {
     item.get(name).and_then(|value| value.as_s().ok()).cloned()
+}
+fn optional_bool(item: &Item, name: &str) -> Option<bool> {
+    item.get(name)
+        .and_then(|value| value.as_bool().ok())
+        .copied()
 }
 fn required_string(item: &Item, name: &str) -> Result<String> {
     optional_string(item, name).with_context(|| format!("DynamoDB item is missing string {name}"))

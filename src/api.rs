@@ -3,7 +3,7 @@ use crate::{
     config::{AuthMode, Config},
     models::{
         AnnotationResponse, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
-        SolveOptions, WorkerCompletion,
+        SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
@@ -44,6 +44,9 @@ use tower_http::{
     trace::TraceLayer,
 };
 use uuid::Uuid;
+
+const VALIDATION_LICENSE_VERSION: &str = "seiza-validation-image-grant-v1";
+const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -130,7 +133,11 @@ impl AppState {
             let cutoff = SystemTime::now()
                 .checked_sub(retention)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            match self.store.delete_older_than(cutoff).await {
+            match self
+                .store
+                .delete_older_than(cutoff, std::slice::from_ref(&self.config.validation_prefix))
+                .await
+            {
                 Ok(0) => {}
                 Ok(removed) => tracing::info!(removed, "deleted expired uploaded images"),
                 Err(error) => tracing::error!(%error, "failed to clean expired uploaded images"),
@@ -247,7 +254,7 @@ impl AppState {
     }
 
     fn input_available(&self, job: &JobRecord) -> bool {
-        Utc::now() < self.input_expires_at(job)
+        job.validation_donation.is_some() || Utc::now() < self.input_expires_at(job)
     }
 
     fn job_response(&self, job: &JobRecord) -> Result<JobResponse, ApiError> {
@@ -291,6 +298,10 @@ impl AppState {
                 .map(|_| format!("/api/v1/solves/{public_id}/wcs")),
             solution,
             error: job.error.clone(),
+            validation_donation: job
+                .validation_donation
+                .as_ref()
+                .map(ValidationDonationResponse::from),
         })
     }
 
@@ -337,6 +348,20 @@ impl AppState {
         }
     }
 
+    fn validation_object_key(&self, job: &JobRecord) -> Result<String, ApiError> {
+        let public_token = public_token_from_object_key(&job.object_key)
+            .ok_or_else(|| ApiError::internal("job object key has no public UUID"))?;
+        let stored_name = job
+            .object_key
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| ApiError::internal("job object key has no filename"))?;
+        Ok(format!(
+            "{}/public-{public_token}/{stored_name}",
+            self.config.validation_prefix
+        ))
+    }
+
     async fn enqueue_stored(
         &self,
         client: Client,
@@ -368,6 +393,7 @@ impl AppState {
             completed_at: None,
             solution: None,
             error: None,
+            validation_donation: None,
         };
         let job = self
             .repository
@@ -476,6 +502,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/solves/{job_id}", get(get_solve))
         .route("/api/v1/solves/{job_id}/retry", post(retry_solve))
+        .route(
+            "/api/v1/solves/{job_id}/validation-donation",
+            post(donate_validation_image),
+        )
         .route(
             "/api/v1/solves/{job_id}/annotations",
             get(get_solve_annotations),
@@ -1370,7 +1400,7 @@ async fn retry_solve(
     ensure_input_available(&state, &job)?;
     if !state
         .store
-        .exists(&job.object_key)
+        .exists(job.input_object_key())
         .await
         .map_err(ApiError::internal)?
     {
@@ -1418,6 +1448,111 @@ async fn retry_solve(
     Ok((StatusCode::ACCEPTED, Json(state.job_response(&retried)?)))
 }
 
+#[derive(Debug, Deserialize)]
+struct ValidationDonationRequest {
+    #[serde(default)]
+    comment: Option<String>,
+    #[serde(default)]
+    solve_is_invalid: bool,
+    #[serde(default)]
+    license_agreed: bool,
+}
+
+async fn donate_validation_image(
+    State(state): State<AppState>,
+    Path(public_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ValidationDonationRequest>,
+) -> Result<Json<JobResponse>, ApiError> {
+    let _client = client_from_headers(&state, &headers, None)?;
+    if !request.license_agreed {
+        return Err(ApiError::bad_request(
+            "license_agreed must be true to donate an image",
+        ));
+    }
+    let comment = request.comment.and_then(|comment| {
+        let comment = comment.trim().to_owned();
+        (!comment.is_empty()).then_some(comment)
+    });
+    if comment
+        .as_ref()
+        .is_some_and(|comment| comment.len() > MAX_VALIDATION_COMMENT_BYTES)
+    {
+        return Err(ApiError::bad_request(format!(
+            "validation comment must not exceed {MAX_VALIDATION_COMMENT_BYTES} bytes"
+        )));
+    }
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if !matches!(job.status, JobStatus::Succeeded | JobStatus::Failed) {
+        return Err(ApiError::validation_conflict(
+            "only a completed solve can be donated to the validation set",
+        ));
+    }
+
+    let validation_object_key = job
+        .validation_donation
+        .as_ref()
+        .map(|donation| donation.object_key.clone())
+        .unwrap_or(state.validation_object_key(&job)?);
+    if job.validation_donation.is_none() {
+        ensure_input_available(&state, &job)?;
+        let source_key = job.input_object_key();
+        if !state
+            .store
+            .exists(source_key)
+            .await
+            .map_err(ApiError::internal)?
+        {
+            return Err(ApiError::gone(
+                "the temporary upload is no longer available to donate",
+            ));
+        }
+        state
+            .store
+            .copy(
+                source_key,
+                &validation_object_key,
+                job.content_type.as_deref(),
+            )
+            .await
+            .map_err(ApiError::internal)?;
+    }
+
+    let donated_at = job
+        .validation_donation
+        .as_ref()
+        .map_or_else(Utc::now, |donation| donation.donated_at);
+    if !state
+        .repository
+        .donate_validation(
+            job.id,
+            ValidationDonation {
+                object_key: validation_object_key,
+                comment,
+                solve_is_invalid: request.solve_is_invalid,
+                license_version: VALIDATION_LICENSE_VERSION.into(),
+                donated_at,
+            },
+        )
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::validation_conflict(
+            "the solve is no longer in a completed state",
+        ));
+    }
+    let donated = state
+        .repository
+        .get(job.id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::internal("donated solve job is missing"))?;
+    Ok(Json(state.job_response(&donated)?))
+}
+
 async fn get_solve_preview(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
@@ -1430,7 +1565,7 @@ async fn get_solve_preview(
     ensure_input_available(&state, &job)?;
     let content = state
         .store
-        .get(&job.object_key)
+        .get(job.input_object_key())
         .await
         .map_err(ApiError::internal)?;
     let preview = if query.full {
@@ -1503,7 +1638,7 @@ async fn get_solve_overlay(
     }
     let content = state
         .store
-        .get(&job.object_key)
+        .get(job.input_object_key())
         .await
         .map_err(ApiError::internal)?;
     let preview = preview_png(content, job.original_filename)
@@ -2213,6 +2348,14 @@ impl ApiError {
             retry_after: None,
         }
     }
+    fn validation_conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "validation_conflict",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
     fn artifact_not_ready(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -2600,6 +2743,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_solve_donation_preserves_the_image_and_license_grant() {
+        let root = std::env::temp_dir().join(format!("seiza-api-donation-{}", Uuid::now_v7()));
+        let state = AppState::new(test_config(&root)).await.unwrap();
+        let object_key = state.new_object_key("validation.fits");
+        state
+            .store
+            .put(
+                &object_key,
+                Bytes::from_static(b"validation image"),
+                Some("application/fits"),
+            )
+            .await
+            .unwrap();
+        let job = state
+            .enqueue_stored(
+                Client {
+                    id: "public".into(),
+                    queue_weight: 1.0,
+                },
+                object_key.clone(),
+                "validation.fits".into(),
+                Some("application/fits".into()),
+                SolveOptions::default(),
+            )
+            .await
+            .unwrap();
+        let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        assert!(
+            state
+                .repository
+                .complete(
+                    lease.job_id,
+                    lease.lease_token,
+                    None,
+                    Some("no match".into()),
+                )
+                .await
+                .unwrap()
+        );
+        let public_id = public_job_id(&job).unwrap();
+
+        let missing_grant = donate_validation_image(
+            State(state.clone()),
+            Path(public_id.clone()),
+            HeaderMap::new(),
+            Json(ValidationDonationRequest {
+                comment: None,
+                solve_is_invalid: false,
+                license_agreed: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing_grant.status, StatusCode::BAD_REQUEST);
+
+        let Json(donated) = donate_validation_image(
+            State(state.clone()),
+            Path(public_id.clone()),
+            HeaderMap::new(),
+            Json(ValidationDonationRequest {
+                comment: Some("Useful example of a sparse field".into()),
+                solve_is_invalid: true,
+                license_agreed: true,
+            }),
+        )
+        .await
+        .unwrap();
+        let donation = donated.validation_donation.unwrap();
+        assert_eq!(
+            donation.comment.as_deref(),
+            Some("Useful example of a sparse field")
+        );
+        assert!(donation.solve_is_invalid);
+        assert_eq!(donation.license_version, VALIDATION_LICENSE_VERSION);
+
+        let record = state.repository.get(job.id).await.unwrap().unwrap();
+        let record_donation = record.validation_donation.unwrap();
+        assert!(record_donation.solve_is_invalid);
+        let durable_key = record_donation.object_key;
+        assert!(durable_key.starts_with("validation/public-"));
+        assert_eq!(
+            state.store.get(&durable_key).await.unwrap(),
+            b"validation image"[..]
+        );
+        assert_eq!(
+            state
+                .store
+                .delete_older_than(
+                    SystemTime::now() + Duration::from_secs(1),
+                    std::slice::from_ref(&state.config.validation_prefix),
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!state.store.exists(&object_key).await.unwrap());
+        assert!(state.store.exists(&durable_key).await.unwrap());
+
+        let Json(refreshed) = get_solve(State(state.clone()), Path(public_id))
+            .await
+            .unwrap();
+        assert!(refreshed.input_available);
+        assert!(refreshed.preview_url.is_some());
+
+        let (status, Json(retried)) = retry_solve(
+            State(state.clone()),
+            Path(refreshed.id),
+            HeaderMap::new(),
+            Json(SolveOptions::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(retried.status, JobStatus::Queued);
+        let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        assert_eq!(
+            state
+                .repository
+                .input_key(lease.job_id, lease.lease_token)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(durable_key.as_str())
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn v3_catalog_api_supports_spatial_and_alias_queries() {
         let root = std::env::temp_dir().join(format!("seiza-api-catalog-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
@@ -2782,6 +3055,7 @@ mod tests {
             storage_backend: StorageBackend::Local,
             s3_bucket: None,
             s3_prefix: "uploads".into(),
+            validation_prefix: "validation".into(),
         }
     }
 }

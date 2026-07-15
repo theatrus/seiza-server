@@ -7,10 +7,14 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page).toHaveURL('/docs/api')
   await expect(page.getByRole('heading', { name: 'Plate solving for software, scripts, and observatories.' })).toBeVisible()
   await expect(page.getByText('/api/v1/solves/{public_id}', { exact: true })).toBeVisible()
+  await expect(page.getByText('/api/v1/solves/{public_id}/validation-donation', { exact: true })).toBeVisible()
+  await expect(page.getByText('"solve_is_invalid":true', { exact: false })).toBeVisible()
   await expect(page.getByText('/api/v1/catalog/objects/search', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/catalog/stars/search', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/internal/worker/claim', { exact: true })).toBeVisible()
+  await expect(page.getByText('Your images remain yours.')).toBeVisible()
+  await expect(page.getByText('seiza-validation-image-grant-v1')).toBeVisible()
   const copyButton = page.locator('[data-copy-example]').first()
   await expect(copyButton).toBeVisible()
   await copyButton.click()
@@ -32,6 +36,7 @@ test('keeps the API reference readable on a narrow screen', async ({ page }) => 
 
 test('links the author and both source repositories from the footer', async ({ page }) => {
   await page.goto('/solve')
+  await expect(page.getByText('Your image remains yours.')).toBeVisible()
   const footer = page.locator('footer')
 
   await expect(footer.getByRole('link', { name: 'Built by Yann Ramin' })).toHaveAttribute('href', 'https://theatr.us')
