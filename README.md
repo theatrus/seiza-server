@@ -17,15 +17,16 @@ disappears on a process restart.
 
 - Native JSON API: resumable TUS uploads (with multipart fallback), job polling,
   explicit WCS/quality output, refreshable catalog annotations, downloadable
-  FITS-style WCS headers, an optional composite overlay endpoint, a 100 MB
-  default file limit, structured errors, and CORS.
+  FITS-style WCS headers, indexed coordinate/name catalog queries, an optional
+  composite overlay endpoint, a 100 MB default file limit, structured errors,
+  and CORS.
 - Astrometry.net-compatible API subset: `POST /api/login`, `POST /api/upload`,
   `GET /api/submissions/:id`, `GET /api/jobs/:id`,
   `GET /api/jobs/:id/calibration`, and `GET /api/jobs/:id/info`.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.3. The maintained G<=16 index is memory-mapped once per
+  solving with Seiza 0.4. The maintained G<=16 index is memory-mapped once per
   worker and reused across jobs, including fine-scale fields down to 0.1"/px.
 - Per-client token-bucket admission limiting plus a durable weighted-LRU
   priority queue. An unseen/least-recently served client goes first; higher
@@ -46,9 +47,11 @@ disappears on a process restart.
 
 ## Quick start
 
-Install or build the Seiza CLI, then get the prebuilt catalogs and maintained
+Install Seiza CLI 0.4 or newer, then get the prebuilt catalogs and maintained
 blind index. The server automatically prefers the deep Gaia G<=17 catalog and
-its matching G<=16 index when both are present.
+its matching G<=16 index when both are present. Seiza 0.4's prebuilt object
+catalog is memory-mapped, includes the expanded LBN and Cederblad datasets, and
+provides embedded spatial and designation indices.
 
 ```bash
 cargo install seiza-cli
@@ -174,6 +177,22 @@ ICRS footprint corners, and current projected catalog objects when annotation
 catalogs are configured. Static catalog changes are detected and reprojected
 through the stored WCS without rerunning the solver. The downloadable `.wcs`
 converts `CRPIX` to FITS' one-indexed convention.
+
+The native catalog API can query the configured deep-sky catalog without
+submitting an image. Cone queries support kind, magnitude, angular-size,
+common-name, extent-overlap, result-limit, and sort controls:
+
+```bash
+curl "http://127.0.0.1:8080/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&kinds=galaxy,nebula&max_mag=14&sort=prominence&limit=100"
+curl "http://127.0.0.1:8080/api/v1/catalog/objects/search?q=M31"
+curl "http://127.0.0.1:8080/api/v1/catalog/objects/search?q=ced&prefix=true&limit=20"
+```
+
+`sort` accepts `prominence`, `size`, `magnitude`, `distance`, or `name`.
+Responses include stable IDs, aliases, hierarchy, and source provenance when
+the v3 catalog supplies them. Legacy v1 object catalogs remain readable, but
+their identity/provenance fields are empty and their name lookups require an
+in-memory scan.
 
 FITS `DATE-OBS` is captured automatically. Non-FITS API clients can provide a
 RFC 3339 `capture_time` in the options JSON. Capture time scopes transient

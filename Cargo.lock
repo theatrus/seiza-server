@@ -2435,9 +2435,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a117df23b5465a540ca142f358c02512625cc7ef43699317b9814648a7cebf42"
+checksum = "51d7e8466c4404da861fe289819a374a7dbf822e7a0a7b6034d8d13714746614"
 dependencies = [
  "image",
  "memmap2",
@@ -2450,9 +2450,12 @@ dependencies = [
 
 [[package]]
 name = "seiza-fits"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd1dd3fa00bbbfac7eeea6f0bfae91734f52b10f3cc73883aac0d5e4e230d8d8"
+checksum = "3bd6657a61c3d5d8a789f610fdc1d7a387f74b0299881a09842c17735b0acbc6"
+dependencies = [
+ "multiversion",
+]
 
 [[package]]
 name = "seiza-server"

@@ -3,7 +3,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use seiza::{
     catalog::{StarCatalog, TileCatalog, angular_separation_deg},
     minor_bodies::{MinorBodyCatalog, MinorBodyKind},
-    objects::{ObjectCatalog, ObjectKind},
+    objects::{
+        ObjectCatalog, ObjectHit, ObjectKind, ObjectNameMatch, ObjectQuery, ObjectQueryError,
+        SkyRegion,
+    },
     wcs::Wcs,
 };
 use std::{
@@ -199,6 +202,47 @@ impl AnnotationEngine {
         }
     }
 
+    pub fn query_objects(
+        &self,
+        region: &SkyRegion,
+        query: &ObjectQuery,
+    ) -> Result<Option<(Vec<ObjectHit>, String, usize)>, ObjectQueryError> {
+        let Some(catalog) = &self.objects else {
+            return Ok(None);
+        };
+        let Some((catalog, version)) = catalog.current() else {
+            return Ok(None);
+        };
+        let catalog_objects = catalog.len();
+        Ok(Some((
+            catalog.query_region(region, query)?,
+            version,
+            catalog_objects,
+        )))
+    }
+
+    pub fn search_objects(
+        &self,
+        designation: &str,
+        prefix: bool,
+        limit: usize,
+    ) -> io::Result<Option<(Vec<ObjectNameMatch>, String, usize)>> {
+        let Some(catalog) = &self.objects else {
+            return Ok(None);
+        };
+        let Some((catalog, version)) = catalog.current() else {
+            return Ok(None);
+        };
+        let catalog_objects = catalog.len();
+        let mut matches = if prefix {
+            catalog.search_names(designation, limit)?
+        } else {
+            catalog.lookup_name(designation)?
+        };
+        matches.truncate(limit);
+        Ok(Some((matches, version, catalog_objects)))
+    }
+
     fn warm_catalogs(&self) {
         if let Some(catalog) = &self.objects {
             let _ = catalog.current();
@@ -221,7 +265,14 @@ fn append_object_catalog(
     options: &AnnotationOptions,
     force_transient: bool,
 ) {
-    for placed in catalog.objects_in_footprint(wcs, dimensions) {
+    let placed_objects = match catalog.objects_in_footprint(wcs, dimensions) {
+        Ok(placed_objects) => placed_objects,
+        Err(error) => {
+            tracing::warn!(%error, "could not query object catalog for solved footprint");
+            return;
+        }
+    };
+    for placed in placed_objects {
         let transient = force_transient || placed.object.kind == ObjectKind::Transient;
         let named_star = matches!(
             placed.object.kind,
@@ -501,7 +552,7 @@ impl<T> ReloadingCatalog<T> {
 mod tests {
     use super::*;
     use crate::models::WcsResponse;
-    use seiza::objects::SkyObject;
+    use seiza::objects::{ObjectMetadata, SkyObject};
 
     #[test]
     fn transient_dates_are_scoped_around_capture_time() {
@@ -537,6 +588,7 @@ mod tests {
             position_angle_deg: Some(0.0),
             name: name.into(),
             common_name: String::new(),
+            metadata: ObjectMetadata::default(),
         };
         ObjectCatalog::new(vec![object("M 1", 10.0)])
             .write_to(&path)

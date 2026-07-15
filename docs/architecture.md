@@ -112,6 +112,15 @@ catalog files are checked for replacement and reloaded without a server
 restart. Minor bodies are propagated to the capture time; FITS `DATE-OBS` is
 captured during submission and non-FITS clients can provide it explicitly.
 
+Seiza 0.4 object catalogs are read-only memory maps with embedded spatial and
+designation indices. Overlay projection and `/api/v1/catalog/objects` cone
+queries therefore materialize only matching records, while
+`/api/v1/catalog/objects/search` uses the exact/prefix name index. Legacy v1
+catalogs remain compatible but are decoded eagerly and do not carry stable IDs,
+aliases, hierarchy, or source provenance. Blind-index startup likewise defers
+the exhaustive validation pass, keeping API and worker startup independent of
+the full catalog size.
+
 This boundary keeps HTTP and cloud-queue workers interchangeable while catalog
 updates immediately improve old solution pages. Named stars come from the
 object catalog; an optional field-star layer projects the solve tile catalog

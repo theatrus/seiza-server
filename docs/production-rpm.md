@@ -90,7 +90,8 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Download the prebuilt datasets with Seiza before starting the service:
+Download the prebuilt datasets with Seiza CLI 0.4 or newer before starting the
+service:
 
 ```bash
 sudo install -d -o root -g seiza-server -m 0750 /srv/seiza/catalog
@@ -100,8 +101,11 @@ sudo chmod -R g+rX /srv/seiza/catalog
 ```
 
 The hosted prebuilt set supplies the star, deep-sky/named-star, and transient
-catalogs. A minor-body catalog is built separately from current orbital
-elements. The default configuration uses a SQLite database and local
+catalogs. The v3 object files are memory-mapped and contain their spatial and
+name indices; downloading in place is safe because the CLI verifies a temporary
+file and atomically renames it into place. The server notices that replacement
+and reloads it without a restart. A minor-body catalog is built separately from
+current orbital elements. The default configuration uses a SQLite database and local
 uploaded-object storage
 under `/var/lib/seiza-server/`; systemd creates and owns that state directory
 for the restricted `seiza-server` system account. Keep that path on persistent
