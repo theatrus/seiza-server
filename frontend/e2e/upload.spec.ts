@@ -4,6 +4,37 @@ const publicId = '91-550e8400-e29b-41d4-a716-446655440000'
 const uploadId = '8c741b20-3c42-4e75-95d4-fbc87cc68730'
 const chunkSize = 5 * 1024 * 1024
 
+interface UploadConcurrencyState {
+  active: number
+  maxActive: number
+}
+
+type InstrumentedWindow = Window & {
+  __seizaUploadConcurrency?: UploadConcurrencyState
+}
+
+async function instrumentUploadConcurrency(page: Page) {
+  await page.addInitScript(() => {
+    const state: UploadConcurrencyState = { active: 0, maxActive: 0 }
+    ;(window as InstrumentedWindow).__seizaUploadConcurrency = state
+
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+      const isUploadBody = body instanceof Blob
+        || body instanceof ArrayBuffer
+        || ArrayBuffer.isView(body)
+      if (isUploadBody) {
+        state.active += 1
+        state.maxActive = Math.max(state.maxActive, state.active)
+        this.addEventListener('loadend', () => {
+          state.active -= 1
+        }, { once: true })
+      }
+      originalSend.call(this, body)
+    }
+  })
+}
+
 function defaultSolveOptions() {
   return {
     center_ra_deg: null,
@@ -57,6 +88,7 @@ function queuedJob(id: string, filename: string) {
 }
 
 test('uploads large images as parallel TUS parts and concatenates them', async ({ page, browserName }) => {
+  await instrumentUploadConcurrency(page)
   const partIds = [
     '51000000-0000-4000-8000-000000000001',
     '51000000-0000-4000-8000-000000000002',
@@ -66,8 +98,6 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   const partLengths = new Map<string, number>()
   let partialCreations = 0
   let finalCreations = 0
-  let activePatches = 0
-  let maxActivePatches = 0
 
   await page.route('**/api/v1/uploads', async (route) => {
     const request = route.request()
@@ -114,10 +144,7 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
       return
     }
     expect(request.method()).toBe('PATCH')
-    activePatches += 1
-    maxActivePatches = Math.max(maxActivePatches, activePatches)
     await new Promise((resolve) => setTimeout(resolve, 40))
-    activePatches -= 1
     const interceptedSize = request.postDataBuffer()?.length ?? 0
     if (browserName === 'chromium') expect(interceptedSize).toBe(partLengths.get(id))
     await route.fulfill({
@@ -149,7 +176,10 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   await expect(page).toHaveURL(`/solutions/${publicId}`)
   expect(partialCreations).toBe(3)
   expect(finalCreations).toBe(1)
-  expect(maxActivePatches).toBeGreaterThan(1)
+  const uploadConcurrency = await page.evaluate(
+    () => (window as InstrumentedWindow).__seizaUploadConcurrency?.maxActive ?? 0,
+  )
+  expect(uploadConcurrency).toBeGreaterThan(1)
   expect([...partLengths.values()]).toEqual([
     4 * 1024 * 1024,
     4 * 1024 * 1024,
