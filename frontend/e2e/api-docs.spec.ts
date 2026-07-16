@@ -5,6 +5,26 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
+test('advertises N.I.N.A. ASTAP integration on the home page', async ({ page }) => {
+  await page.goto('/')
+
+  await expect(page.getByRole('heading', { name: 'Bring Seiza into N.I.N.A. without a plugin.' })).toBeVisible()
+  await expect(page.getByText('seiza-cli 0.5 speaks the ASTAP command-line contract N.I.N.A. already uses.')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Set up N.I.N.A.' })).toHaveAttribute('href', '/docs/api#integrations')
+  await expect(page.getByRole('link', { name: 'Windows releases' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
+})
+
+test('publishes only indexable public pages in the sitemap', async ({ request }) => {
+  const response = await request.get('/sitemap.xml')
+  expect(response.ok()).toBe(true)
+  const sitemap = await response.text()
+
+  expect(sitemap).toContain('<loc>https://seiza.fyi/</loc>')
+  expect(sitemap).toContain('<loc>https://seiza.fyi/solve</loc>')
+  expect(sitemap).toContain('<loc>https://seiza.fyi/docs/api</loc>')
+  expect(sitemap).not.toContain('/solutions/')
+})
+
 test('documents the public, catalog, compatibility, and worker APIs', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('link', { name: 'API', exact: true }).click()

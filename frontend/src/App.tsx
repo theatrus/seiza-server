@@ -167,6 +167,20 @@ function HomePage() {
       </ol>
     </section>
 
+    <section className="about-card integration-card" aria-labelledby="nina-integration">
+      <div>
+        <p className="eyebrow">APPLICATION INTEGRATIONS</p>
+        <h2 id="nina-integration">Bring Seiza into N.I.N.A. without a plugin.</h2>
+      </div>
+      <div className="about-copy">
+        <p><code>seiza-cli</code> 0.5 speaks the ASTAP command-line contract N.I.N.A. already uses. Select ASTAP for the normal and blind solver, point it at <code>seiza.exe</code>, and keep the star catalog on the imaging machine.</p>
+        <div className="text-links">
+          <a href="/docs/api#integrations">Set up N.I.N.A. <span aria-hidden="true">→</span></a>
+          <a href="https://github.com/theatrus/seiza/releases">Windows releases <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+
     <section className="about-card">
       <div>
         <p className="eyebrow">ABOUT SEIZA</p>
