@@ -70,16 +70,20 @@ do not place its database file on object storage or use it as a multi-AZ
 database. SQLx also supports a PostgreSQL URL, and the DynamoDB repository is
 a single table with a string `pk` partition key. For direct cloud delivery, the
 durable outbox publishes only job IDs to SQS; the API remains the lease
-authority and protects worker operations with a shared token. This makes
-duplicate SQS messages and worker crashes safe.
+authority and protects worker operations with a shared token. Each job has one
+random UUIDv4 used by the repository, public result URL, worker API, upload
+object path, and SQS message, so neither backend needs a centralized sequence
+generator. This makes duplicate SQS messages and worker crashes safe.
 
 The AWS-enabled `migrate-store` command copies the complete logical job-store
 snapshot between SQLx and DynamoDB while the service is quiesced. It preserves
-the scheduler counter, fairness state, leases, attempts, results, and outbox
-delivery timestamps, includes validation-donation metadata, rebuilds DynamoDB
-object-key indexes, and verifies the destination snapshot before a deployment
-changes backends. Donation metadata includes the invalid-solve classification;
-uploaded image objects remain a separate object-store migration concern.
+job UUIDs, legacy and Astrometry.net aliases, fairness state, leases, attempts,
+results, and outbox delivery timestamps. It includes validation-contribution
+metadata, rebuilds DynamoDB object and compatibility indexes, converts old
+numeric records using the UUID already present in their upload object keys, and
+verifies the destination snapshot before a deployment changes backends.
+Contribution metadata includes the invalid-solve classification; uploaded image
+objects remain a separate object-store migration concern.
 
 Uploaded objects have a deliberately short lifecycle independent of job
 durability. The API reports `input_expires_at`, denies preview/overlay access
@@ -164,11 +168,14 @@ Bayer/Flamsteed, variable, and double-star labels from the Tycho sidecar; and
 an optional field-star layer projects the solve tile catalog with a magnitude
 threshold and result cap.
 
-Native result URLs use `<internal sequence>-<random UUID>`. The sequence keeps
-repository lookups efficient, while the UUID must match the random token stored
-in the private upload key. Sequential `/solutions/1`-style guesses therefore
-do not resolve. Internal workers and queue transports continue to use compact
-numeric IDs; the native result API never accepts those IDs on their own.
+Native result URLs use the job's random UUIDv4 capability, indexed directly by
+both repositories. The same UUID identifies the job to internal workers and
+queue transports, so DynamoDB and distributed submitters need no shared counter.
+Queue ordering comes from timestamps and weighted least-recently-used client
+state, never from the UUID. The Astrometry.net compatibility API retains a
+numeric alias because that protocol specifies numbers; it is not an ordering
+sequence. Migration preserves old numeric aliases and continues to resolve
+legacy `<sequence>-<UUID>` result URLs.
 
 ## API compatibility boundary
 

@@ -1,5 +1,5 @@
 use crate::{
-    models::JobStatus,
+    models::{JobId, JobStatus},
     repository::{SqlDialect, SqlxJobRepository},
 };
 use anyhow::{Context, Result, bail};
@@ -13,6 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
 };
+use uuid::Uuid;
 
 type DynamoItem = HashMap<String, AttributeValue>;
 
@@ -27,7 +28,7 @@ impl StoreBackend {
         match value {
             "sqlx" | "sqlite" | "postgres" | "postgresql" => Ok(Self::Sqlx),
             "dynamodb" | "dynamo" => Ok(Self::DynamoDb),
-            _ => bail!("unknown store backend `{value}`; use `sqlx` or `dynamodb`"),
+            _ => bail!("unknown store backend {value}; use sqlx or dynamodb"),
         }
     }
 
@@ -85,7 +86,7 @@ impl MigrationArgs {
                 "--resume" => resume = true,
                 "--help" | "-h" => bail!(migration_usage()),
                 value => bail!(
-                    "unknown migrate-store option `{value}`\n{}",
+                    "unknown migrate-store option {value}\n{}",
                     migration_usage()
                 ),
             }
@@ -96,14 +97,12 @@ impl MigrationArgs {
         if from == to {
             bail!("--from and --to must select different store backends");
         }
-
         let sqlx_url = sqlx_url
             .filter(|value| !value.trim().is_empty())
             .context("SEIZA_SQL_DATABASE_URL or --sqlx-url is required")?;
         let dynamodb_table = dynamodb_table
             .filter(|value| !value.trim().is_empty())
             .context("SEIZA_DYNAMODB_TABLE or --dynamodb-table is required")?;
-
         Ok(Self {
             from,
             to,
@@ -116,11 +115,16 @@ impl MigrationArgs {
 }
 
 pub fn migration_usage() -> &'static str {
-    "usage: seiza-server migrate-store --from sqlx|dynamodb --to sqlx|dynamodb \\\n       [--sqlx-url URL] [--dynamodb-table TABLE] [--dry-run] [--resume]"
+    "usage: seiza-server migrate-store --from sqlx|dynamodb --to sqlx|dynamodb \
+       [--sqlx-url URL] [--dynamodb-table TABLE] [--dry-run] [--resume]"
 }
 
 pub async fn run(args: MigrationArgs) -> Result<()> {
-    let sqlx = MigrationStore::Sqlx(SqlxStore::connect(&args.sqlx_url).await?);
+    // Initializing only the SQL destination keeps a SQL source read-only,
+    // including during --dry-run. Legacy source rows are converted in memory.
+    let sqlx = MigrationStore::Sqlx(
+        SqlxStore::connect(&args.sqlx_url, args.to == StoreBackend::Sqlx).await?,
+    );
     let dynamodb =
         MigrationStore::DynamoDb(DynamoStore::connect(args.dynamodb_table.clone()).await);
     let (source, destination) = match args.from {
@@ -133,7 +137,6 @@ pub async fn run(args: MigrationArgs) -> Result<()> {
         .await
         .with_context(|| format!("reading {} source store", args.from.label()))?;
     source_snapshot.validate()?;
-
     let destination_snapshot = destination
         .snapshot()
         .await
@@ -150,15 +153,13 @@ pub async fn run(args: MigrationArgs) -> Result<()> {
     }
 
     println!(
-        "{} -> {}: {} jobs, {} validation donations, {} client fairness records, counter {}",
+        "{} -> {}: {} jobs, {} validation contributions, {} client fairness records",
         args.from.label(),
         args.to.label(),
         source_snapshot.jobs.len(),
         source_snapshot.donations.len(),
-        source_snapshot.clients.len(),
-        source_snapshot.counter
+        source_snapshot.clients.len()
     );
-
     if args.dry_run {
         println!("dry run complete; no records copied");
         return Ok(());
@@ -168,7 +169,6 @@ pub async fn run(args: MigrationArgs) -> Result<()> {
         .import(&source_snapshot, args.resume)
         .await
         .with_context(|| format!("writing {} destination store", args.to.label()))?;
-
     let verified = destination
         .snapshot()
         .await
@@ -176,18 +176,15 @@ pub async fn run(args: MigrationArgs) -> Result<()> {
     verified.validate()?;
     if verified != source_snapshot {
         bail!(
-            "destination verification failed: source has {} jobs/{} donations/{} clients/counter {}, destination has {} jobs/{} donations/{} clients/counter {}",
+            "destination verification failed: source has {} jobs/{} contributions/{} clients, destination has {} jobs/{} contributions/{} clients",
             source_snapshot.jobs.len(),
             source_snapshot.donations.len(),
             source_snapshot.clients.len(),
-            source_snapshot.counter,
             verified.jobs.len(),
             verified.donations.len(),
-            verified.clients.len(),
-            verified.counter
+            verified.clients.len()
         );
     }
-
     println!("migration complete; destination snapshot verified");
     Ok(())
 }
@@ -215,7 +212,6 @@ impl MigrationStore {
 
 #[derive(Debug, Clone, PartialEq)]
 struct StoreSnapshot {
-    counter: u64,
     jobs: Vec<StoredJob>,
     donations: Vec<StoredDonation>,
     clients: Vec<StoredClient>,
@@ -223,7 +219,6 @@ struct StoreSnapshot {
 
 impl StoreSnapshot {
     fn new(
-        counter: u64,
         mut jobs: Vec<StoredJob>,
         mut donations: Vec<StoredDonation>,
         mut clients: Vec<StoredClient>,
@@ -232,7 +227,6 @@ impl StoreSnapshot {
         donations.sort_by_key(|donation| donation.job_id);
         clients.sort_by(|left, right| left.owner.cmp(&right.owner));
         Self {
-            counter,
             jobs,
             donations,
             clients,
@@ -240,25 +234,37 @@ impl StoreSnapshot {
     }
 
     fn is_empty(&self) -> bool {
-        self.counter == 0
-            && self.jobs.is_empty()
-            && self.donations.is_empty()
-            && self.clients.is_empty()
+        self.jobs.is_empty() && self.donations.is_empty() && self.clients.is_empty()
     }
 
     fn validate(&self) -> Result<()> {
         let mut ids = HashSet::new();
+        let mut astrometry_ids = HashSet::new();
+        let mut legacy_ids = HashSet::new();
         let mut object_keys = HashSet::new();
-        let mut max_id = 0;
         for job in &self.jobs {
             if !ids.insert(job.id) {
                 bail!("store contains duplicate job ID {}", job.id);
             }
-            if !object_keys.insert(job.object_key.as_str()) {
-                bail!("store contains duplicate object key `{}`", job.object_key);
+            if !astrometry_ids.insert(job.astrometry_id) {
+                bail!(
+                    "store contains duplicate Astrometry.net ID {}",
+                    job.astrometry_id
+                );
             }
-            if job.id > i64::MAX as u64 {
-                bail!("job ID {} exceeds SQL BIGINT range", job.id);
+            if job.astrometry_id == 0 || job.astrometry_id > i64::MAX as u64 {
+                bail!("job {} has an invalid Astrometry.net ID", job.id);
+            }
+            if let Some(legacy_id) = job.legacy_id {
+                if legacy_id > i64::MAX as u64 {
+                    bail!("legacy ID {legacy_id} exceeds SQL BIGINT range");
+                }
+                if !legacy_ids.insert(legacy_id) {
+                    bail!("store contains duplicate legacy job ID {legacy_id}");
+                }
+            }
+            if !object_keys.insert(job.object_key.as_str()) {
+                bail!("store contains duplicate object key {}", job.object_key);
             }
             if job.attempts > i64::MAX as u64 {
                 bail!("attempt count for job {} exceeds SQL BIGINT range", job.id);
@@ -288,13 +294,6 @@ impl StoreSnapshot {
                         .with_context(|| format!("job {} has invalid {name}", job.id))?;
                 }
             }
-            max_id = max_id.max(job.id);
-        }
-        if self.counter < max_id {
-            bail!(
-                "job counter {} is lower than maximum job ID {max_id}",
-                self.counter
-            );
         }
 
         let mut donated_jobs = HashSet::new();
@@ -302,25 +301,25 @@ impl StoreSnapshot {
         for donation in &self.donations {
             if !ids.contains(&donation.job_id) {
                 bail!(
-                    "validation donation references missing job {}",
+                    "validation contribution references missing job {}",
                     donation.job_id
                 );
             }
             if !donated_jobs.insert(donation.job_id) {
                 bail!(
-                    "store contains duplicate validation donations for job {}",
+                    "store contains duplicate validation contributions for job {}",
                     donation.job_id
                 );
             }
             if !donation_keys.insert(donation.object_key.as_str()) {
                 bail!(
-                    "store contains duplicate validation object key `{}`",
+                    "store contains duplicate validation object key {}",
                     donation.object_key
                 );
             }
             parse_time(&donation.donated_at).with_context(|| {
                 format!(
-                    "validation donation for job {} has invalid donated_at",
+                    "validation contribution for job {} has invalid donated_at",
                     donation.job_id
                 )
             })?;
@@ -329,22 +328,15 @@ impl StoreSnapshot {
         let mut owners = HashSet::new();
         for client in &self.clients {
             if !owners.insert(client.owner.as_str()) {
-                bail!("store contains duplicate client `{}`", client.owner);
+                bail!("store contains duplicate client {}", client.owner);
             }
             parse_time(&client.last_served_at)
-                .with_context(|| format!("client `{}` has invalid last_served_at", client.owner))?;
+                .with_context(|| format!("client {} has invalid last_served_at", client.owner))?;
         }
         Ok(())
     }
 
     fn ensure_subset_of(&self, source: &Self) -> Result<()> {
-        if self.counter > source.counter {
-            bail!(
-                "destination counter {} is ahead of source counter {}",
-                self.counter,
-                source.counter
-            );
-        }
         let source_jobs: HashMap<_, _> = source.jobs.iter().map(|job| (job.id, job)).collect();
         for job in &self.jobs {
             match source_jobs.get(&job.id) {
@@ -362,11 +354,11 @@ impl StoreSnapshot {
             match source_donations.get(&donation.job_id) {
                 Some(source_donation) if *source_donation == donation => {}
                 Some(_) => bail!(
-                    "destination validation donation for job {} differs from the source",
+                    "destination validation contribution for job {} differs from the source",
                     donation.job_id
                 ),
                 None => bail!(
-                    "destination validation donation for job {} does not exist in the source",
+                    "destination validation contribution for job {} does not exist in the source",
                     donation.job_id
                 ),
             }
@@ -380,11 +372,11 @@ impl StoreSnapshot {
             match source_clients.get(client.owner.as_str()) {
                 Some(source_client) if *source_client == client => {}
                 Some(_) => bail!(
-                    "destination client fairness record `{}` differs from the source",
+                    "destination client fairness record {} differs from the source",
                     client.owner
                 ),
                 None => bail!(
-                    "destination client fairness record `{}` does not exist in the source",
+                    "destination client fairness record {} does not exist in the source",
                     client.owner
                 ),
             }
@@ -395,7 +387,9 @@ impl StoreSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 struct StoredJob {
-    id: u64,
+    id: JobId,
+    astrometry_id: u64,
+    legacy_id: Option<u64>,
     owner: String,
     queue_weight: f64,
     object_key: String,
@@ -422,7 +416,7 @@ struct StoredClient {
 
 #[derive(Debug, Clone, PartialEq)]
 struct StoredDonation {
-    job_id: u64,
+    job_id: JobId,
     object_key: String,
     comment: Option<String>,
     solve_is_invalid: bool,
@@ -435,9 +429,13 @@ struct SqlxStore {
 }
 
 impl SqlxStore {
-    async fn connect(database_url: &str) -> Result<Self> {
+    async fn connect(database_url: &str, initialize_uuid_schema: bool) -> Result<Self> {
         Ok(Self {
-            repository: SqlxJobRepository::connect(database_url).await?,
+            repository: SqlxJobRepository::connect_for_migration(
+                database_url,
+                initialize_uuid_schema,
+            )
+            .await?,
         })
     }
 
@@ -448,99 +446,46 @@ impl SqlxStore {
                 .execute(&mut *transaction)
                 .await?;
         }
-        ensure_sql_schema_supported(&mut transaction, self.repository.dialect()).await?;
-
-        let rows = sqlx::query(
-            "SELECT j.*, q.job_id AS outbox_job_id, q.delivered_at AS notification_delivered_at FROM jobs j LEFT JOIN queue_outbox q ON q.job_id = j.id ORDER BY j.id",
-        )
-        .fetch_all(&mut *transaction)
-        .await?;
-        let mut jobs = Vec::with_capacity(rows.len());
-        for row in rows {
-            let id = from_i64(row.try_get("id")?, "job ID")?;
-            if row.try_get::<Option<i64>, _>("outbox_job_id")?.is_none() {
-                bail!("SQLx job {id} has no queue_outbox record");
-            }
-            jobs.push(StoredJob {
-                id,
-                owner: row.try_get("owner")?,
-                queue_weight: row.try_get("queue_weight")?,
-                object_key: row.try_get("object_key")?,
-                original_filename: row.try_get("original_filename")?,
-                content_type: row.try_get("content_type")?,
-                options_json: row.try_get("options_json")?,
-                status: row.try_get("status")?,
-                created_at: row.try_get("created_at")?,
-                started_at: row.try_get("started_at")?,
-                completed_at: row.try_get("completed_at")?,
-                solution_json: row.try_get("solution_json")?,
-                error: row.try_get("error")?,
-                lease_token: row.try_get("lease_token")?,
-                lease_expires_at: row.try_get("lease_expires_at")?,
-                attempts: from_i64(row.try_get("attempts")?, "attempt count")?,
-                notification_delivered_at: row.try_get("notification_delivered_at")?,
-            });
-        }
-
-        let orphan_outbox = sqlx::query(
-            "SELECT COUNT(*) AS count FROM queue_outbox q LEFT JOIN jobs j ON j.id = q.job_id WHERE j.id IS NULL",
-        )
-        .fetch_one(&mut *transaction)
-        .await?
-        .try_get::<i64, _>("count")?;
-        if orphan_outbox != 0 {
-            bail!("SQLx store contains {orphan_outbox} orphaned queue_outbox records");
-        }
-
-        let donations = sqlx::query(
-            "SELECT job_id, object_key, comment, solve_is_invalid, license_version, donated_at FROM validation_donations ORDER BY job_id",
-        )
-        .fetch_all(&mut *transaction)
-        .await?
-        .into_iter()
-        .map(|row| {
-            Ok(StoredDonation {
-                job_id: from_i64(row.try_get("job_id")?, "validation donation job ID")?,
-                object_key: row.try_get("object_key")?,
-                comment: row.try_get("comment")?,
-                solve_is_invalid: row.try_get::<i64, _>("solve_is_invalid")? != 0,
-                license_version: row.try_get("license_version")?,
-                donated_at: row.try_get("donated_at")?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-        let clients =
-            sqlx::query("SELECT owner, last_served_at FROM client_service ORDER BY owner")
-                .fetch_all(&mut *transaction)
-                .await?
-                .into_iter()
-                .map(|row| {
-                    Ok(StoredClient {
-                        owner: row.try_get("owner")?,
-                        last_served_at: row.try_get("last_served_at")?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-        let counter = from_i64(
-            sqlx::query("SELECT value FROM queue_counters WHERE name = 'jobs'")
-                .fetch_one(&mut *transaction)
-                .await?
-                .try_get("value")?,
-            "job counter",
-        )?;
+        let snapshot =
+            if table_exists(&mut transaction, self.repository.dialect(), "jobs_v2").await? {
+                ensure_sql_schema_supported(
+                    &mut transaction,
+                    self.repository.dialect(),
+                    SqlSchema::Uuid,
+                )
+                .await?;
+                snapshot_uuid_sql(&mut transaction).await?
+            } else if table_exists(&mut transaction, self.repository.dialect(), "jobs").await? {
+                ensure_sql_schema_supported(
+                    &mut transaction,
+                    self.repository.dialect(),
+                    SqlSchema::Legacy,
+                )
+                .await?;
+                snapshot_legacy_sql(&mut transaction).await?
+            } else {
+                StoreSnapshot::new(Vec::new(), Vec::new(), Vec::new())
+            };
         transaction.commit().await?;
-
-        Ok(StoreSnapshot::new(counter, jobs, donations, clients))
+        Ok(snapshot)
     }
 
     async fn import(&self, snapshot: &StoreSnapshot) -> Result<()> {
         let mut transaction = self.repository.pool().begin().await?;
+        if !table_exists(&mut transaction, self.repository.dialect(), "jobs_v2").await? {
+            bail!("SQLx destination does not have the UUID job schema");
+        }
         for job in &snapshot.jobs {
             sqlx::query(
-                "INSERT INTO jobs (id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at, started_at, completed_at, solution_json, error, lease_token, lease_expires_at, attempts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT(id) DO UPDATE SET owner = EXCLUDED.owner, queue_weight = EXCLUDED.queue_weight, object_key = EXCLUDED.object_key, original_filename = EXCLUDED.original_filename, content_type = EXCLUDED.content_type, options_json = EXCLUDED.options_json, status = EXCLUDED.status, created_at = EXCLUDED.created_at, started_at = EXCLUDED.started_at, completed_at = EXCLUDED.completed_at, solution_json = EXCLUDED.solution_json, error = EXCLUDED.error, lease_token = EXCLUDED.lease_token, lease_expires_at = EXCLUDED.lease_expires_at, attempts = EXCLUDED.attempts",
+                "INSERT INTO jobs_v2 (id, astrometry_id, legacy_id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at, started_at, completed_at, solution_json, error, lease_token, lease_expires_at, attempts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT(id) DO UPDATE SET astrometry_id = EXCLUDED.astrometry_id, legacy_id = EXCLUDED.legacy_id, owner = EXCLUDED.owner, queue_weight = EXCLUDED.queue_weight, object_key = EXCLUDED.object_key, original_filename = EXCLUDED.original_filename, content_type = EXCLUDED.content_type, options_json = EXCLUDED.options_json, status = EXCLUDED.status, created_at = EXCLUDED.created_at, started_at = EXCLUDED.started_at, completed_at = EXCLUDED.completed_at, solution_json = EXCLUDED.solution_json, error = EXCLUDED.error, lease_token = EXCLUDED.lease_token, lease_expires_at = EXCLUDED.lease_expires_at, attempts = EXCLUDED.attempts",
             )
-            .bind(to_i64(job.id, "job ID")?)
+            .bind(job.id.to_string())
+            .bind(to_i64(job.astrometry_id, "Astrometry.net ID")?)
+            .bind(
+                job.legacy_id
+                    .map(|value| to_i64(value, "legacy job ID"))
+                    .transpose()?,
+            )
             .bind(&job.owner)
             .bind(job.queue_weight)
             .bind(&job.object_key)
@@ -557,34 +502,27 @@ impl SqlxStore {
             .bind(&job.lease_expires_at)
             .bind(to_i64(job.attempts, "attempt count")?)
             .execute(&mut *transaction)
-            .await
-            .with_context(|| format!("importing SQLx job {}", job.id))?;
+            .await?;
             sqlx::query(
-                "INSERT INTO queue_outbox (job_id, delivered_at) VALUES ($1, $2) ON CONFLICT(job_id) DO UPDATE SET delivered_at = EXCLUDED.delivered_at",
+                "INSERT INTO queue_outbox_v2 (job_id, delivered_at) VALUES ($1, $2) ON CONFLICT(job_id) DO UPDATE SET delivered_at = EXCLUDED.delivered_at",
             )
-            .bind(to_i64(job.id, "job ID")?)
+            .bind(job.id.to_string())
             .bind(&job.notification_delivered_at)
             .execute(&mut *transaction)
             .await?;
         }
         for donation in &snapshot.donations {
             sqlx::query(
-                "INSERT INTO validation_donations (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment, solve_is_invalid = EXCLUDED.solve_is_invalid, license_version = EXCLUDED.license_version, donated_at = EXCLUDED.donated_at",
+                "INSERT INTO validation_donations_v2 (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment, solve_is_invalid = EXCLUDED.solve_is_invalid, license_version = EXCLUDED.license_version, donated_at = EXCLUDED.donated_at",
             )
-            .bind(to_i64(donation.job_id, "validation donation job ID")?)
+            .bind(donation.job_id.to_string())
             .bind(&donation.object_key)
             .bind(&donation.comment)
             .bind(i64::from(donation.solve_is_invalid))
             .bind(&donation.license_version)
             .bind(&donation.donated_at)
             .execute(&mut *transaction)
-            .await
-            .with_context(|| {
-                format!(
-                    "importing SQLx validation donation for job {}",
-                    donation.job_id
-                )
-            })?;
+            .await?;
         }
         for client in &snapshot.clients {
             sqlx::query(
@@ -595,18 +533,185 @@ impl SqlxStore {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("UPDATE queue_counters SET value = $1 WHERE name = 'jobs'")
-            .bind(to_i64(snapshot.counter, "job counter")?)
-            .execute(&mut *transaction)
-            .await?;
         transaction.commit().await?;
         Ok(())
     }
 }
 
+async fn snapshot_uuid_sql(connection: &mut AnyConnection) -> Result<StoreSnapshot> {
+    let rows = sqlx::query(
+        "SELECT j.*, q.job_id AS outbox_job_id, q.delivered_at AS notification_delivered_at FROM jobs_v2 j LEFT JOIN queue_outbox_v2 q ON q.job_id = j.id ORDER BY j.id",
+    )
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut jobs = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = parse_uuid(&row.try_get::<String, _>("id")?, "SQLx job ID")?;
+        if row.try_get::<Option<String>, _>("outbox_job_id")?.is_none() {
+            bail!("SQLx job {id} has no queue_outbox_v2 record");
+        }
+        jobs.push(StoredJob {
+            id,
+            astrometry_id: from_i64(row.try_get("astrometry_id")?, "Astrometry.net ID")?,
+            legacy_id: row
+                .try_get::<Option<i64>, _>("legacy_id")?
+                .map(|value| from_i64(value, "legacy job ID"))
+                .transpose()?,
+            owner: row.try_get("owner")?,
+            queue_weight: row.try_get("queue_weight")?,
+            object_key: row.try_get("object_key")?,
+            original_filename: row.try_get("original_filename")?,
+            content_type: row.try_get("content_type")?,
+            options_json: row.try_get("options_json")?,
+            status: row.try_get("status")?,
+            created_at: row.try_get("created_at")?,
+            started_at: row.try_get("started_at")?,
+            completed_at: row.try_get("completed_at")?,
+            solution_json: row.try_get("solution_json")?,
+            error: row.try_get("error")?,
+            lease_token: row.try_get("lease_token")?,
+            lease_expires_at: row.try_get("lease_expires_at")?,
+            attempts: from_i64(row.try_get("attempts")?, "attempt count")?,
+            notification_delivered_at: row.try_get("notification_delivered_at")?,
+        });
+    }
+    ensure_no_orphan_outbox(connection, "queue_outbox_v2", "jobs_v2").await?;
+    let donations = sqlx::query(
+        "SELECT job_id, object_key, comment, solve_is_invalid, license_version, donated_at FROM validation_donations_v2 ORDER BY job_id",
+    )
+    .fetch_all(&mut *connection)
+    .await?
+    .into_iter()
+    .map(|row| {
+        Ok(StoredDonation {
+            job_id: parse_uuid(
+                &row.try_get::<String, _>("job_id")?,
+                "validation contribution job ID",
+            )?,
+            object_key: row.try_get("object_key")?,
+            comment: row.try_get("comment")?,
+            solve_is_invalid: row.try_get::<i64, _>("solve_is_invalid")? != 0,
+            license_version: row.try_get("license_version")?,
+            donated_at: row.try_get("donated_at")?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+    let clients = sql_clients(connection).await?;
+    Ok(StoreSnapshot::new(jobs, donations, clients))
+}
+
+async fn snapshot_legacy_sql(connection: &mut AnyConnection) -> Result<StoreSnapshot> {
+    let rows = sqlx::query(
+        "SELECT j.*, q.job_id AS outbox_job_id, q.delivered_at AS notification_delivered_at FROM jobs j LEFT JOIN queue_outbox q ON q.job_id = j.id ORDER BY j.id",
+    )
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut jobs = Vec::with_capacity(rows.len());
+    let mut legacy_to_uuid = HashMap::new();
+    for row in rows {
+        let legacy_id = from_i64(row.try_get("id")?, "legacy job ID")?;
+        if row.try_get::<Option<i64>, _>("outbox_job_id")?.is_none() {
+            bail!("legacy SQLx job {legacy_id} has no queue_outbox record");
+        }
+        let object_key: String = row.try_get("object_key")?;
+        let id = job_id_from_object_key(&object_key).with_context(|| {
+            format!("legacy SQLx job {legacy_id} object key has no UUID identity")
+        })?;
+        let status: String = row.try_get("status")?;
+        let notification_delivered_at = if status == "queued" {
+            None
+        } else {
+            row.try_get("notification_delivered_at")?
+        };
+        legacy_to_uuid.insert(legacy_id, id);
+        jobs.push(StoredJob {
+            id,
+            astrometry_id: legacy_id,
+            legacy_id: Some(legacy_id),
+            owner: row.try_get("owner")?,
+            queue_weight: row.try_get("queue_weight")?,
+            object_key,
+            original_filename: row.try_get("original_filename")?,
+            content_type: row.try_get("content_type")?,
+            options_json: row.try_get("options_json")?,
+            status,
+            created_at: row.try_get("created_at")?,
+            started_at: row.try_get("started_at")?,
+            completed_at: row.try_get("completed_at")?,
+            solution_json: row.try_get("solution_json")?,
+            error: row.try_get("error")?,
+            lease_token: row.try_get("lease_token")?,
+            lease_expires_at: row.try_get("lease_expires_at")?,
+            attempts: from_i64(row.try_get("attempts")?, "attempt count")?,
+            notification_delivered_at,
+        });
+    }
+    ensure_no_orphan_outbox(connection, "queue_outbox", "jobs").await?;
+    let donations = sqlx::query(
+        "SELECT job_id, object_key, comment, solve_is_invalid, license_version, donated_at FROM validation_donations ORDER BY job_id",
+    )
+    .fetch_all(&mut *connection)
+    .await?
+    .into_iter()
+    .map(|row| {
+        let legacy_id = from_i64(row.try_get("job_id")?, "validation contribution job ID")?;
+        Ok(StoredDonation {
+            job_id: *legacy_to_uuid.get(&legacy_id).with_context(|| {
+                format!("validation contribution references missing legacy job {legacy_id}")
+            })?,
+            object_key: row.try_get("object_key")?,
+            comment: row.try_get("comment")?,
+            solve_is_invalid: row.try_get::<i64, _>("solve_is_invalid")? != 0,
+            license_version: row.try_get("license_version")?,
+            donated_at: row.try_get("donated_at")?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+    let clients = sql_clients(connection).await?;
+    Ok(StoreSnapshot::new(jobs, donations, clients))
+}
+
+async fn sql_clients(connection: &mut AnyConnection) -> Result<Vec<StoredClient>> {
+    sqlx::query("SELECT owner, last_served_at FROM client_service ORDER BY owner")
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(StoredClient {
+                owner: row.try_get("owner")?,
+                last_served_at: row.try_get("last_served_at")?,
+            })
+        })
+        .collect()
+}
+
+async fn ensure_no_orphan_outbox(
+    connection: &mut AnyConnection,
+    outbox: &str,
+    jobs: &str,
+) -> Result<()> {
+    let query = AssertSqlSafe(format!(
+        "SELECT COUNT(*) AS count FROM {outbox} q LEFT JOIN {jobs} j ON j.id = q.job_id WHERE j.id IS NULL"
+    ));
+    let count = sqlx::query(query)
+        .fetch_one(&mut *connection)
+        .await?
+        .try_get::<i64, _>("count")?;
+    if count != 0 {
+        bail!("SQLx store contains {count} orphaned {outbox} records");
+    }
+    Ok(())
+}
+
 struct DynamoStore {
     client: Client,
     table: String,
+}
+
+#[derive(Debug)]
+enum JobReference {
+    Uuid(Uuid),
+    Legacy(u64),
 }
 
 impl DynamoStore {
@@ -621,23 +726,19 @@ impl DynamoStore {
     }
 
     async fn snapshot(&self) -> Result<StoreSnapshot> {
-        let items = self.scan_all().await?;
-        let mut counter = None;
         let mut jobs = Vec::new();
         let mut donations = Vec::new();
         let mut clients = Vec::new();
-        let mut object_indices = HashMap::new();
-
-        for item in items {
+        let mut object_indices = Vec::new();
+        let mut astrometry_indices = Vec::new();
+        let mut legacy_indices = Vec::new();
+        for item in self.scan_all().await? {
             let pk = required_string(&item, "pk")?;
-            if pk == "COUNTER#jobs" {
-                ensure_only_attributes(&item, &pk, &["pk", "value"])?;
-                if counter.replace(required_u64(&item, "value")?).is_some() {
-                    bail!("DynamoDB store contains duplicate job counters");
-                }
-                continue;
-            }
             match optional_string(&item, "entity").as_deref() {
+                None if pk == "COUNTER#jobs" => {
+                    ensure_only_attributes(&item, &pk, &["pk", "value"])?;
+                    let _ = required_u64(&item, "value")?;
+                }
                 Some("job") => {
                     ensure_only_attributes(
                         &item,
@@ -646,6 +747,8 @@ impl DynamoStore {
                             "pk",
                             "entity",
                             "id",
+                            "astrometry_id",
+                            "legacy_id",
                             "owner",
                             "queue_weight",
                             "object_key",
@@ -687,40 +790,76 @@ impl DynamoStore {
                 }
                 Some("object_index") => {
                     ensure_only_attributes(&item, &pk, &["pk", "entity", "job_id"])?;
-                    let object_key = pk
-                        .strip_prefix("OBJECT#")
-                        .context("DynamoDB object index has an invalid partition key")?;
-                    object_indices.insert(object_key.to_owned(), required_u64(&item, "job_id")?);
+                    object_indices.push((
+                        pk.strip_prefix("OBJECT#")
+                            .context("DynamoDB object index has an invalid partition key")?
+                            .to_owned(),
+                        required_job_reference(&item, "job_id")?,
+                    ));
+                }
+                Some("astrometry_index") => {
+                    ensure_only_attributes(&item, &pk, &["pk", "entity", "job_id"])?;
+                    let id: u64 = pk
+                        .strip_prefix("ASTROMETRY#")
+                        .context("DynamoDB Astrometry.net index has an invalid partition key")?
+                        .parse()
+                        .context("DynamoDB Astrometry.net index ID is not a u64")?;
+                    astrometry_indices.push((id, required_job_reference(&item, "job_id")?));
+                }
+                Some("legacy_index") => {
+                    ensure_only_attributes(&item, &pk, &["pk", "entity", "job_id"])?;
+                    let id: u64 = pk
+                        .strip_prefix("LEGACY#")
+                        .context("DynamoDB legacy index has an invalid partition key")?
+                        .parse()
+                        .context("DynamoDB legacy index ID is not a u64")?;
+                    legacy_indices.push((id, required_job_reference(&item, "job_id")?));
                 }
                 entity => bail!(
-                    "DynamoDB table contains unsupported item `{pk}` with entity {:?}",
+                    "DynamoDB table contains unsupported item {pk} with entity {:?}",
                     entity
                 ),
             }
         }
 
-        if counter.is_none() && !jobs.is_empty() {
-            bail!("DynamoDB store contains jobs but no COUNTER#jobs item");
-        }
         let jobs_by_id: HashMap<_, _> = jobs.iter().map(|job| (job.id, job)).collect();
-        for (object_key, job_id) in object_indices {
+        let legacy_to_uuid: HashMap<_, _> = jobs
+            .iter()
+            .filter_map(|job| job.legacy_id.map(|legacy_id| (legacy_id, job.id)))
+            .collect();
+        for (object_key, reference) in object_indices {
+            let job_id = resolve_job_reference(reference, &legacy_to_uuid)?;
             let job = jobs_by_id.get(&job_id).with_context(|| {
-                format!("DynamoDB object index `{object_key}` references missing job {job_id}")
+                format!("DynamoDB object index {object_key} references missing job {job_id}")
             })?;
             if job.object_key != object_key {
                 bail!(
-                    "DynamoDB object index `{object_key}` does not match job {job_id} object key `{}`",
+                    "DynamoDB object index {object_key} does not match job {job_id} object key {}",
                     job.object_key
                 );
             }
         }
-
-        Ok(StoreSnapshot::new(
-            counter.unwrap_or(0),
-            jobs,
-            donations,
-            clients,
-        ))
+        for (astrometry_id, reference) in astrometry_indices {
+            let job_id = resolve_job_reference(reference, &legacy_to_uuid)?;
+            let job = jobs_by_id.get(&job_id).with_context(|| {
+                format!(
+                    "DynamoDB Astrometry.net index {astrometry_id} references missing job {job_id}"
+                )
+            })?;
+            if job.astrometry_id != astrometry_id {
+                bail!("DynamoDB Astrometry.net index {astrometry_id} does not match job {job_id}");
+            }
+        }
+        for (legacy_id, reference) in legacy_indices {
+            let job_id = resolve_job_reference(reference, &legacy_to_uuid)?;
+            let job = jobs_by_id.get(&job_id).with_context(|| {
+                format!("DynamoDB legacy index {legacy_id} references missing job {job_id}")
+            })?;
+            if job.legacy_id != Some(legacy_id) {
+                bail!("DynamoDB legacy index {legacy_id} does not match job {job_id}");
+            }
+        }
+        Ok(StoreSnapshot::new(jobs, donations, clients))
     }
 
     async fn scan_all(&self) -> Result<Vec<DynamoItem>> {
@@ -735,7 +874,7 @@ impl DynamoStore {
                 .set_exclusive_start_key(start_key)
                 .send()
                 .await
-                .with_context(|| format!("scanning DynamoDB table `{}`", self.table))?;
+                .with_context(|| format!("scanning DynamoDB table {}", self.table))?;
             items.extend(output.items().iter().cloned());
             start_key = output.last_evaluated_key().cloned();
             if start_key.is_none() {
@@ -745,46 +884,46 @@ impl DynamoStore {
     }
 
     async fn import(&self, snapshot: &StoreSnapshot, resume: bool) -> Result<()> {
-        self.put_item(
-            HashMap::from([
-                ("pk".into(), string("COUNTER#jobs")),
-                ("value".into(), number(snapshot.counter)),
-            ]),
-            false,
-        )
-        .await
-        .context("importing DynamoDB job counter")?;
-
         let donations: HashMap<_, _> = snapshot
             .donations
             .iter()
             .map(|donation| (donation.job_id, donation))
             .collect();
         for job in &snapshot.jobs {
-            let mut job_put = Put::builder()
-                .table_name(&self.table)
-                .set_item(Some(job_to_item(job, donations.get(&job.id).copied())));
-            let mut index_put =
-                Put::builder()
-                    .table_name(&self.table)
-                    .set_item(Some(HashMap::from([
-                        ("pk".into(), string(object_index_key(&job.object_key))),
-                        ("entity".into(), string("object_index")),
-                        ("job_id".into(), number(job.id)),
-                    ])));
-            if !resume {
-                job_put = job_put.condition_expression("attribute_not_exists(pk)");
-                index_put = index_put.condition_expression("attribute_not_exists(pk)");
+            let mut items = Vec::new();
+            for item in [
+                job_to_item(job, donations.get(&job.id).copied()),
+                HashMap::from([
+                    ("pk".into(), string(object_index_key(&job.object_key))),
+                    ("entity".into(), string("object_index")),
+                    ("job_id".into(), string(job.id)),
+                ]),
+                HashMap::from([
+                    ("pk".into(), string(astrometry_index_key(job.astrometry_id))),
+                    ("entity".into(), string("astrometry_index")),
+                    ("job_id".into(), string(job.id)),
+                ]),
+            ] {
+                items.push(dynamo_put(&self.table, item, !resume)?);
+            }
+            if let Some(legacy_id) = job.legacy_id {
+                items.push(dynamo_put(
+                    &self.table,
+                    HashMap::from([
+                        ("pk".into(), string(legacy_index_key(legacy_id))),
+                        ("entity".into(), string("legacy_index")),
+                        ("job_id".into(), string(job.id)),
+                    ]),
+                    !resume,
+                )?);
             }
             self.client
                 .transact_write_items()
-                .transact_items(TransactWriteItem::builder().put(job_put.build()?).build())
-                .transact_items(TransactWriteItem::builder().put(index_put.build()?).build())
+                .set_transact_items(Some(items))
                 .send()
                 .await
                 .with_context(|| format!("importing DynamoDB job {}", job.id))?;
         }
-
         for client in &snapshot.clients {
             self.put_item(
                 HashMap::from([
@@ -796,10 +935,7 @@ impl DynamoStore {
             )
             .await
             .with_context(|| {
-                format!(
-                    "importing DynamoDB client fairness record `{}`",
-                    client.owner
-                )
+                format!("importing DynamoDB client fairness record {}", client.owner)
             })?;
         }
         Ok(())
@@ -819,21 +955,65 @@ impl DynamoStore {
     }
 }
 
-fn job_from_item(item: &DynamoItem) -> Result<StoredJob> {
-    let id = required_u64(item, "id")?;
-    let pk = required_string(item, "pk")?;
-    if pk != job_key(id) {
-        bail!("DynamoDB job {id} has invalid partition key `{pk}`");
+fn dynamo_put(table: &str, item: DynamoItem, require_empty: bool) -> Result<TransactWriteItem> {
+    let mut put = Put::builder().table_name(table).set_item(Some(item));
+    if require_empty {
+        put = put.condition_expression("attribute_not_exists(pk)");
     }
+    Ok(TransactWriteItem::builder().put(put.build()?).build())
+}
+
+fn job_from_item(item: &DynamoItem) -> Result<StoredJob> {
+    let object_key = required_string(item, "object_key")?;
+    let (id, astrometry_id, legacy_id, expected_pk, converted_from_numeric) = match item.get("id") {
+        Some(AttributeValue::S(value)) => {
+            let id = parse_uuid(value, "DynamoDB job ID")?;
+            (
+                id,
+                required_u64(item, "astrometry_id")?,
+                optional_u64(item, "legacy_id")?,
+                job_key(id),
+                false,
+            )
+        }
+        Some(AttributeValue::N(value)) => {
+            let legacy_id: u64 = value
+                .parse()
+                .context("DynamoDB legacy job ID is not a u64")?;
+            let id = job_id_from_object_key(&object_key).with_context(|| {
+                format!("legacy DynamoDB job {legacy_id} object key has no UUID identity")
+            })?;
+            (
+                id,
+                legacy_id,
+                Some(legacy_id),
+                format!("JOB#{legacy_id}"),
+                true,
+            )
+        }
+        _ => bail!("DynamoDB item is missing job ID"),
+    };
+    let pk = required_string(item, "pk")?;
+    if pk != expected_pk {
+        bail!("DynamoDB job {id} has invalid partition key {pk}");
+    }
+    let status = required_string(item, "status")?;
+    let notification_delivered_at = if converted_from_numeric && status == "queued" {
+        None
+    } else {
+        optional_string(item, "notification_delivered_at")
+    };
     Ok(StoredJob {
         id,
+        astrometry_id,
+        legacy_id,
         owner: required_string(item, "owner")?,
         queue_weight: required_number(item, "queue_weight")?.parse()?,
-        object_key: required_string(item, "object_key")?,
+        object_key,
         original_filename: required_string(item, "original_filename")?,
         content_type: optional_string(item, "content_type"),
         options_json: required_string(item, "options_json")?,
-        status: required_string(item, "status")?,
+        status,
         created_at: required_string(item, "created_at")?,
         started_at: optional_string(item, "started_at"),
         completed_at: optional_string(item, "completed_at"),
@@ -842,11 +1022,11 @@ fn job_from_item(item: &DynamoItem) -> Result<StoredJob> {
         lease_token: optional_string(item, "lease_token"),
         lease_expires_at: optional_string(item, "lease_expires_at"),
         attempts: required_u64(item, "attempts")?,
-        notification_delivered_at: optional_string(item, "notification_delivered_at"),
+        notification_delivered_at,
     })
 }
 
-fn donation_from_item(item: &DynamoItem, job_id: u64) -> Result<Option<StoredDonation>> {
+fn donation_from_item(item: &DynamoItem, job_id: JobId) -> Result<Option<StoredDonation>> {
     let Some(object_key) = optional_string(item, "validation_object_key") else {
         if [
             "validation_object_key",
@@ -858,7 +1038,7 @@ fn donation_from_item(item: &DynamoItem, job_id: u64) -> Result<Option<StoredDon
         .iter()
         .any(|name| item.contains_key(*name))
         {
-            bail!("DynamoDB job {job_id} has incomplete validation donation metadata");
+            bail!("DynamoDB job {job_id} has incomplete validation contribution metadata");
         }
         return Ok(None);
     };
@@ -876,7 +1056,8 @@ fn job_to_item(job: &StoredJob, donation: Option<&StoredDonation>) -> DynamoItem
     let mut item = HashMap::from([
         ("pk".into(), string(job_key(job.id))),
         ("entity".into(), string("job")),
-        ("id".into(), number(job.id)),
+        ("id".into(), string(job.id)),
+        ("astrometry_id".into(), number(job.astrometry_id)),
         ("owner".into(), string(&job.owner)),
         ("queue_weight".into(), number(job.queue_weight)),
         ("object_key".into(), string(&job.object_key)),
@@ -886,6 +1067,9 @@ fn job_to_item(job: &StoredJob, donation: Option<&StoredDonation>) -> DynamoItem
         ("created_at".into(), string(&job.created_at)),
         ("attempts".into(), number(job.attempts)),
     ]);
+    if let Some(legacy_id) = job.legacy_id {
+        item.insert("legacy_id".into(), number(legacy_id));
+    }
     for (name, value) in [
         ("content_type", job.content_type.as_deref()),
         ("started_at", job.started_at.as_deref()),
@@ -925,8 +1109,44 @@ fn job_to_item(job: &StoredJob, donation: Option<&StoredDonation>) -> DynamoItem
     item
 }
 
-fn job_key(job_id: u64) -> String {
+fn resolve_job_reference(
+    reference: JobReference,
+    legacy_to_uuid: &HashMap<u64, Uuid>,
+) -> Result<Uuid> {
+    match reference {
+        JobReference::Uuid(id) => Ok(id),
+        JobReference::Legacy(id) => legacy_to_uuid
+            .get(&id)
+            .copied()
+            .with_context(|| format!("DynamoDB index references missing legacy job {id}")),
+    }
+}
+
+fn required_job_reference(item: &DynamoItem, name: &str) -> Result<JobReference> {
+    match item.get(name) {
+        Some(AttributeValue::S(value)) => Ok(JobReference::Uuid(parse_uuid(
+            value,
+            "DynamoDB index job ID",
+        )?)),
+        Some(AttributeValue::N(value)) => Ok(JobReference::Legacy(
+            value
+                .parse()
+                .context("DynamoDB index job ID is not a u64")?,
+        )),
+        _ => bail!("DynamoDB item is missing job reference {name}"),
+    }
+}
+
+fn job_key(job_id: Uuid) -> String {
     format!("JOB#{job_id}")
+}
+
+fn astrometry_index_key(id: u64) -> String {
+    format!("ASTROMETRY#{id}")
+}
+
+fn legacy_index_key(id: u64) -> String {
+    format!("LEGACY#{id}")
 }
 
 fn client_key(owner: &str) -> String {
@@ -972,6 +1192,18 @@ fn required_u64(item: &DynamoItem, name: &str) -> Result<u64> {
         .with_context(|| format!("DynamoDB field {name} is not a u64"))
 }
 
+fn optional_u64(item: &DynamoItem, name: &str) -> Result<Option<u64>> {
+    item.get(name)
+        .map(|value| {
+            value
+                .as_n()
+                .map_err(|_| anyhow::anyhow!("DynamoDB field {name} is not numeric"))?
+                .parse()
+                .with_context(|| format!("DynamoDB field {name} is not a u64"))
+        })
+        .transpose()
+}
+
 fn ensure_only_attributes(item: &DynamoItem, pk: &str, supported: &[&str]) -> Result<()> {
     let mut unknown = item
         .keys()
@@ -981,7 +1213,7 @@ fn ensure_only_attributes(item: &DynamoItem, pk: &str, supported: &[&str]) -> Re
     unknown.sort();
     if !unknown.is_empty() {
         bail!(
-            "DynamoDB item `{pk}` has unsupported attributes: {}",
+            "DynamoDB item {pk} has unsupported attributes: {}",
             unknown.join(", ")
         );
     }
@@ -992,11 +1224,73 @@ fn parse_time(value: &str) -> Result<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
 }
 
+fn parse_uuid(value: &str, field: &str) -> Result<Uuid> {
+    Uuid::parse_str(value).with_context(|| format!("{field} is not a UUID"))
+}
+
+fn job_id_from_object_key(object_key: &str) -> Option<Uuid> {
+    let mut components = object_key.rsplit('/');
+    let filename = components.next()?;
+    let tagged_parent = components
+        .next()
+        .and_then(|value| value.strip_prefix("public-"))
+        .and_then(|value| Uuid::parse_str(value).ok());
+    tagged_parent.or_else(|| {
+        let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+        Uuid::parse_str(stem).ok()
+    })
+}
+
+#[derive(Clone, Copy)]
+enum SqlSchema {
+    Uuid,
+    Legacy,
+}
+
 async fn ensure_sql_schema_supported(
     connection: &mut AnyConnection,
     dialect: SqlDialect,
+    schema: SqlSchema,
 ) -> Result<()> {
-    for (table, supported) in [
+    let uuid_tables: &[(&str, &[&str])] = &[
+        (
+            "jobs_v2",
+            &[
+                "id",
+                "astrometry_id",
+                "legacy_id",
+                "owner",
+                "queue_weight",
+                "object_key",
+                "original_filename",
+                "content_type",
+                "options_json",
+                "status",
+                "created_at",
+                "started_at",
+                "completed_at",
+                "solution_json",
+                "error",
+                "lease_token",
+                "lease_expires_at",
+                "attempts",
+            ],
+        ),
+        (
+            "validation_donations_v2",
+            &[
+                "job_id",
+                "object_key",
+                "comment",
+                "solve_is_invalid",
+                "license_version",
+                "donated_at",
+            ],
+        ),
+        ("client_service", &["owner", "last_served_at"]),
+        ("queue_outbox_v2", &["job_id", "delivered_at"]),
+    ];
+    let legacy_tables: &[(&str, &[&str])] = &[
         (
             "jobs",
             &[
@@ -1016,7 +1310,7 @@ async fn ensure_sql_schema_supported(
                 "lease_token",
                 "lease_expires_at",
                 "attempts",
-            ][..],
+            ],
         ),
         (
             "validation_donations",
@@ -1032,25 +1326,13 @@ async fn ensure_sql_schema_supported(
         ("client_service", &["owner", "last_served_at"]),
         ("queue_outbox", &["job_id", "delivered_at"]),
         ("queue_counters", &["name", "value"]),
-    ] {
-        let rows = match dialect {
-            // `table` only comes from the fixed internal schema list above.
-            SqlDialect::Sqlite => sqlx::query(AssertSqlSafe(format!(
-                "PRAGMA table_info({table})"
-            )))
-                .fetch_all(&mut *connection)
-                .await?,
-            SqlDialect::Postgres => sqlx::query(
-                "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1",
-            )
-            .bind(table)
-            .fetch_all(&mut *connection)
-            .await?,
-        };
-        let actual = rows
-            .into_iter()
-            .map(|row| row.try_get::<String, _>("name"))
-            .collect::<std::result::Result<HashSet<_>, _>>()?;
+    ];
+    let tables = match schema {
+        SqlSchema::Uuid => uuid_tables,
+        SqlSchema::Legacy => legacy_tables,
+    };
+    for (table, supported) in tables {
+        let actual = table_columns(connection, dialect, table).await?;
         let expected = supported
             .iter()
             .map(|column| (*column).to_owned())
@@ -1061,13 +1343,46 @@ async fn ensure_sql_schema_supported(
             unsupported.sort();
             missing.sort();
             bail!(
-                "SQLx table `{table}` has an unsupported schema (unknown columns: {}; missing columns: {})",
+                "SQLx table {table} has an unsupported schema (unknown columns: {}; missing columns: {})",
                 unsupported.join(", "),
                 missing.join(", ")
             );
         }
     }
     Ok(())
+}
+
+async fn table_exists(
+    connection: &mut AnyConnection,
+    dialect: SqlDialect,
+    table: &str,
+) -> Result<bool> {
+    Ok(!table_columns(connection, dialect, table).await?.is_empty())
+}
+
+async fn table_columns(
+    connection: &mut AnyConnection,
+    dialect: SqlDialect,
+    table: &str,
+) -> Result<HashSet<String>> {
+    let rows = match dialect {
+        SqlDialect::Sqlite => {
+            // table only comes from fixed internal names.
+            sqlx::query(AssertSqlSafe(format!("PRAGMA table_info({table})")))
+                .fetch_all(&mut *connection)
+                .await?
+        }
+        SqlDialect::Postgres => sqlx::query(
+            "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1",
+        )
+        .bind(table)
+        .fetch_all(&mut *connection)
+        .await?,
+    };
+    rows.into_iter()
+        .map(|row| row.try_get::<String, _>("name"))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(Into::into)
 }
 
 fn from_i64(value: i64, field: &str) -> Result<u64> {
@@ -1081,16 +1396,20 @@ fn to_i64(value: u64, field: &str) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
+
+    fn sample_id() -> Uuid {
+        Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+    }
 
     fn sample_snapshot() -> StoreSnapshot {
         StoreSnapshot::new(
-            7,
             vec![StoredJob {
-                id: 7,
+                id: sample_id(),
+                astrometry_id: 7,
+                legacy_id: Some(7),
                 owner: "client-a".into(),
                 queue_weight: 1.5,
-                object_key: "uploads/example.fits".into(),
+                object_key: format!("uploads/public-{}/image.fits", sample_id()),
                 original_filename: "example.fits".into(),
                 content_type: Some("image/fits".into()),
                 options_json: "{\"sigma\":4.0}".into(),
@@ -1106,11 +1425,11 @@ mod tests {
                 notification_delivered_at: Some("2026-07-15T10:00:01+00:00".into()),
             }],
             vec![StoredDonation {
-                job_id: 7,
+                job_id: sample_id(),
                 object_key: "validation/example.fits".into(),
                 comment: Some("use for regression coverage".into()),
                 solve_is_invalid: true,
-                license_version: "CC0-1.0".into(),
+                license_version: "validation-image-grant-v2".into(),
                 donated_at: "2026-07-15T10:02:00+00:00".into(),
             }],
             vec![StoredClient {
@@ -1144,7 +1463,7 @@ mod tests {
     #[tokio::test]
     async fn sqlx_import_round_trips_all_logical_state() {
         let path = env::temp_dir().join(format!("seiza-migration-{}.sqlite3", Uuid::now_v7()));
-        let store = SqlxStore::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+        let store = SqlxStore::connect(&format!("sqlite://{}?mode=rwc", path.display()), true)
             .await
             .unwrap();
         let expected = sample_snapshot();
@@ -1156,14 +1475,62 @@ mod tests {
     #[tokio::test]
     async fn sqlx_snapshot_rejects_unknown_persisted_columns() {
         let path = env::temp_dir().join(format!("seiza-migration-{}.sqlite3", Uuid::now_v7()));
-        let store = SqlxStore::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+        let store = SqlxStore::connect(&format!("sqlite://{}?mode=rwc", path.display()), true)
             .await
             .unwrap();
-        sqlx::query("ALTER TABLE jobs ADD COLUMN future_state TEXT")
+        sqlx::query("ALTER TABLE jobs_v2 ADD COLUMN future_state TEXT")
             .execute(store.repository.pool())
             .await
             .unwrap();
         assert!(store.snapshot().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_sql_snapshot_reuses_public_uuid_without_mutating_source() {
+        let path = env::temp_dir().join(format!("seiza-migration-{}.sqlite3", Uuid::now_v7()));
+        let store = SqlxStore::connect(&format!("sqlite://{}?mode=rwc", path.display()), false)
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE jobs (id BIGINT PRIMARY KEY, owner TEXT NOT NULL, queue_weight DOUBLE PRECISION NOT NULL, object_key TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, solution_json TEXT, error TEXT, lease_token TEXT, lease_expires_at TEXT, attempts BIGINT NOT NULL DEFAULT 0)",
+            "CREATE TABLE validation_donations (job_id BIGINT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, solve_is_invalid BIGINT NOT NULL DEFAULT 0, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
+            "CREATE TABLE client_service (owner TEXT PRIMARY KEY, last_served_at TEXT NOT NULL)",
+            "CREATE TABLE queue_outbox (job_id BIGINT PRIMARY KEY, delivered_at TEXT)",
+            "CREATE TABLE queue_counters (name TEXT PRIMARY KEY, value BIGINT NOT NULL)",
+        ] {
+            sqlx::query(statement)
+                .execute(store.repository.pool())
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO jobs (id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at, attempts) VALUES (7, 'legacy', 1.0, $1, 'legacy.fits', NULL, '{}', 'queued', '2026-07-15T10:00:00+00:00', 1)")
+            .bind(format!("uploads/public-{}/image.fits", sample_id()))
+            .execute(store.repository.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO queue_outbox (job_id, delivered_at) VALUES (7, '2026-07-15T10:00:01+00:00')")
+            .execute(store.repository.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO queue_counters (name, value) VALUES ('jobs', 7)")
+            .execute(store.repository.pool())
+            .await
+            .unwrap();
+
+        let snapshot = store.snapshot().await.unwrap();
+        assert_eq!(snapshot.jobs[0].id, sample_id());
+        assert_eq!(snapshot.jobs[0].legacy_id, Some(7));
+        assert_eq!(snapshot.jobs[0].astrometry_id, 7);
+        assert_eq!(snapshot.jobs[0].notification_delivered_at, None);
+        let v2_tables = sqlx::query(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'jobs_v2'",
+        )
+        .fetch_one(store.repository.pool())
+        .await
+        .unwrap()
+        .try_get::<i64, _>("count")
+        .unwrap();
+        assert_eq!(v2_tables, 0);
     }
 
     #[test]
@@ -1177,6 +1544,25 @@ mod tests {
             donation_from_item(&item, expected_job.id).unwrap(),
             Some(expected_donation)
         );
+    }
+
+    #[test]
+    fn converts_legacy_dynamodb_job_to_its_existing_public_uuid() {
+        let mut item = job_to_item(&sample_snapshot().jobs[0], None);
+        item.insert("pk".into(), string("JOB#7"));
+        item.insert("id".into(), number(7));
+        item.remove("astrometry_id");
+        item.remove("legacy_id");
+        item.insert("status".into(), string("queued"));
+        item.insert(
+            "notification_delivered_at".into(),
+            string("2026-07-15T10:00:01+00:00"),
+        );
+        let converted = job_from_item(&item).unwrap();
+        assert_eq!(converted.id, sample_id());
+        assert_eq!(converted.astrometry_id, 7);
+        assert_eq!(converted.legacy_id, Some(7));
+        assert_eq!(converted.notification_delivered_at, None);
     }
 
     #[test]

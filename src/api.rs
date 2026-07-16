@@ -2,8 +2,9 @@ use crate::{
     annotations::{AnnotationEngine, AnnotationOptions},
     config::{AuthMode, Config},
     models::{
-        AnnotationResponse, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
-        SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
+        AnnotationResponse, AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus,
+        SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
+        WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
@@ -12,7 +13,7 @@ use crate::{
     star_identifiers::StarIdentifierMatch,
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
-    uploads::{ResumableUpload, ResumableUploadError, TUS_EXTENSIONS, TUS_VERSION},
+    uploads::{PersistedJobId, ResumableUpload, ResumableUploadError, TUS_EXTENSIONS, TUS_VERSION},
 };
 use axum::{
     Json, Router,
@@ -147,10 +148,10 @@ impl AppState {
 
     async fn run_embedded_job(&self, lease: JobLease) {
         let Some(object_key) = self.repository.input_key(lease.job_id, lease.lease_token.clone()).await.unwrap_or_else(|error| {
-            tracing::error!(job_id = lease.job_id, %error, "failed to resolve durable job input");
+            tracing::error!(job_id = %lease.job_id, %error, "failed to resolve durable job input");
             None
         }) else { return };
-        tracing::info!(job_id = lease.job_id, filename = %lease.original_filename, "starting durable queued solve");
+        tracing::info!(job_id = %lease.job_id, filename = %lease.original_filename, "starting durable queued solve");
         let outcome = async {
             let bytes = self.store.get(&object_key).await?;
             self.solver
@@ -165,7 +166,7 @@ impl AppState {
         let completion = match outcome {
             Ok(solution) => {
                 tracing::info!(
-                    job_id = lease.job_id,
+                    job_id = %lease.job_id,
                     matched_stars = solution.matched_stars,
                     rms_arcsec = solution.rms_arcsec,
                     "plate solve succeeded"
@@ -177,7 +178,7 @@ impl AppState {
                 }
             }
             Err(error) => {
-                tracing::warn!(job_id = lease.job_id, error = %error, "plate solve failed");
+                tracing::warn!(job_id = %lease.job_id, error = %error, "plate solve failed");
                 WorkerCompletion {
                     lease_token: lease.lease_token.clone(),
                     solution: None,
@@ -197,11 +198,11 @@ impl AppState {
         {
             Ok(true) => {}
             Ok(false) => tracing::warn!(
-                job_id = lease.job_id,
+                job_id = %lease.job_id,
                 "embedded worker lost its lease before completion"
             ),
             Err(error) => {
-                tracing::error!(job_id = lease.job_id, %error, "failed to persist worker completion")
+                tracing::error!(job_id = %lease.job_id, %error, "failed to persist worker completion")
             }
         };
     }
@@ -217,11 +218,11 @@ impl AppState {
                                 if let Err(error) =
                                     self.repository.mark_notification_delivered(job_id).await
                                 {
-                                    tracing::error!(%error, job_id, "failed to acknowledge durable queue notification");
+                                    tracing::error!(%error, %job_id, "failed to acknowledge durable queue notification");
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(%error, job_id, "external queue publish failed; keeping outbox record")
+                                tracing::warn!(%error, %job_id, "external queue publish failed; keeping outbox record")
                             }
                         }
                     }
@@ -232,21 +233,33 @@ impl AppState {
         }
     }
 
-    async fn job(&self, job_id: JobId) -> Result<Option<JobRecord>, ApiError> {
+    async fn astrometry_job(
+        &self,
+        astrometry_id: AstrometryId,
+    ) -> Result<Option<JobRecord>, ApiError> {
         self.repository
-            .get(job_id)
+            .get_by_astrometry_id(astrometry_id)
             .await
             .map_err(ApiError::internal)
     }
 
     async fn public_job(&self, public_id: &str) -> Result<Option<JobRecord>, ApiError> {
-        let Some(job_id) = public_job_sequence(public_id) else {
+        if let Ok(job_id) = Uuid::parse_str(public_id) {
+            return self
+                .repository
+                .get(job_id)
+                .await
+                .map_err(ApiError::internal);
+        }
+        let Some((legacy_id, job_id)) = legacy_public_job_id(public_id) else {
             return Ok(None);
         };
-        let Some(job) = self.job(job_id).await? else {
-            return Ok(None);
-        };
-        Ok(public_id_matches_job(public_id, job.id, &job.object_key).then_some(job))
+        let job = self
+            .repository
+            .get_by_legacy_id(legacy_id)
+            .await
+            .map_err(ApiError::internal)?;
+        Ok(job.filter(|job| job.id == job_id))
     }
 
     fn input_expires_at(&self, job: &JobRecord) -> chrono::DateTime<Utc> {
@@ -258,8 +271,7 @@ impl AppState {
     }
 
     fn job_response(&self, job: &JobRecord) -> Result<JobResponse, ApiError> {
-        let public_id = public_job_id(job)
-            .ok_or_else(|| ApiError::internal("job object key has no public UUID"))?;
+        let public_id = public_job_id(job);
         let input_available = self.input_available(job);
         let solution = job.solution.as_ref().map(|solution| {
             let mut solution = solution.clone();
@@ -309,8 +321,18 @@ impl AppState {
         &self,
         client: Client,
         upload: UploadedFile,
-        mut options: SolveOptions,
+        options: SolveOptions,
     ) -> Result<JobResponse, ApiError> {
+        let job = self.submit_job(client, upload, options).await?;
+        self.job_response(&job)
+    }
+
+    async fn submit_job(
+        &self,
+        client: Client,
+        upload: UploadedFile,
+        mut options: SolveOptions,
+    ) -> Result<JobRecord, ApiError> {
         if options.capture_time.is_none() {
             options.capture_time = capture_time_from_bytes(&upload.data, &upload.filename);
         }
@@ -324,41 +346,37 @@ impl AppState {
             .put(&object_key, upload.data, upload.content_type.as_deref())
             .await
             .map_err(ApiError::internal)?;
-        let job = self
-            .enqueue_stored(
-                client,
-                object_key,
-                upload.filename,
-                upload.content_type,
-                options,
-            )
-            .await?;
-        self.job_response(&job)
+        self.enqueue_stored(
+            client,
+            object_key,
+            upload.filename,
+            upload.content_type,
+            options,
+        )
+        .await
     }
 
     fn new_object_key(&self, filename: &str) -> String {
         let extension = safe_extension(filename);
         let prefix = self.config.s3_prefix.trim_matches('/');
-        let public_token = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
         let storage_token = Uuid::now_v7();
         if prefix.is_empty() {
-            format!("public-{public_token}/{storage_token}.{extension}")
+            format!("public-{job_id}/{storage_token}.{extension}")
         } else {
-            format!("{prefix}/public-{public_token}/{storage_token}.{extension}")
+            format!("{prefix}/public-{job_id}/{storage_token}.{extension}")
         }
     }
 
     fn validation_object_key(&self, job: &JobRecord) -> Result<String, ApiError> {
-        let public_token = public_token_from_object_key(&job.object_key)
-            .ok_or_else(|| ApiError::internal("job object key has no public UUID"))?;
         let stored_name = job
             .object_key
             .rsplit('/')
             .next()
             .ok_or_else(|| ApiError::internal("job object key has no filename"))?;
         Ok(format!(
-            "{}/public-{public_token}/{stored_name}",
-            self.config.validation_prefix
+            "{}/public-{}/{stored_name}",
+            self.config.validation_prefix, job.id
         ))
     }
 
@@ -379,8 +397,11 @@ impl AppState {
             return Ok(job);
         }
         let created_at = Utc::now();
+        let job_id = job_id_from_object_key(&object_key)
+            .ok_or_else(|| ApiError::internal("job object key has no job UUID"))?;
         let job = JobRecord {
-            id: 0,
+            id: job_id,
+            astrometry_id: 0,
             owner: client.id.clone(),
             queue_weight: client.queue_weight,
             object_key,
@@ -408,7 +429,7 @@ impl AppState {
                     .await
                     .map_err(ApiError::internal)?,
                 Err(error) => {
-                    tracing::warn!(job_id = job.id, %error, "external queue publish deferred to durable outbox")
+                    tracing::warn!(job_id = %job.id, %error, "external queue publish deferred to durable outbox")
                 }
             }
         }
@@ -431,12 +452,12 @@ impl AppState {
         upload: &mut ResumableUpload,
     ) -> Result<JobRecord, ApiError> {
         if let Some(job_id) = upload.job_id {
-            return self
-                .repository
-                .get(job_id)
-                .await
-                .map_err(ApiError::internal)?
-                .ok_or_else(|| ApiError::internal("completed upload job is missing"));
+            let job = match job_id {
+                PersistedJobId::Uuid(job_id) => self.repository.get(job_id).await,
+                PersistedJobId::Legacy(job_id) => self.repository.get_by_legacy_id(job_id).await,
+            }
+            .map_err(ApiError::internal)?;
+            return job.ok_or_else(|| ApiError::internal("completed upload job is missing"));
         }
         let bytes = upload
             .assemble(&self.store)
@@ -462,7 +483,7 @@ impl AppState {
                 upload.options.clone(),
             )
             .await?;
-        upload.job_id = Some(job.id);
+        upload.job_id = Some(job.id.into());
         upload
             .save(&self.store, &self.config.s3_prefix)
             .await
@@ -1439,7 +1460,7 @@ async fn retry_solve(
                 .await
                 .map_err(ApiError::internal)?,
             Err(error) => {
-                tracing::warn!(job_id = job.id, %error, "retry queue publish deferred to durable outbox")
+                tracing::warn!(job_id = %job.id, %error, "retry queue publish deferred to durable outbox")
             }
         }
     }
@@ -1947,44 +1968,53 @@ async fn astrometry_upload(
     let dimensions =
         dimensions_from_bytes(&upload.data, &upload.filename).map_err(ApiError::bad_request)?;
     let options = request.into_options(dimensions)?;
-    let job = state.submit(client, upload, options).await?;
+    let job = state.submit_job(client, upload, options).await?;
     Ok((
         StatusCode::OK,
         Json(json!({
             "status": "success",
-            "subid": job.id,
-            "hash": format!("seiza-job-{}", job.id),
+            "subid": job.astrometry_id,
+            "hash": format!("seiza-job-{}", job.astrometry_id),
         })),
     ))
 }
 
 async fn astrometry_submission(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(job_id): Path<AstrometryId>,
 ) -> Result<Json<Value>, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .astrometry_job(job_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     Ok(Json(json!({
         "processing_started": job.started_at,
         "processing_finished": job.completed_at,
-        "jobs": [job.id],
-        "job_calibrations": if job.status == JobStatus::Succeeded { vec![json!([job.id, job.id])] } else { Vec::new() },
-        "user_images": [job.id],
+        "jobs": [job.astrometry_id],
+        "job_calibrations": if job.status == JobStatus::Succeeded { vec![json!([job.astrometry_id, job.astrometry_id])] } else { Vec::new() },
+        "user_images": [job.astrometry_id],
     })))
 }
 
 async fn astrometry_job(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(job_id): Path<AstrometryId>,
 ) -> Result<Json<Value>, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .astrometry_job(job_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     Ok(Json(json!({ "status": astro_status(job.status) })))
 }
 
 async fn astrometry_calibration(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(job_id): Path<AstrometryId>,
 ) -> Result<Json<Value>, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .astrometry_job(job_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     match job.solution {
         Some(solution) => Ok(Json(calibration_json(&solution))),
         None => Ok(Json(json!({ "status": astro_status(job.status) }))),
@@ -1993,9 +2023,12 @@ async fn astrometry_calibration(
 
 async fn astrometry_info(
     State(state): State<AppState>,
-    Path(job_id): Path<JobId>,
+    Path(job_id): Path<AstrometryId>,
 ) -> Result<Json<Value>, ApiError> {
-    let job = state.job(job_id).await?.ok_or_else(ApiError::not_found)?;
+    let job = state
+        .astrometry_job(job_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let objects_in_field = job
         .solution
         .as_ref()
@@ -2176,25 +2209,16 @@ fn safe_filename(filename: &str) -> String {
     }
 }
 
-fn public_job_id(job: &JobRecord) -> Option<String> {
-    public_token_from_object_key(&job.object_key).map(|token| format!("{}-{token}", job.id))
+fn public_job_id(job: &JobRecord) -> String {
+    job.id.to_string()
 }
 
-fn public_id_matches_job(public_id: &str, job_id: JobId, object_key: &str) -> bool {
-    public_job_sequence(public_id) == Some(job_id)
-        && public_token_from_object_key(object_key)
-            .map(|token| format!("{job_id}-{token}"))
-            .as_deref()
-            == Some(public_id)
-}
-
-fn public_job_sequence(public_id: &str) -> Option<JobId> {
+fn legacy_public_job_id(public_id: &str) -> Option<(u64, Uuid)> {
     let (sequence, token) = public_id.split_once('-')?;
-    Uuid::parse_str(token).ok()?;
-    sequence.parse().ok()
+    Some((sequence.parse().ok()?, Uuid::parse_str(token).ok()?))
 }
 
-fn public_token_from_object_key(object_key: &str) -> Option<Uuid> {
+fn job_id_from_object_key(object_key: &str) -> Option<Uuid> {
     let mut components = object_key.rsplit('/');
     let filename = components.next()?;
     let tagged_parent = components
@@ -2437,29 +2461,23 @@ mod tests {
     };
 
     #[test]
-    fn public_solution_locators_require_the_random_upload_token() {
-        let public_token = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    fn public_solution_locators_use_the_job_uuid() {
+        let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let legacy_token = Uuid::parse_str("019f5c5d-af6b-7930-b0ca-371b62e32bc0").unwrap();
         let storage_token = Uuid::parse_str("019f5c5d-af6b-7930-b0ca-371b62e32bc1").unwrap();
-        let new_key = format!("uploads/public-{public_token}/{storage_token}.fits");
+        let new_key = format!("uploads/public-{job_id}/{storage_token}.fits");
         let legacy_key = format!("uploads/{legacy_token}.fits");
-        let locator = format!("42-{public_token}");
+        let locator = format!("42-{job_id}");
 
-        assert_eq!(public_token_from_object_key(&new_key), Some(public_token));
+        assert_eq!(job_id_from_object_key(&new_key), Some(job_id));
+        assert_eq!(job_id_from_object_key(&legacy_key), Some(legacy_token));
+        assert_eq!(legacy_public_job_id(&locator), Some((42, job_id)));
         assert_eq!(
-            public_token_from_object_key(&legacy_key),
-            Some(legacy_token)
+            legacy_public_job_id(&format!("42-{storage_token}")),
+            Some((42, storage_token))
         );
-        assert_eq!(public_job_sequence(&locator), Some(42));
-        assert!(public_id_matches_job(&locator, 42, &new_key));
-        assert!(!public_id_matches_job(
-            &format!("42-{storage_token}"),
-            42,
-            &new_key
-        ));
-        assert!(!public_id_matches_job(&locator, 43, &new_key));
-        assert_eq!(public_job_sequence("42"), None);
-        assert_eq!(public_job_sequence("42-not-a-token"), None);
+        assert_eq!(legacy_public_job_id("42"), None);
+        assert_eq!(legacy_public_job_id("42-not-a-token"), None);
     }
 
     #[tokio::test]
@@ -2640,7 +2658,12 @@ mod tests {
                 .unwrap();
         assert_eq!(result.original_filename, "parallel.fits");
         assert_eq!(state.repository.queue_depth().await.unwrap(), 1);
-        let job = state.repository.get(1).await.unwrap().unwrap();
+        let job = state
+            .repository
+            .get(Uuid::parse_str(&result.id).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             state.store.get(&job.object_key).await.unwrap(),
             b"abcdefgh"[..]
@@ -2801,7 +2824,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let public_id = public_job_id(&job).unwrap();
+        let public_id = public_job_id(&job);
 
         let missing_grant = donate_validation_image(
             State(state.clone()),
