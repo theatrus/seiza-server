@@ -32,7 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # `default-https-client` feature also selects its AWS-LC provider directly.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 sqlx = { version = "0.9", default-features = false, features = ["any", "chrono", "postgres", "runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs"] }
-seiza = "0.4.1"
+seiza = "0.5.0"
 seiza-fits = "0.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

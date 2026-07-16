@@ -154,7 +154,7 @@ export function ApiDocsPage() {
           <CodeExample label="Raw TUS sequence" code={tusExample} />
         </DocSection>
 
-        <DocSection id="catalog-api" eyebrow="SEIZA 0.4.1 CATALOGS" title="Search the sky without uploading an image.">
+        <DocSection id="catalog-api" eyebrow="SEIZA 0.5 CATALOGS" title="Search the sky without uploading an image.">
           <p>The object API reads Seiza’s memory-mapped v3 catalog and returns stable IDs, aliases, hierarchy, source provenance, sizes, magnitudes, and predicted prominence. The stellar API reads the Tycho identifier sidecar for exact TYC/HIP/catalog lookup and proper, Bayer/Flamsteed, variable, and double-star name completion.</p>
           <div className="endpoint-list compact">
             <Endpoint method="GET" path="/api/v1/catalog/objects">Cone query using required <code>ra</code>, <code>dec</code>, and <code>radius</code>.</Endpoint>
