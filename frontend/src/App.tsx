@@ -279,16 +279,23 @@ function SolutionPage({ jobId }: { jobId: string }) {
   const isSettled = job != null && !pending.has(job.status)
 
   return <main className={`solution-page${isSettled ? ' solution-page-settled' : ''}`}>
-    <header className="solution-heading">
-      <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
-      {job && <span className={`status ${job.status}`}>{job.status}</span>}
-    </header>
+    {isSettled && job ? <div className="settled-topbar">
+      <SolutionHeading job={job} />
+      <ValidationDonationPanel job={job} onDonated={setJob} />
+    </div> : <SolutionHeading job={job} />}
     {error && <p className="error" role="alert">{error}</p>}
     {job && <SolutionContent job={job} onRetried={(retried) => {
       setJob(retried)
       setPollVersion((version) => version + 1)
-    }} onDonated={setJob} />}
+    }} />}
   </main>
+}
+
+function SolutionHeading({ job }: { job: Job | null }) {
+  return <header className="solution-heading">
+    <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
+    {job && <span className={`status ${job.status}`}>{job.status}</span>}
+  </header>
 }
 
 function titleForStatus(status: Job['status']) {
@@ -298,7 +305,7 @@ function titleForStatus(status: Job['status']) {
   return 'The field is solved.'
 }
 
-function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (job: Job) => void; onDonated: (job: Job) => void }) {
+function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState(defaultOverlayLayers)
@@ -356,13 +363,7 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
     }
   }
   return <>
-    <section className="job-meta">
-      <div><span>File</span><strong>{job.original_filename}</strong></div>
-      <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
-      <div><span>Total solve time</span><strong>{job.solve_time_ms != null ? formatDurationMs(job.solve_time_ms) : job.status === 'solving' ? 'Timing…' : job.status === 'queued' ? 'Waiting for worker' : 'Not recorded'}</strong></div>
-      <div><span>Image retention</span><strong>{job.validation_donation ? 'contributed for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
-    </section>
-    {!pending.has(job.status) && <ValidationDonationPanel job={job} onDonated={onDonated} />}
+    {!solution && <JobMeta job={job} />}
     {job.error && <p className="error">{job.error}</p>}
     {job.status === 'failed' && job.input_available && <RetrySolveForm job={job} onRetried={onRetried} />}
     {job.status === 'failed' && !job.input_available && <p className="expired-note">This image can no longer be retried because its one-day upload retention period has ended. Upload it again to start a new solve.</p>}
@@ -393,6 +394,7 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
         </div>
         <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
+      <JobMeta job={job} />
       <section className="metric-grid">
         <Metric label="Center RA" value={`${solution.center_ra_deg.toFixed(8)}°`} />
         <Metric label="Center Dec" value={`${solution.center_dec_deg.toFixed(8)}°`} />
@@ -404,6 +406,15 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
       <ValidationDonationReminder job={job} />
     </>}
   </>
+}
+
+function JobMeta({ job }: { job: Job }) {
+  return <section className="job-meta">
+    <div><span>File</span><strong>{job.original_filename}</strong></div>
+    <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
+    <div><span>Total solve time</span><strong>{job.solve_time_ms != null ? formatDurationMs(job.solve_time_ms) : job.status === 'solving' ? 'Timing…' : job.status === 'queued' ? 'Waiting for worker' : 'Not recorded'}</strong></div>
+    <div><span>Image retention</span><strong>{job.validation_donation ? 'contributed for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
+  </section>
 }
 
 function SolverStatistics({ job }: { job: Job }) {
