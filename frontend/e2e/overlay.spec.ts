@@ -151,6 +151,9 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await mockSolution(page)
   await page.goto(`/solutions/${publicId}`)
   await expect(page.getByRole('heading', { name: 'Explore the solved field' })).toBeVisible()
+  await expect(page.locator('#validation-donation').getByText('Help improve Seiza with this image')).toBeVisible()
+  await expect(page.getByLabel('Optional comment')).toBeHidden()
+  await expect(page.getByRole('link', { name: 'Contribute this solved image' })).toHaveAttribute('href', '#validation-donation')
 
   const layerButtonRows = await page.locator('.overlay-options > button').evaluateAll((buttons) =>
     [...new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top)))],

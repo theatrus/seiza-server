@@ -1471,7 +1471,7 @@ async fn donate_validation_image(
     let _client = client_from_headers(&state, &headers, None)?;
     if !request.license_agreed {
         return Err(ApiError::bad_request(
-            "license_agreed must be true to donate an image",
+            "license_agreed must be true to contribute an image",
         ));
     }
     let comment = request.comment.and_then(|comment| {
@@ -1492,7 +1492,7 @@ async fn donate_validation_image(
         .ok_or_else(ApiError::not_found)?;
     if !matches!(job.status, JobStatus::Succeeded | JobStatus::Failed) {
         return Err(ApiError::validation_conflict(
-            "only a completed solve can be donated to the validation set",
+            "only a completed solve can be contributed to the validation set",
         ));
     }
 
@@ -1511,7 +1511,7 @@ async fn donate_validation_image(
             .map_err(ApiError::internal)?
         {
             return Err(ApiError::gone(
-                "the temporary upload is no longer available to donate",
+                "the temporary upload is no longer available to contribute",
             ));
         }
         state
@@ -1553,7 +1553,7 @@ async fn donate_validation_image(
         .get(job.id)
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::internal("donated solve job is missing"))?;
+        .ok_or_else(|| ApiError::internal("contributed solve job is missing"))?;
     Ok(Json(state.job_response(&donated)?))
 }
 
