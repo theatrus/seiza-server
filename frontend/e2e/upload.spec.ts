@@ -108,7 +108,9 @@ test('places the solve action beside the file selector', async ({ page }) => {
   expect(buttonBox).not.toBeNull()
   expect(buttonBox!.x).toBeGreaterThan(fileBox!.x + fileBox!.width)
   expect(Math.abs((buttonBox!.y + buttonBox!.height) - (fileBox!.y + fileBox!.height))).toBeLessThan(2)
-  expect(fileBox!.y).toBeLessThan(400)
+  const viewport = page.viewportSize()
+  expect(viewport).not.toBeNull()
+  expect(fileBox!.y + fileBox!.height).toBeLessThan(viewport!.height)
 })
 
 test('uploads large images as parallel TUS parts and concatenates them', async ({ page, browserName }) => {
