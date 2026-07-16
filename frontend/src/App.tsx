@@ -167,6 +167,20 @@ function HomePage() {
       </ol>
     </section>
 
+    <section className="about-card integration-card" aria-labelledby="nina-integration">
+      <div>
+        <p className="eyebrow">APPLICATION INTEGRATIONS</p>
+        <h2 id="nina-integration">Bring Seiza into N.I.N.A. without a plugin.</h2>
+      </div>
+      <div className="about-copy">
+        <p><code>seiza-cli</code> 0.5 speaks the ASTAP command-line contract N.I.N.A. already uses. Select ASTAP for the normal and blind solver, point it at <code>seiza.exe</code>, and keep the star catalog on the imaging machine.</p>
+        <div className="text-links">
+          <a href="/docs/api#integrations">Set up N.I.N.A. <span aria-hidden="true">→</span></a>
+          <a href="https://github.com/theatrus/seiza/releases">Windows releases <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+
     <section className="about-card">
       <div>
         <p className="eyebrow">ABOUT SEIZA</p>
@@ -220,7 +234,7 @@ function SolvePage() {
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Solve this image.</h1>
-      <p className="intro">Only the image is required. Large files upload in parallel, resumable parts, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="intro">Choose an image to start. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
       <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.</p>
     </header>
     <section className="panel">

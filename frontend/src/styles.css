@@ -43,7 +43,9 @@ button:disabled { cursor: wait; opacity: .65; }
 .steps strong { color: #edf5f6; font-size: 1.1rem; }
 .steps p, .about-copy p { margin: .45rem 0 0; color: #91a8b0; line-height: 1.65; }
 .about-card { display: grid; grid-template-columns: .9fr 1.1fr; gap: clamp(2rem, 7vw, 7rem); padding: clamp(2rem, 6vw, 4.5rem); border: 1px solid #25414a; background: rgb(10 28 34 / 74%); }
+.integration-card { margin-bottom: 1.5rem; border-color: #31515b; background: linear-gradient(135deg, rgb(12 39 47 / 88%), rgb(10 28 34 / 72%)); }
 .about-copy strong { color: #e4eef0; }
+.about-copy code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: #10252d; font-size: .9em; }
 .narrow-page { width: min(880px, calc(100% - 2rem)); }
 .page-heading { max-width: 760px; margin-bottom: 2.4rem; }
 .page-heading h1, .solution-heading h1, .empty-state h1 { font-size: clamp(2.7rem, 6vw, 5rem); }
