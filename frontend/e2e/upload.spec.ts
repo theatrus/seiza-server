@@ -95,6 +95,7 @@ function queuedJob(id: string, filename: string) {
 
 test('places the solve action beside the file selector', async ({ page }) => {
   await page.goto('/solve')
+  await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })

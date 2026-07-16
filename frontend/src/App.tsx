@@ -219,7 +219,7 @@ function SolvePage() {
   return <main className="narrow-page">
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
-      <h1>Queue a new image.</h1>
+      <h1>Solve this image.</h1>
       <p className="intro">Only the image is required. Large files upload in parallel, resumable parts, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
       <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.</p>
     </header>
@@ -491,7 +491,7 @@ function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) =>
     <p className="retry-intro">Add a position or scale hint and place this same image back in the queue. Its private solution URL stays unchanged. {job.validation_donation ? 'The contributed validation copy remains available for this retry.' : 'The original image-retention deadline also stays unchanged.'}</p>
     <form onSubmit={onSubmit}>
       <SolveOptionsFields defaults={job.options} />
-      <button className="button" disabled={submitting}>{submitting ? 'Queueing retry…' : 'Retry retained image'}</button>
+      <button className="button" disabled={submitting}>{submitting ? 'Starting retry…' : 'Retry retained image'}</button>
       {error && <p className="error" role="alert">{error}</p>}
     </form>
   </section>
