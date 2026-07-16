@@ -234,7 +234,7 @@ function SolvePage() {
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Solve this image.</h1>
-      <p className="intro">Only the image is required. Large files upload in parallel, resumable parts, then the solve runs in a background worker. The result gets its own durable, unguessable URL; the uploaded image and preview are automatically deleted after about one day.</p>
+      <p className="intro">Choose an image to start. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
       <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.</p>
     </header>
     <section className="panel">
