@@ -159,6 +159,13 @@ PUBLIC_ID='550e8400-e29b-41d4-a716-446655440000'
 curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID"
 ```
 
+Completed jobs report end-to-end `solve_time_ms` from worker claim through
+durable completion, including failed attempts. Successful `solution` objects
+also retain a `statistics` block with the solver strategy, total pipeline time,
+decode/detection/search timings, detected-star count, catalog size, and blind
+index pattern count when applicable. These diagnostics remain available after
+the temporary uploaded image expires.
+
 Ordinary uploads remain the user’s property. Seiza does not claim ownership
 and stores the original only temporarily to process and present the solve.
 After either success or failure, the user may explicitly contribute the still-

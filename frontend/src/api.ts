@@ -62,6 +62,16 @@ export interface Solution {
   objects: OverlayObject[]
   catalog_version?: string
   capture_time?: string
+  statistics?: {
+    total_ms: number
+    decode_ms: number
+    detection_ms: number
+    search_ms: number
+    mode: 'blind' | 'hinted'
+    detected_stars: number
+    catalog_stars: number
+    blind_index_patterns?: number
+  }
 }
 
 export interface Annotations {
@@ -86,6 +96,7 @@ export interface Job {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  solve_time_ms: number | null
   original_filename: string
   options: SolveOptions
   input_expires_at: string

@@ -743,6 +743,7 @@ mod tests {
             objects: Vec::new(),
             catalog_version: None,
             capture_time: None,
+            statistics: None,
         };
         let first = engine.annotate(1, &solution, None, &AnnotationOptions::default());
         assert_eq!(first.objects.len(), 1);
@@ -798,6 +799,7 @@ mod tests {
             objects: Vec::new(),
             catalog_version: None,
             capture_time: None,
+            statistics: None,
         };
 
         let hidden = engine.annotate(1, &solution, None, &AnnotationOptions::default());

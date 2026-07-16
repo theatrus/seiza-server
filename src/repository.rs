@@ -467,7 +467,7 @@ impl JobRepository for SqlxJobRepository {
         };
         let lease_token = Uuid::now_v7().to_string();
         let lease_expires_at = now + Duration::seconds(lease_seconds.max(1) as i64);
-        let claimed = sqlx::query("UPDATE jobs_v2 SET status = 'solving', started_at = COALESCE(started_at, $1), lease_token = $2, lease_expires_at = $3, attempts = attempts + 1 WHERE id = $4 AND status = 'queued'")
+        let claimed = sqlx::query("UPDATE jobs_v2 SET status = 'solving', started_at = $1, lease_token = $2, lease_expires_at = $3, attempts = attempts + 1 WHERE id = $4 AND status = 'queued'")
             .bind(encode_time(now))
             .bind(&lease_token)
             .bind(encode_time(lease_expires_at))

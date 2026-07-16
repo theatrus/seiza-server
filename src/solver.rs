@@ -1,4 +1,4 @@
-use crate::models::{SolutionResponse, SolveOptions, WcsResponse};
+use crate::models::{SolutionResponse, SolveMode, SolveOptions, SolveStatistics, WcsResponse};
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use image::ImageFormat;
@@ -13,6 +13,7 @@ use std::{
     io::Cursor,
     path::Path,
     sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 #[derive(Clone)]
@@ -139,12 +140,16 @@ fn solve_bytes(
     filename: &str,
     options: &SolveOptions,
 ) -> Result<SolutionResponse> {
+    let total_started = Instant::now();
     options.validate().map_err(anyhow::Error::msg)?;
+    let decode_started = Instant::now();
     let image = decode_image(bytes, filename)?;
+    let decode_duration = decode_started.elapsed();
     let dimensions = (image.width(), image.height());
     if dimensions.0 == 0 || dimensions.1 == 0 {
         bail!("image has invalid dimensions");
     }
+    let detection_started = Instant::now();
     let detected = detect_stars(
         &image,
         &DetectConfig {
@@ -154,6 +159,7 @@ fn solve_bytes(
             ..Default::default()
         },
     );
+    let detection_duration = detection_started.elapsed();
     tracing::info!(
         stars = detected.len(),
         width = dimensions.0,
@@ -161,23 +167,28 @@ fn solve_bytes(
         "detected stars for queued solve"
     );
 
-    let solution = match (
+    let search_started = Instant::now();
+    let (solution, mode, blind_index_patterns) = match (
         options.center_ra_deg,
         options.center_dec_deg,
         options.scale_arcsec_per_pixel,
     ) {
-        (Some(ra), Some(dec), Some(scale)) => solve(
-            &detected,
-            catalog,
-            &SolveHint {
-                center: (ra, dec),
-                radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
-                scale_arcsec_px: scale,
-                scale_tolerance: options.scale_tolerance,
-            },
-            dimensions,
-        )
-        .context("hinted Seiza solve failed")?,
+        (Some(ra), Some(dec), Some(scale)) => (
+            solve(
+                &detected,
+                catalog,
+                &SolveHint {
+                    center: (ra, dec),
+                    radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
+                    scale_arcsec_px: scale,
+                    scale_tolerance: options.scale_tolerance,
+                },
+                dimensions,
+            )
+            .context("hinted Seiza solve failed")?,
+            SolveMode::Hinted,
+            None,
+        ),
         _ => {
             let index = blind_index.get_or_init(|| {
                 let params = BlindParams::default();
@@ -199,10 +210,15 @@ fn solve_bytes(
                 max_pattern_deg: index.max_pattern_deg(),
                 ..Default::default()
             };
-            solve_blind(&detected, catalog, index, &params, dimensions)
-                .context("blind Seiza solve failed")?
+            (
+                solve_blind(&detected, catalog, index, &params, dimensions)
+                    .context("blind Seiza solve failed")?,
+                SolveMode::Blind,
+                Some(index.pattern_count()),
+            )
         }
     };
+    let search_duration = search_started.elapsed();
     let (center_ra_deg, center_dec_deg) = solution
         .wcs
         .pixel_to_world(dimensions.0 as f64 / 2.0, dimensions.1 as f64 / 2.0);
@@ -210,6 +226,27 @@ fn solve_bytes(
         .wcs
         .footprint(dimensions.0, dimensions.1)
         .map(|(ra, dec)| [ra, dec]);
+    let total_duration = total_started.elapsed();
+    let statistics = SolveStatistics {
+        total_ms: duration_ms(total_duration),
+        decode_ms: duration_ms(decode_duration),
+        detection_ms: duration_ms(detection_duration),
+        search_ms: duration_ms(search_duration),
+        mode,
+        detected_stars: detected.len(),
+        catalog_stars: catalog.star_count(),
+        blind_index_patterns,
+    };
+    tracing::info!(
+        mode = ?statistics.mode,
+        total_ms = statistics.total_ms,
+        decode_ms = statistics.decode_ms,
+        detection_ms = statistics.detection_ms,
+        search_ms = statistics.search_ms,
+        detected_stars = statistics.detected_stars,
+        matched_stars = solution.matched_stars,
+        "completed Seiza solve pipeline"
+    );
     Ok(SolutionResponse {
         center_ra_deg,
         center_dec_deg,
@@ -231,7 +268,12 @@ fn solve_bytes(
         objects: Vec::new(),
         catalog_version: None,
         capture_time: options.capture_time,
+        statistics: Some(statistics),
     })
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
 }
 
 pub fn capture_time_from_bytes(
