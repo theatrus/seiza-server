@@ -26,8 +26,10 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.4.1. The maintained G<=16 index is memory-mapped once per
+  solving with Seiza 0.5.0. The maintained G<=16 index is memory-mapped once per
   worker and reused across jobs, including fine-scale fields down to 0.1"/px.
+  Seiza 0.5 automatically uses compact detection for 8-bit uploads and its
+  optimized hinted and blind solve paths.
 - Per-client token-bucket admission limiting plus a durable weighted-LRU
   priority queue. An unseen/least-recently served client goes first; higher
   future API tiers can use a larger queue weight without changing the
@@ -47,9 +49,9 @@ disappears on a process restart.
 
 ## Quick start
 
-Install Seiza CLI 0.4.1 or newer, then get the prebuilt catalogs and maintained
+Install Seiza CLI 0.5.0 or newer, then get the prebuilt catalogs and maintained
 blind index. The server automatically prefers the deep Gaia G<=17 catalog and
-its matching G<=16 index when both are present. Seiza 0.4.1's prebuilt object
+its matching G<=16 index when both are present. Seiza 0.5.0's prebuilt object
 catalog is memory-mapped, includes the expanded LBN and Cederblad datasets, and
 provides embedded spatial and designation indices. The prebuilt bundle also
 includes `stars-lite-tycho2.ids.bin`; the server turns its proper,
