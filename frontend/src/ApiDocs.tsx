@@ -52,14 +52,14 @@ curl -X POST https://seiza.fyi/api/upload \\
   -F 'request-json={"session":"seiza-…","scale_type":"ul","scale_units":"arcsecperpix","scale_lower":0.5,"scale_upper":2.0}' \\
   -F 'file=@M31.fits'`
 
-const ninaExample = `# Install seiza-cli and a local catalog on the N.I.N.A. machine.
-cargo install seiza-cli --version 0.5.0
-seiza download-data prebuilt --output C:\\seiza-data --file stars-gaia.bin
-setx SEIZA_STAR_DATA C:\\seiza-data\\stars-gaia.bin
+const ninaExample = `# PowerShell: after extracting the Windows release ZIP to C:\\Seiza
+C:\\Seiza\\seiza.exe download-data prebuilt --output C:\\Seiza --file stars-deep-gaia17.bin --file blind-gaia16.idx
 
 # In N.I.N.A.: Options → Plate Solving
 # Plate Solver: ASTAP
-# ASTAP path: C:\\path\\to\\seiza.exe`
+# ASTAP path: C:\\Seiza\\seiza.exe
+# Blind Solver: ASTAP
+# ASTAP path: C:\\Seiza\\seiza.exe`
 
 const errorExample = `{
   "error": {
@@ -108,9 +108,15 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="N.I.N.A., ASTAP, and persistent clients.">
-          <p><code>seiza-cli</code> 0.5 implements the ASTAP command-line contract that N.I.N.A. already understands. Install the CLI or use a <a href="https://github.com/theatrus/seiza/releases">Windows release</a>, download a local star catalog, select ASTAP in N.I.N.A., and point its ASTAP executable path at <code>seiza.exe</code>. No N.I.N.A. plugin is required.</p>
-          <CodeExample label="Use seiza-cli as N.I.N.A.’s ASTAP solver" code={ninaExample} />
+          <p><code>seiza-cli</code> 0.5 implements the ASTAP command-line contract that N.I.N.A. already understands. The pre-built Windows binary is the shortest path: no Rust toolchain, installer, or N.I.N.A. plugin is required.</p>
+          <ol className="integration-steps">
+            <li><strong>Download the binary.</strong><span>Open the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.zip</code>, and extract it to a stable directory such as <code>C:\Seiza</code>.</span></li>
+            <li><strong>Download the solving data.</strong><span>Run the command below once in PowerShell. Keeping the deep Gaia catalog and maintained blind index beside <code>seiza.exe</code> lets Seiza discover them automatically.</span></li>
+            <li><strong>Select it in N.I.N.A.</strong><span>Under <strong>Options → Plate Solving</strong>, choose ASTAP and set its executable path to <code>C:\Seiza\seiza.exe</code>. Use the same binary for the blind-solver slot.</span></li>
+          </ol>
+          <CodeExample label="Set up the pre-built Seiza binary for N.I.N.A." code={ninaExample} />
           <div className="api-note"><strong>Hinted and blind solving</strong><span>N.I.N.A. supplies FITS input, field of view, and optional mount coordinates through ASTAP-style flags. Seiza solves the frame and writes the <code>.ini</code> calibration file N.I.N.A. expects, including scale, rotation, and parity. The same binary can be selected for both the normal and blind-solver slots.</span></div>
+          <div className="api-note"><strong>Smaller download</strong><span>If you only need ordinary hinted solves, download <code>stars-gaia.bin</code> instead. The deep catalog plus <code>blind-gaia16.idx</code> is the recommended pair for blind solving small, fine-scale fields.</span></div>
           <div className="api-note"><strong>Server-backed applications</strong><span>Applications that want a persistent newline-delimited JSON-RPC process can run <code>seiza worker --server https://seiza.fyi</code>. That adapter uploads local image paths to this queued service; it is separate from the authenticated internal worker API used to add server compute capacity.</span></div>
         </DocSection>
 

@@ -236,6 +236,13 @@ dd { margin: 0; color: #d8e6e8; font-family: ui-monospace, monospace; font-size:
 .http-method[data-method="HEAD"], .http-method[data-method="OPTIONS"] { background: #a9b9ef; }
 .endpoint-row p { margin: 0; color: #829da5; font-size: .8rem; line-height: 1.6; }
 .api-section > h3 { margin: 2.6rem 0 1rem; color: #d9e7e9; font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; }
+.integration-steps { display: grid; gap: .75rem; max-width: 880px; margin: 1.8rem 0 2rem; padding: 0; list-style: none; counter-reset: integration-steps; }
+.integration-steps li { display: grid; grid-template-columns: minmax(180px, .42fr) minmax(0, 1.58fr); gap: 1.25rem; padding: 1rem 0; border-bottom: 1px solid #294851; counter-increment: integration-steps; }
+.integration-steps li:first-child { border-top: 1px solid #294851; }
+.integration-steps strong { color: #dcebed; }
+.integration-steps strong::before { content: counter(integration-steps, decimal-leading-zero) "  "; color: #e9c46a; font-family: ui-monospace, monospace; font-size: .72rem; }
+.integration-steps span { color: #829da5; font-size: .82rem; line-height: 1.65; }
+.integration-steps code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: #10252d; font-size: .9em; }
 .option-table { margin: 1.2rem 0 2.6rem; border-top: 1px solid #294851; }
 .option-row { display: grid; grid-template-columns: minmax(190px, .7fr) minmax(280px, 1.3fr) 110px; gap: 1.2rem; align-items: start; padding: .95rem 0; border-bottom: 1px solid #294851; }
 .option-row > code { color: #c7f0ef; font-size: .76rem; line-height: 1.5; overflow-wrap: anywhere; }
@@ -266,6 +273,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .api-layout { grid-template-columns: 1fr; }
   .api-toc { position: static; display: flex; flex-wrap: wrap; gap: .7rem 1.1rem; padding: 1.5rem 0; border-bottom: 1px solid rgb(128 177 191 / 20%); }
   .api-toc strong { flex-basis: 100%; margin: 0; }
+  .integration-steps li { grid-template-columns: 1fr; gap: .45rem; }
   .hero { padding-top: 2rem; }
   .hero-mark { order: -1; padding-bottom: 0; }
   .hero-mark img { width: 150px; }
