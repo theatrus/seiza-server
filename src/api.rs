@@ -169,6 +169,7 @@ impl AppState {
                     job_id = %lease.job_id,
                     matched_stars = solution.matched_stars,
                     rms_arcsec = solution.rms_arcsec,
+                    solver_ms = solution.statistics.as_ref().map(|stats| stats.total_ms),
                     "plate solve succeeded"
                 );
                 WorkerCompletion {
@@ -294,6 +295,7 @@ impl AppState {
             created_at: job.created_at,
             started_at: job.started_at,
             completed_at: job.completed_at,
+            solve_time_ms: solve_time_ms(job.started_at, job.completed_at),
             original_filename: job.original_filename.clone(),
             options: job.options.clone(),
             input_expires_at: self.input_expires_at(job),
@@ -2191,6 +2193,15 @@ fn stable_hash(value: &str) -> u64 {
     hasher.finish()
 }
 
+fn solve_time_ms(
+    started_at: Option<chrono::DateTime<Utc>>,
+    completed_at: Option<chrono::DateTime<Utc>>,
+) -> Option<u64> {
+    started_at
+        .zip(completed_at)
+        .map(|(started, completed)| (completed - started).num_milliseconds().max(0) as u64)
+}
+
 fn safe_filename(filename: &str) -> String {
     let name = filename.rsplit(['/', '\\']).next().unwrap_or("upload");
     let filename = name
@@ -2478,6 +2489,20 @@ mod tests {
         );
         assert_eq!(legacy_public_job_id("42"), None);
         assert_eq!(legacy_public_job_id("42-not-a-token"), None);
+    }
+
+    #[test]
+    fn solve_time_reports_the_completed_worker_attempt() {
+        let started = "2026-07-15T10:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let completed = "2026-07-15T10:00:02.345Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+
+        assert_eq!(solve_time_ms(Some(started), Some(completed)), Some(2_345));
+        assert_eq!(solve_time_ms(Some(started), None), None);
+        assert_eq!(solve_time_ms(Some(completed), Some(started)), Some(0));
     }
 
     #[tokio::test]

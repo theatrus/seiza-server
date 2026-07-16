@@ -365,7 +365,7 @@ impl JobRepository for DynamoDbJobRepository {
             .table_name(&self.table)
             .key("pk", string(job_key(job.id)))
             .condition_expression("#status = :queued")
-            .update_expression("SET #status = :solving, started_at = if_not_exists(started_at, :started_at), lease_token = :lease_token, lease_expires_at = :lease_expires_at ADD attempts :one")
+            .update_expression("SET #status = :solving, started_at = :started_at, lease_token = :lease_token, lease_expires_at = :lease_expires_at ADD attempts :one")
             .expression_attribute_names("#status", "status")
             .expression_attribute_values(":queued", string("queued"))
             .expression_attribute_values(":solving", string("solving"))

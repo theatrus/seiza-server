@@ -115,11 +115,11 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="native-api" eyebrow="NATIVE JSON API" title="Jobs and durable result artifacts.">
-          <p>Job status is one of <code>queued</code>, <code>solving</code>, <code>succeeded</code>, or <code>failed</code>. Successful responses include full TAN/ICRS WCS, image dimensions, matched-star quality, sky footprint, and artifact URLs.</p>
+          <p>Job status is one of <code>queued</code>, <code>solving</code>, <code>succeeded</code>, or <code>failed</code>. Completed responses report end-to-end <code>solve_time_ms</code>. Successful solutions also include full TAN/ICRS WCS, image dimensions, matched-star quality, sky footprint, artifact URLs, and durable solver <code>statistics</code> with decode, detection, and search timings.</p>
           <div className="endpoint-list">
             <Endpoint method="GET" path="/api/v1/health">Read seiza-server and Seiza versions, solver readiness, queue depth, authentication mode, and configured backends.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves">Submit a multipart image and optional solve settings. Returns <code>202</code>.</Endpoint>
-            <Endpoint method="GET" path="/api/v1/solves/{public_id}">Poll status and retrieve the completed solution.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/solves/{public_id}">Poll status and retrieve the completed solution, total solve time, and solver telemetry.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves/{public_id}/retry">Requeue a failed solve with new JSON settings while its original image is retained.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves/{public_id}/validation-donation">Contribute a completed solve’s image to the long-term validation set. Requires <code>license_agreed: true</code>; <code>comment</code> and <code>solve_is_invalid</code> are optional. The route retains its historical name for API compatibility.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/annotations">Regenerate projected catalog annotations from the stored WCS.</Endpoint>

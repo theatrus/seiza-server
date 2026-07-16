@@ -187,6 +187,28 @@ pub struct OverlayObject {
     pub direction_angle_deg: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SolveMode {
+    Blind,
+    Hinted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolveStatistics {
+    /// Wall-clock time spent inside the solver pipeline, including decode,
+    /// detection, matching, and WCS result construction.
+    pub total_ms: f64,
+    pub decode_ms: f64,
+    pub detection_ms: f64,
+    pub search_ms: f64,
+    pub mode: SolveMode,
+    pub detected_stars: usize,
+    pub catalog_stars: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blind_index_patterns: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolutionResponse {
     pub center_ra_deg: f64,
@@ -205,6 +227,8 @@ pub struct SolutionResponse {
     pub catalog_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_time: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<SolveStatistics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -330,6 +354,9 @@ pub struct JobResponse {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// End-to-end time between a worker claiming the job and persisting its
+    /// completion. Available for both successful and failed attempts.
+    pub solve_time_ms: Option<u64>,
     pub original_filename: String,
     pub options: SolveOptions,
     pub input_expires_at: DateTime<Utc>,
@@ -389,6 +416,7 @@ mod tests {
             objects: Vec::new(),
             catalog_version: None,
             capture_time: None,
+            statistics: None,
         };
 
         let header = solution.fits_wcs_header();

@@ -80,7 +80,7 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .status { flex: 0 0 auto; padding: .4rem .7rem; border-radius: 99px; color: #b9d4db; background: #263e47; font-size: .75rem; font-weight: 850; text-transform: capitalize; }
 .status.succeeded { color: #bdf4d7; background: #174834; }
 .status.failed { color: #ffd6db; background: #652536; }
-.job-meta { display: grid; grid-template-columns: repeat(3, 1fr); margin-bottom: 1.25rem; border-top: 1px solid #25414a; border-bottom: 1px solid #25414a; }
+.job-meta { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 1.25rem; border-top: 1px solid #25414a; border-bottom: 1px solid #25414a; }
 .job-meta div { padding: 1rem; border-right: 1px solid #25414a; }
 .job-meta div:last-child { border-right: 0; }
 .job-meta span, .metric-grid span { display: block; margin-bottom: .35rem; color: #77949d; font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -159,6 +159,9 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 1.5rem 0; border: 1px solid #25414a; background: #25414a; }
 .metric-grid > div { padding: 1.2rem; background: #0a1c23; }
 .metric-grid strong { color: #f3f8f9; font-family: ui-monospace, monospace; font-size: .88rem; }
+.solver-stats { margin: 1.5rem 0; padding: 1.5rem; border: 1px solid #25414a; background: #081920; }
+.solver-stats .metric-grid { margin-bottom: 1rem; }
+.solver-phase-breakdown { margin: 0; color: #86a3ac; font-family: ui-monospace, monospace; font-size: .78rem; line-height: 1.7; }
 .wcs-card { margin-top: 1.5rem; }
 .wcs-grid { display: grid; grid-template-columns: repeat(2, 1fr); margin-top: 1.5rem; border-top: 1px solid #25414a; }
 .wcs-grid > div { padding: 1rem 0; border-bottom: 1px solid #25414a; }

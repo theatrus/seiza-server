@@ -588,6 +588,7 @@ mod tests {
             }],
             catalog_version: None,
             capture_time: None,
+            statistics: None,
         }
     }
 

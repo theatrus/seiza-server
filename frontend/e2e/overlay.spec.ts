@@ -107,6 +107,16 @@ const solution = {
   objects: baseObjects.filter((object) => object.kind !== 'field-star' && object.near_capture !== false),
   catalog_version: 'objects:test;stars:test',
   capture_time: '2026-07-13T04:05:06Z',
+  statistics: {
+    total_ms: 1234.5,
+    decode_ms: 84.2,
+    detection_ms: 126.7,
+    search_ms: 1018.4,
+    mode: 'blind',
+    detected_stars: 264,
+    catalog_stars: 18_432_991,
+    blind_index_patterns: 4_215_772,
+  },
 }
 
 async function mockSolution(page: Page, inputAvailable = true) {
@@ -133,6 +143,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       created_at: '2026-07-13T04:00:00Z',
       started_at: '2026-07-13T04:00:01Z',
       completed_at: '2026-07-13T04:00:03Z',
+      solve_time_ms: 2000,
       original_filename: 'M31.fits',
       input_expires_at: '2026-07-14T04:00:00Z',
       input_available: inputAvailable,
@@ -146,6 +157,19 @@ async function mockSolution(page: Page, inputAvailable = true) {
     }),
   }))
 }
+
+test('reports total solve time and durable solver nerd stats', async ({ page }) => {
+  await mockSolution(page)
+  await page.goto(`/solutions/${publicId}`)
+
+  await expect(page.getByText('Total solve time').locator('..')).toContainText('2.00 s')
+  const nerdStats = page.locator('.solver-stats')
+  await expect(nerdStats).toContainText('1.23 s')
+  await expect(nerdStats).toContainText('Blind solve')
+  await expect(nerdStats).toContainText('264')
+  await expect(nerdStats).toContainText('42/264 · 15.9%')
+  await expect(nerdStats).toContainText('4,215,772 blind-index patterns')
+})
 
 test('keeps the interactive SVG aligned and filters annotation layers', async ({ page }) => {
   await mockSolution(page)

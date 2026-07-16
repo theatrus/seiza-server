@@ -357,6 +357,7 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
     <section className="job-meta">
       <div><span>File</span><strong>{job.original_filename}</strong></div>
       <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
+      <div><span>Total solve time</span><strong>{job.solve_time_ms != null ? formatDurationMs(job.solve_time_ms) : job.status === 'solving' ? 'Timing…' : job.status === 'queued' ? 'Waiting for worker' : 'Not recorded'}</strong></div>
       <div><span>Image retention</span><strong>{job.validation_donation ? 'contributed for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
     </section>
     {!pending.has(job.status) && <ValidationDonationPanel job={job} onDonated={onDonated} />}
@@ -396,10 +397,34 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
         <Metric label="Pixel scale" value={`${solution.pixel_scale_arcsec_per_pixel.toFixed(5)}″/px`} />
         <Metric label="Fit quality" value={`${solution.matched_stars} stars · ${solution.rms_arcsec.toFixed(4)}″ RMS`} />
       </section>
+      {solution.statistics && <SolverStatistics job={job} />}
       <WcsDetails job={job} />
       <ValidationDonationReminder job={job} />
     </>}
   </>
+}
+
+function SolverStatistics({ job }: { job: Job }) {
+  const solution = job.solution!
+  const stats = solution.statistics!
+  const matchYield = stats.detected_stars > 0
+    ? `${solution.matched_stars}/${stats.detected_stars} · ${(solution.matched_stars / stats.detected_stars * 100).toFixed(1)}%`
+    : 'No detections'
+  const indexDetail = stats.blind_index_patterns != null
+    ? ` · ${stats.blind_index_patterns.toLocaleString()} blind-index patterns`
+    : ''
+  return <section className="solver-stats">
+    <div className="section-heading"><div><p className="eyebrow">SOLVER TELEMETRY</p><h2>Nerd stats</h2></div></div>
+    <div className="metric-grid">
+      <Metric label="Solver pipeline" value={formatDurationMs(stats.total_ms)} />
+      <Metric label="Strategy" value={stats.mode === 'blind' ? 'Blind solve' : 'Hinted solve'} />
+      <Metric label="Detected stars" value={stats.detected_stars.toLocaleString()} />
+      <Metric label="Match yield" value={matchYield} />
+    </div>
+    <p className="solver-phase-breakdown">
+      Decode {formatDurationMs(stats.decode_ms)} · detect {formatDurationMs(stats.detection_ms)} · search and fit {formatDurationMs(stats.search_ms)} · {solution.image_width.toLocaleString()}×{solution.image_height.toLocaleString()} px · {stats.catalog_stars.toLocaleString()} catalog stars{indexDetail}
+    </p>
+  </section>
 }
 
 function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job: Job) => void }) {
@@ -640,6 +665,13 @@ function WcsDetails({ job }: { job: Job }) {
 
 function format(value: number) { return value.toFixed(10) }
 function formatScientific(value: number) { return value.toExponential(12) }
+function formatDurationMs(value: number) {
+  if (value < 1) return `${value.toFixed(2)} ms`
+  if (value < 1_000) return `${value.toFixed(value < 10 ? 2 : 1)} ms`
+  if (value < 60_000) return `${(value / 1_000).toFixed(value < 10_000 ? 2 : 1)} s`
+  const minutes = Math.floor(value / 60_000)
+  return `${minutes}m ${((value % 60_000) / 1_000).toFixed(1)}s`
+}
 function Metric({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><strong>{value}</strong></div> }
 function DataPair({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div> }
 
