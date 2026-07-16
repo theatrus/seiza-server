@@ -405,8 +405,10 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
             <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} />
           </div>
         </div>
-        <div className="overlay-actions overlay-actions-below"><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
-        <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
+        <div className="overlay-footer">
+          <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
+          <div className="overlay-actions overlay-actions-below"><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
+        </div>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
       <JobMeta job={job} />
       <section className="metric-grid">
