@@ -61,9 +61,9 @@ form { display: grid; gap: 1.4rem; }
 .upload-progress { display: grid; gap: .45rem; color: #8fa9b1; font-size: .78rem; font-weight: 700; }
 .upload-progress progress { width: 100%; height: .55rem; accent-color: #75d7e2; }
 label { display: grid; gap: .48rem; color: #bed0d5; font-size: .84rem; font-weight: 750; }
-input, textarea { width: 100%; padding: .78rem; border: 1px solid #3b5963; border-radius: 4px; color: #f7fbfc; background: #08161c; font: inherit; }
+input, select, textarea { width: 100%; padding: .78rem; border: 1px solid #3b5963; border-radius: 4px; color: #f7fbfc; background: #08161c; font: inherit; }
 textarea { resize: vertical; line-height: 1.5; }
-input:focus, textarea:focus { outline: 2px solid #6dd6e2; outline-offset: 2px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid #6dd6e2; outline-offset: 2px; }
 .file-input { padding: 1.1rem; border: 1px dashed #587983; border-radius: 5px; }
 .file-submit-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 1rem; }
 .solve-submit-button { align-self: stretch; min-width: 142px; height: 100%; gap: .7rem; white-space: nowrap; font-size: 1rem; }
@@ -78,6 +78,8 @@ legend { padding: 0 .4rem; color: #f0f6f7; font-weight: 800; }
 .optional-badge { margin-left: .35rem; }
 .no-upload-badge { flex: 0 0 auto; padding: .4rem .65rem; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .9rem; }
+.capture-time-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .7fr); gap: .9rem; }
+.capture-time-note { margin-bottom: 0; }
 details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } details .form-grid { padding-top: 1rem; }
 .error, .expired-note { margin-top: 1rem; padding: .9rem 1rem; border: 1px solid #763644; border-radius: 5px; color: #ffd6db; background: #471c28; }
 .solution-page { padding-top: 5rem; }
@@ -298,7 +300,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .overlay-footer .overlay-actions { justify-content: flex-end; }
   .hero { min-height: auto; }
   .hero-mark { display: none; }
-  .form-grid, .wcs-grid, .footprint-wrap ol, .object-list ul, .metric-grid { grid-template-columns: 1fr; }
+  .form-grid, .capture-time-grid, .wcs-grid, .footprint-wrap ol, .object-list ul, .metric-grid { grid-template-columns: 1fr; }
   .file-submit-row { grid-template-columns: 1fr; }
   .file-submit-row .button { width: 100%; }
   .api-docs-page { padding-top: 3.5rem; }
