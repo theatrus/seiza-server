@@ -413,6 +413,56 @@ is durable and supports multiple local processes, but it is not a multi-host
 database. The adapter boundary is documented in
 [docs/architecture.md](docs/architecture.md).
 
+## Migrating the job store
+
+An AWS-enabled build includes a bidirectional `migrate-store` command. It
+preserves job IDs and state, solve options and results, active lease metadata,
+retry attempts, weighted-LRU client timestamps, the ID counter, and durable
+outbox delivery state. Validation-donation metadata, including the invalid-solve
+classification, is included when present, and DynamoDB object-key index items
+are rebuilt from the authoritative job records.
+
+Stop every API server and worker that can access either store before taking the
+snapshot, and keep them stopped until the destination has been verified and the
+deployment is switched over. Back up the SQL database or enable DynamoDB
+point-in-time recovery before the cutover. The command migrates the job store
+only; it does not copy local/S3 image objects, so the new deployment must retain
+access to the upload and validation object keys referenced by the jobs.
+
+Check a SQLx-to-DynamoDB migration without copying records:
+
+```bash
+cargo run --release --features aws -- migrate-store \
+  --from sqlx \
+  --to dynamodb \
+  --sqlx-url 'postgres://seiza@db/seiza' \
+  --dynamodb-table seiza-jobs \
+  --dry-run
+```
+
+Remove `--dry-run` to perform the migration. The destination must be empty by
+default, and the command re-reads it after the copy and requires an exact
+logical match before reporting success. If a DynamoDB write was interrupted,
+rerun with `--resume`; every existing destination record must be an exact
+subset of the current source snapshot or the command refuses to write.
+The reader also fails closed on unknown SQL columns or DynamoDB attributes so
+a newer persisted schema cannot be silently truncated by an older binary.
+
+Reverse the direction to move back to SQLite or PostgreSQL:
+
+```bash
+cargo run --release --features aws -- migrate-store \
+  --from dynamodb \
+  --to sqlx \
+  --dynamodb-table seiza-jobs \
+  --sqlx-url 'sqlite:///var/lib/seiza-server/jobs.sqlite3?mode=rwc'
+```
+
+`SEIZA_SQL_DATABASE_URL` and `SEIZA_DYNAMODB_TABLE` can replace the matching
+flags. DynamoDB connections use the standard AWS SDK credential, region, and
+endpoint environment variables. A dry run connects to both stores and may
+initialize the SQLx schema, but it does not copy queue records.
+
 ## Verification
 
 ```bash
