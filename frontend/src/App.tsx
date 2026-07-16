@@ -385,14 +385,27 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
         {minorBodiesNeedCaptureTime && <p className="overlay-warning">Solar system positions require an acquisition time for this image. The minor-body catalog is installed.</p>}
         {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
         {exportError && <p className="overlay-warning">PNG rendering failed: {exportError}</p>}
-        <div className={`image-stage${expanded ? ' expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label={expanded ? 'Expanded astronomical image overlay' : undefined}>
+        <div
+          className={`image-stage${expanded ? ' expanded' : ''}`}
+          role={expanded ? 'dialog' : 'button'}
+          tabIndex={expanded ? undefined : 0}
+          aria-modal={expanded || undefined}
+          aria-label={expanded ? 'Expanded astronomical image overlay' : 'Expand image'}
+          onClick={() => { if (!expanded) setExpanded(true) }}
+          onKeyDown={(event) => {
+            if (!expanded && (event.key === 'Enter' || event.key === ' ')) {
+              event.preventDefault()
+              setExpanded(true)
+            }
+          }}
+        >
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
             <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} />
           </div>
         </div>
-        <div className="overlay-actions overlay-actions-below"><button className="button small secondary" type="button" onClick={() => setExpanded(true)}>Expand image</button><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
+        <div className="overlay-actions overlay-actions-below"><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
         <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
       <JobMeta job={job} />

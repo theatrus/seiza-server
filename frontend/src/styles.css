@@ -164,6 +164,9 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .catalog-menu label:hover { color: #f2f8f9; background: #12313b; }
 .catalog-menu input { width: 1rem; height: 1rem; margin: 0; accent-color: #83dce5; }
 .image-stage { display: grid; place-items: center; margin-top: 1.5rem; min-height: 280px; overflow: hidden; border: 1px solid #1d353d; background: #03070a; }
+.image-stage:not(.expanded) { cursor: zoom-in; transition: border-color 140ms ease, box-shadow 140ms ease; }
+.image-stage:not(.expanded):hover { border-color: #45646e; box-shadow: 0 0 0 1px rgb(117 215 226 / 12%); }
+.image-stage:not(.expanded):focus-visible { outline: 2px solid #e9c46a; outline-offset: 3px; }
 .image-stage img { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 .image-stage.expanded { position: fixed; inset: 0; z-index: 100; margin: 0; padding: 2rem; border: 0; min-height: 100vh; background: rgb(1 5 8 / 97%); }
 .image-stage.expanded img { max-height: calc(100vh - 4rem); }
