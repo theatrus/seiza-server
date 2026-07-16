@@ -1,4 +1,6 @@
-use crate::models::{SolutionResponse, SolveMode, SolveOptions, SolveStatistics, WcsResponse};
+use crate::models::{
+    SolutionResponse, SolveHintSource, SolveMode, SolveOptions, SolveStatistics, WcsResponse,
+};
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use image::ImageFormat;
@@ -10,11 +12,14 @@ use seiza::{
     solve::{SolveHint, solve},
 };
 use std::{
+    collections::BTreeMap,
     io::Cursor,
     path::Path,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
+
+pub const FITS_HEADER_PROBE_BYTES: usize = 80 * 1_440;
 
 #[derive(Clone)]
 pub struct SolverEngine {
@@ -236,6 +241,8 @@ fn solve_bytes(
         detected_stars: detected.len(),
         catalog_stars: catalog.star_count(),
         blind_index_patterns,
+        hint_source: options.hint_source,
+        hint_keywords: options.hint_keywords.clone(),
     };
     tracing::info!(
         mode = ?statistics.mode,
@@ -280,31 +287,194 @@ pub fn capture_time_from_bytes(
     bytes: &[u8],
     filename: &str,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
+    fits_headers(bytes, filename)?
+        .get("DATE-OBS")?
+        .as_str()
+        .and_then(parse_capture_time)
+}
+
+/// Promote acquisition metadata from a FITS header into solve options. User
+/// supplied hints always win; automatic hinted solving is enabled only when a
+/// complete center and pixel scale can be derived safely.
+pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename: &str) {
+    options.hint_source = None;
+    options.hint_keywords.clear();
+
+    let has_complete_explicit_hint = options.center_ra_deg.is_some()
+        && options.center_dec_deg.is_some()
+        && options.scale_arcsec_per_pixel.is_some();
+    if has_complete_explicit_hint {
+        options.hint_source = Some(SolveHintSource::Explicit);
+    }
+
+    let Some(headers) = fits_headers(bytes, filename) else {
+        return;
+    };
+    if options.capture_time.is_none() {
+        options.capture_time = headers
+            .get("DATE-OBS")
+            .and_then(seiza_fits::HeaderValue::as_str)
+            .and_then(parse_capture_time);
+    }
+    if has_complete_explicit_hint
+        || options.center_ra_deg.is_some()
+        || options.center_dec_deg.is_some()
+        || options.scale_arcsec_per_pixel.is_some()
+    {
+        return;
+    }
+
+    let Some((ra, dec, center_keywords)) = fits_center(&headers) else {
+        return;
+    };
+    let Some((scale, scale_keywords)) = fits_pixel_scale(&headers) else {
+        return;
+    };
+    if !(ra.is_finite()
+        && (0.0..=360.0).contains(&ra)
+        && dec.is_finite()
+        && (-90.0..=90.0).contains(&dec)
+        && scale.is_finite()
+        && scale > 0.0)
+    {
+        return;
+    }
+
+    options.center_ra_deg = Some(ra);
+    options.center_dec_deg = Some(dec);
+    options.scale_arcsec_per_pixel = Some(scale);
+    options.hint_source = Some(SolveHintSource::FitsHeader);
+    options.hint_keywords = center_keywords
+        .into_iter()
+        .chain(scale_keywords)
+        .map(str::to_owned)
+        .collect();
+}
+
+fn fits_headers(bytes: &[u8], filename: &str) -> Option<BTreeMap<String, seiza_fits::HeaderValue>> {
     let looks_like_fits = filename.rsplit('.').next().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("fits")
             || extension.eq_ignore_ascii_case("fit")
             || extension.eq_ignore_ascii_case("fts")
     }) || bytes.starts_with(b"SIMPLE  ");
-    if !looks_like_fits {
+    if !looks_like_fits || !bytes.starts_with(b"SIMPLE  ") {
         return None;
     }
-    for card in bytes.chunks_exact(80).take(1440) {
+
+    let mut headers = BTreeMap::new();
+    for card in bytes.chunks_exact(80).take(FITS_HEADER_PROBE_BYTES / 80) {
         let keyword = std::str::from_utf8(&card[..8]).ok()?.trim();
         if keyword == "END" {
-            break;
+            return Some(headers);
         }
-        if keyword != "DATE-OBS" {
+        if keyword.is_empty() || &card[8..10] != b"= " {
             continue;
         }
-        let raw = std::str::from_utf8(&card[10..]).ok()?.trim();
-        let value = if let Some(quoted) = raw.strip_prefix('\'') {
-            quoted.split('\'').next()?.trim()
-        } else {
-            raw.split('/').next()?.trim()
-        };
-        return parse_capture_time(value);
+        let raw = std::str::from_utf8(&card[10..]).ok()?;
+        headers.insert(keyword.to_owned(), seiza_fits::parse_header_value(raw));
     }
     None
+}
+
+fn fits_center(
+    headers: &BTreeMap<String, seiza_fits::HeaderValue>,
+) -> Option<(f64, f64, Vec<&'static str>)> {
+    for (ra_key, dec_key) in [("CRVAL1", "CRVAL2"), ("RA", "DEC"), ("OBJCTRA", "OBJCTDEC")] {
+        let Some(ra) = headers
+            .get(ra_key)
+            .and_then(|value| parse_fits_angle(value, true))
+        else {
+            continue;
+        };
+        let Some(dec) = headers
+            .get(dec_key)
+            .and_then(|value| parse_fits_angle(value, false))
+        else {
+            continue;
+        };
+        if (0.0..=360.0).contains(&ra) && (-90.0..=90.0).contains(&dec) {
+            return Some((ra, dec, vec![ra_key, dec_key]));
+        }
+    }
+    None
+}
+
+fn parse_fits_angle(value: &seiza_fits::HeaderValue, right_ascension: bool) -> Option<f64> {
+    if let Some(value) = value.as_f64() {
+        return Some(value);
+    }
+    let raw = value.as_str()?.trim();
+    let normalized = raw.replace([':', 'h', 'H', 'd', 'D', 'm', 'M', 's', 'S'], " ");
+    let components = normalized
+        .split_whitespace()
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if !(2..=3).contains(&components.len()) {
+        return None;
+    }
+    let sign = if raw.starts_with('-') { -1.0 } else { 1.0 };
+    let mut angle = components[0].abs()
+        + components[1].abs() / 60.0
+        + components.get(2).copied().unwrap_or(0.0).abs() / 3_600.0;
+    if right_ascension {
+        angle *= 15.0;
+    } else {
+        angle *= sign;
+    }
+    Some(angle)
+}
+
+fn fits_pixel_scale(
+    headers: &BTreeMap<String, seiza_fits::HeaderValue>,
+) -> Option<(f64, Vec<&'static str>)> {
+    for key in ["PIXSCALE", "SECPIX"] {
+        if let Some(scale) = headers.get(key).and_then(seiza_fits::HeaderValue::as_f64)
+            && scale.is_finite()
+            && scale > 0.0
+        {
+            return Some((scale, vec![key]));
+        }
+    }
+
+    if let (Some(cd11), Some(cd22)) = (header_f64(headers, "CD1_1"), header_f64(headers, "CD2_2")) {
+        let cd12 = header_f64(headers, "CD1_2").unwrap_or(0.0);
+        let cd21 = header_f64(headers, "CD2_1").unwrap_or(0.0);
+        let scale = (cd11 * cd22 - cd12 * cd21).abs().sqrt() * 3_600.0;
+        if scale.is_finite() && scale > 0.0 {
+            let keywords = ["CD1_1", "CD1_2", "CD2_1", "CD2_2"]
+                .into_iter()
+                .filter(|key| headers.contains_key(*key))
+                .collect();
+            return Some((scale, keywords));
+        }
+    }
+
+    if let (Some(cdelt1), Some(cdelt2)) =
+        (header_f64(headers, "CDELT1"), header_f64(headers, "CDELT2"))
+    {
+        let scale = (cdelt1 * cdelt2).abs().sqrt() * 3_600.0;
+        if scale.is_finite() && scale > 0.0 {
+            return Some((scale, vec!["CDELT1", "CDELT2"]));
+        }
+    }
+
+    let pixel_size_um = header_f64(headers, "XPIXSZ")?;
+    let focal_length_mm = header_f64(headers, "FOCALLEN")?;
+    let binning = header_f64(headers, "XBINNING").unwrap_or(1.0);
+    let scale = 206.264_806_247 * pixel_size_um * binning / focal_length_mm;
+    if scale.is_finite() && scale > 0.0 {
+        let mut keywords = vec!["XPIXSZ", "FOCALLEN"];
+        if headers.contains_key("XBINNING") {
+            keywords.push("XBINNING");
+        }
+        return Some((scale, keywords));
+    }
+    None
+}
+
+fn header_f64(headers: &BTreeMap<String, seiza_fits::HeaderValue>, key: &str) -> Option<f64> {
+    headers.get(key)?.as_f64()
 }
 
 pub fn parse_capture_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -346,19 +516,21 @@ fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
 mod tests {
     use super::*;
 
+    fn fits_header(cards: &[&str]) -> Vec<u8> {
+        let mut header = vec![b' '; 2_880];
+        for (index, card) in cards.iter().enumerate() {
+            header[index * 80..index * 80 + card.len()].copy_from_slice(card.as_bytes());
+        }
+        header
+    }
+
     #[test]
     fn reads_capture_time_from_fits_date_obs() {
-        let mut header = vec![b' '; 2_880];
-        for (index, card) in [
+        let header = fits_header(&[
             "SIMPLE  =                    T",
             "DATE-OBS= '2026-07-13T04:05:06.250Z'",
             "END",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            header[index * 80..index * 80 + card.len()].copy_from_slice(card.as_bytes());
-        }
+        ]);
         assert_eq!(
             capture_time_from_bytes(&header, "capture.fits")
                 .unwrap()
@@ -375,5 +547,117 @@ mod tests {
                 .to_rfc3339(),
             "2026-07-13T04:05:06+00:00"
         );
+    }
+
+    #[test]
+    fn promotes_fits_coordinates_and_pixel_scale_to_a_hinted_solve() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "RA      =          202.4695750",
+            "DEC     =           47.1952580",
+            "PIXSCALE=                 1.35",
+            "DATE-OBS= '2026-07-13T04:05:06Z'",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert_eq!(options.center_ra_deg, Some(202.469575));
+        assert_eq!(options.center_dec_deg, Some(47.195258));
+        assert_eq!(options.scale_arcsec_per_pixel, Some(1.35));
+        assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+        assert_eq!(options.hint_keywords, ["RA", "DEC", "PIXSCALE"]);
+        assert!(options.capture_time.is_some());
+    }
+
+    #[test]
+    fn derives_fits_hint_from_wcs_matrix() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "CRVAL1  =                 10.5",
+            "CRVAL2  =                -20.5",
+            "CD1_1   =  -0.000277777777778",
+            "CD1_2   =                  0.0",
+            "CD2_1   =                  0.0",
+            "CD2_2   =   0.000277777777778",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "solved.fit");
+
+        assert_eq!(options.center_ra_deg, Some(10.5));
+        assert_eq!(options.center_dec_deg, Some(-20.5));
+        assert!((options.scale_arcsec_per_pixel.unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+        assert_eq!(
+            options.hint_keywords,
+            ["CRVAL1", "CRVAL2", "CD1_1", "CD1_2", "CD2_1", "CD2_2"]
+        );
+    }
+
+    #[test]
+    fn parses_sexagesimal_object_coordinates_and_camera_geometry() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "OBJCTRA = '13:29:52.7'",
+            "OBJCTDEC= '-47:11:43'",
+            "XPIXSZ  =                 3.76",
+            "FOCALLEN=                400.0",
+            "XBINNING=                    2",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fts");
+
+        assert!((options.center_ra_deg.unwrap() - 202.46958333333333).abs() < 1e-9);
+        assert!((options.center_dec_deg.unwrap() + 47.195277777777775).abs() < 1e-9);
+        assert!((options.scale_arcsec_per_pixel.unwrap() - 3.8777783574436).abs() < 1e-9);
+        assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+    }
+
+    #[test]
+    fn explicit_hints_win_over_fits_metadata() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "RA      =                 10.0",
+            "DEC     =                 20.0",
+            "PIXSCALE=                  1.0",
+            "END",
+        ]);
+        let mut options = SolveOptions {
+            center_ra_deg: Some(30.0),
+            center_dec_deg: Some(40.0),
+            scale_arcsec_per_pixel: Some(2.0),
+            ..SolveOptions::default()
+        };
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert_eq!(options.center_ra_deg, Some(30.0));
+        assert_eq!(options.center_dec_deg, Some(40.0));
+        assert_eq!(options.scale_arcsec_per_pixel, Some(2.0));
+        assert_eq!(options.hint_source, Some(SolveHintSource::Explicit));
+        assert!(options.hint_keywords.is_empty());
+    }
+
+    #[test]
+    fn fits_position_without_scale_remains_a_blind_solve() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "RA      =                 10.0",
+            "DEC     =                 20.0",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert_eq!(options.center_ra_deg, None);
+        assert_eq!(options.center_dec_deg, None);
+        assert_eq!(options.scale_arcsec_per_pixel, None);
+        assert_eq!(options.hint_source, None);
     }
 }

@@ -64,7 +64,7 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
   return <>
     <fieldset className="optional-fields">
       <legend>Position and scale <span className="optional-badge">Optional</span></legend>
-      <p><strong>No coordinates are required.</strong> Leave RA, Dec, and pixel scale blank for a blind solve. If you add a position hint, provide all three; hints can make narrow fields faster and more reliable.</p>
+      <p><strong>No coordinates are required.</strong> Compatible FITS headers supply position and scale automatically; other images solve blind. If you add a position hint, provide all three values.</p>
       <div className="form-grid">
         <label>RA (degrees)<input name="center_ra_deg" type="number" min="0" max="360" step="any" placeholder="Optional · 210.802" defaultValue={defaults?.center_ra_deg ?? ''} /></label>
         <label>Dec (degrees)<input name="center_dec_deg" type="number" min="-90" max="90" step="any" placeholder="Optional · 54.349" defaultValue={defaults?.center_dec_deg ?? ''} /></label>
@@ -413,11 +413,16 @@ function SolverStatistics({ job }: { job: Job }) {
   const indexDetail = stats.blind_index_patterns != null
     ? ` · ${stats.blind_index_patterns.toLocaleString()} blind-index patterns`
     : ''
+  const strategy = stats.mode === 'blind'
+    ? 'Blind solve'
+    : stats.hint_source === 'fits_header'
+      ? `Hinted · FITS ${stats.hint_keywords?.join(', ') ?? 'headers'}`
+      : 'Hinted solve'
   return <section className="solver-stats">
     <div className="section-heading"><div><p className="eyebrow">SOLVER TELEMETRY</p><h2>Nerd stats</h2></div></div>
     <div className="metric-grid">
       <Metric label="Solver pipeline" value={formatDurationMs(stats.total_ms)} />
-      <Metric label="Strategy" value={stats.mode === 'blind' ? 'Blind solve' : 'Hinted solve'} />
+      <Metric label="Strategy" value={strategy} />
       <Metric label="Detected stars" value={stats.detected_stars.toLocaleString()} />
       <Metric label="Match yield" value={matchYield} />
     </div>

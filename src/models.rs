@@ -22,6 +22,13 @@ pub enum JobStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SolveHintSource {
+    Explicit,
+    FitsHeader,
+}
+
 impl JobStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -62,6 +69,13 @@ pub struct SolveOptions {
     /// Acquisition time used to scope transients and propagate minor bodies.
     /// FITS uploads populate this automatically from DATE-OBS when omitted.
     pub capture_time: Option<DateTime<Utc>>,
+    /// Server-resolved provenance for the position and scale hint. Incoming
+    /// values are ignored and replaced while the upload is prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint_source: Option<SolveHintSource>,
+    /// FITS keywords used to derive an automatic hint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hint_keywords: Vec<String>,
 }
 
 impl Default for SolveOptions {
@@ -78,6 +92,8 @@ impl Default for SolveOptions {
             ignore_border: 0,
             max_stars: 500,
             capture_time: None,
+            hint_source: None,
+            hint_keywords: Vec::new(),
         }
     }
 }
@@ -207,6 +223,10 @@ pub struct SolveStatistics {
     pub catalog_stars: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blind_index_patterns: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint_source: Option<SolveHintSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hint_keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

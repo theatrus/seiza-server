@@ -143,7 +143,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="solve-options" eyebrow="SOLVER INPUT" title="Blind by default, hinted when you know the field.">
-          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. Leave all three absent for blind solving.</p>
+          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS uploads use compatible position and scale headers automatically; other images use blind solving.</p>
           <div className="option-table">
             <OptionRow name="center_ra_deg / center_dec_deg" defaultValue="unset">ICRS center hint in degrees; RA 0–360 and Dec −90–90.</OptionRow>
             <OptionRow name="radius_deg" defaultValue="2.0">Position-hint search radius.</OptionRow>
@@ -159,7 +159,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="resumable-uploads" eyebrow="TUS 1.0" title="Upload large images in resumable parallel parts.">
-          <p>The web application uses the same durable TUS flow. It uploads three parts concurrently for files of at least 10 MiB using the TUS concatenation extension; smaller files use a single stream. Session manifests and chunks survive API restarts in local or S3 storage.</p>
+          <p>The web application uses the same durable TUS flow. It uploads up to three chunk-aligned parts concurrently for files of at least 10 MiB using the TUS concatenation extension; smaller files use a single stream. Session manifests and chunks survive API restarts. Local storage streams final assembly to disk, while S3 uses native multipart copies without routing the completed image back through the API process.</p>
           <div className="endpoint-list compact">
             <Endpoint method="OPTIONS" path="/api/v1/uploads">Discover TUS version, extensions, and maximum upload size.</Endpoint>
             <Endpoint method="POST" path="/api/v1/uploads">Create a normal session, a <code>partial</code> upload, or a <code>final</code> concatenation.</Endpoint>

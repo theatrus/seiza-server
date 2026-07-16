@@ -138,8 +138,10 @@ restart does not discard progress. Once the declared length is complete, the
 server assembles the object, creates exactly one queued solve, and exposes the
 job from `GET /api/v1/uploads/:upload_id/result`. Any standard TUS client can
 use the same creation, `HEAD`, `PATCH`, concatenation, and termination flow.
-The browser sends three partial uploads concurrently for files of at least
-10 MiB, then creates one final concatenated upload and solve job.
+The browser sends up to three partial uploads concurrently for files of at
+least 10 MiB, aligning partial boundaries to 5 MiB chunk boundaries so S3 can
+complete the final object with native multipart copies. Local storage streams
+those chunks into the final file without buffering the whole image in memory.
 
 The original multipart endpoint remains available for small scripts and
 Astrometry-compatible clients. Submit a blind solve with `options` as a JSON
@@ -249,9 +251,12 @@ the v3 catalog supplies them. Legacy v1 object catalogs remain readable, but
 their identity/provenance fields are empty and their name lookups require an
 in-memory scan.
 
-FITS `DATE-OBS` is captured automatically. Non-FITS API clients can provide a
-RFC 3339 `capture_time` in the options JSON. Capture time scopes transient
-events and propagates comets and asteroids to the acquisition instant.
+FITS `DATE-OBS` is captured automatically. When explicit solve hints are
+absent, the server also promotes a complete FITS position and pixel scale from
+common `RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, WCS, `PIXSCALE`, or camera-geometry
+headers. Non-FITS API clients can provide a RFC 3339 `capture_time` in the
+options JSON. Capture time scopes transient events and propagates comets and
+asteroids to the acquisition instant.
 
 A position hint avoids the whole-sky path:
 

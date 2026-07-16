@@ -71,6 +71,8 @@ export interface Solution {
     detected_stars: number
     catalog_stars: number
     blind_index_patterns?: number
+    hint_source?: 'explicit' | 'fits_header'
+    hint_keywords?: string[]
   }
 }
 
@@ -172,11 +174,13 @@ export async function submitSolve(
     type: file.type,
     data: file,
   })
-  if (file.size >= parallelUploadThresholdBytes) {
+  const parallelUploadBoundaries = alignedParallelUploadBoundaries(file.size)
+  if (parallelUploadBoundaries.length > 1) {
     uppy.setFileState(fileId, {
       tus: {
         ...uppy.getFile(fileId)?.tus,
-        parallelUploads: parallelUploadParts,
+        parallelUploads: parallelUploadBoundaries.length,
+        parallelUploadBoundaries,
       },
     })
   }
@@ -200,6 +204,26 @@ export async function submitSolve(
     }
     uppy.destroy()
   }
+}
+
+function alignedParallelUploadBoundaries(size: number): Array<{ start: number, end: number }> {
+  if (size < parallelUploadThresholdBytes) return []
+  const chunkCount = Math.ceil(size / uploadChunkBytes)
+  const partCount = Math.min(parallelUploadParts, chunkCount)
+  const boundaries: Array<{ start: number, end: number }> = []
+  let firstChunk = 0
+  for (let part = 0; part < partCount; part += 1) {
+    const remainingChunks = chunkCount - firstChunk
+    const remainingParts = partCount - part
+    const chunksInPart = Math.ceil(remainingChunks / remainingParts)
+    const nextChunk = firstChunk + chunksInPart
+    boundaries.push({
+      start: firstChunk * uploadChunkBytes,
+      end: Math.min(size, nextChunk * uploadChunkBytes),
+    })
+    firstChunk = nextChunk
+  }
+  return boundaries
 }
 
 function solveOptionsFingerprint(options: SolveOptions): string {
