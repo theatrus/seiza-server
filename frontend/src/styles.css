@@ -146,6 +146,7 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 @keyframes spin { to { transform: rotate(360deg); } }
 .overlay-card { margin-top: 1.5rem; }
 .overlay-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .6rem; }
+.overlay-actions-below { margin-top: .8rem; }
 .section-heading h2 { margin-bottom: .4rem; font-size: clamp(1.7rem, 3vw, 2.5rem); }
 .overlay-control-row { display: flex; align-items: stretch; gap: .65rem; max-width: 100%; margin-top: 1.2rem; }
 .overlay-options { display: flex; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; width: auto; margin: 0; padding: 3px; overflow-x: auto; border: 1px solid #31515b; border-radius: 5px; background: #071319; scrollbar-width: thin; }

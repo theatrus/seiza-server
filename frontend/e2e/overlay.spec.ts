@@ -200,8 +200,11 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
 
   const imageBox = await page.locator('.sky-frame img').boundingBox()
   const overlayBox = await page.locator('.sky-overlay').boundingBox()
+  const overlayActionsBox = await page.locator('.overlay-actions-below').boundingBox()
   expect(imageBox).not.toBeNull()
   expect(overlayBox).not.toBeNull()
+  expect(overlayActionsBox).not.toBeNull()
+  expect(overlayActionsBox!.y).toBeGreaterThanOrEqual(imageBox!.y + imageBox!.height)
   expect(Math.abs(imageBox!.x - overlayBox!.x)).toBeLessThan(1)
   expect(Math.abs(imageBox!.y - overlayBox!.y)).toBeLessThan(1)
   expect(Math.abs(imageBox!.width - overlayBox!.width)).toBeLessThan(1)
