@@ -172,14 +172,14 @@ Set the optional `solve_is_invalid` flag for an incorrect WCS, a false
 positive, or a failed solve that should have succeeded. It defaults to
 `false` and is stored with the validation record.
 
-The submitter attests that they own the image or have authority to grant the
-license. The affirmative grant is recorded as
-`seiza-validation-image-grant-v1`. The contributor retains ownership while
-granting Seiza and its maintainers a non-exclusive, worldwide, perpetual,
-irrevocable, royalty-free, sublicensable
-license to store, use, reproduce, modify, create derivative works from,
-publish, distribute, and otherwise use the image for any purpose, including
-validation, training, testing, research, documentation, and improving Seiza.
+The submitter attests that they own the image or have authority to contribute
+it. The affirmative permission is recorded as
+`seiza-validation-image-grant-v2`. The contributor retains ownership and gives
+Seiza and its maintainers permission to retain, copy, and process the image as
+part of Seiza's validation set, only to test, validate, debug, and improve the
+Seiza plate solver, including training and evaluating solver-related models.
+Seiza will not make the validation set public, sell the image, or use it for
+unrelated purposes.
 
 While the input is retained, a failed job can be requeued at the same opaque
 URL with new solve hints and no second upload:

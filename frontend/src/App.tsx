@@ -442,7 +442,7 @@ function ValidationDonationPanel({ job, onDonated }: { job: Job; onDonated: (job
           </label>
           <label className="license-consent">
             <input name="validation_license_agreed" type="checkbox" required />
-            <span><strong>I attest that I own this image or have authority to grant this license.</strong><small>I keep ownership and grant Seiza and its maintainers a non-exclusive, worldwide, perpetual, irrevocable, royalty-free, sublicensable license to store, use, reproduce, modify, create derivative works from, publish, distribute, and otherwise use this image for any purpose, including validation, training, testing, research, documentation, and improving Seiza.</small></span>
+            <span><strong>I attest that I own this image or have authority to contribute it.</strong><small>I keep ownership and give Seiza and its maintainers permission to retain, copy, and process this image as part of Seiza’s validation set, only to test, validate, debug, and improve the Seiza plate solver, including training and evaluating solver-related models. Seiza will not make the validation set public, sell the image, or use it for unrelated purposes.</small></span>
           </label>
           <button className="button" disabled={submitting}>{submitting ? 'Contributing image…' : 'Contribute image for validation'}</button>
           {error && <p className="error" role="alert">{error}</p>}
