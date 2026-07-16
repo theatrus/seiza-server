@@ -1,4 +1,7 @@
-use crate::config::{Config, QueueDelivery};
+use crate::{
+    config::{Config, QueueDelivery},
+    models::JobId,
+};
 #[cfg(not(feature = "aws"))]
 use anyhow::bail;
 use anyhow::{Context, Result};
@@ -11,7 +14,7 @@ use std::sync::Arc;
 #[async_trait]
 pub trait QueueTransport: Send + Sync {
     fn uses_external_queue(&self) -> bool;
-    async fn publish(&self, job_id: u64) -> Result<()>;
+    async fn publish(&self, job_id: JobId) -> Result<()>;
 }
 
 pub struct LocalTransport;
@@ -22,7 +25,7 @@ impl QueueTransport for LocalTransport {
         false
     }
 
-    async fn publish(&self, _job_id: u64) -> Result<()> {
+    async fn publish(&self, _job_id: JobId) -> Result<()> {
         Ok(())
     }
 }
@@ -53,7 +56,7 @@ impl QueueTransport for SqsTransport {
         true
     }
 
-    async fn publish(&self, job_id: u64) -> Result<()> {
+    async fn publish(&self, job_id: JobId) -> Result<()> {
         self.client
             .send_message()
             .queue_url(&self.queue_url)

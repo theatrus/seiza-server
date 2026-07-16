@@ -1,7 +1,8 @@
 use crate::{
     config::{Config, JobBackend},
     models::{
-        JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions, ValidationDonation,
+        AstrometryId, JobId, JobLease, JobRecord, JobStatus, LegacyJobId, SolutionResponse,
+        SolveOptions, ValidationDonation, astrometry_id_for_job,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -18,6 +19,8 @@ use uuid::Uuid;
 pub trait JobRepository: Send + Sync {
     async fn enqueue(&self, job: JobRecord) -> Result<JobRecord>;
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>>;
+    async fn get_by_legacy_id(&self, legacy_id: LegacyJobId) -> Result<Option<JobRecord>>;
+    async fn get_by_astrometry_id(&self, astrometry_id: AstrometryId) -> Result<Option<JobRecord>>;
     async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>>;
     async fn queue_depth(&self) -> Result<usize>;
     async fn claim(
@@ -62,6 +65,24 @@ pub(crate) enum SqlDialect {
 
 impl SqlxJobRepository {
     pub async fn connect(database_url: &str) -> Result<Self> {
+        let repository = Self::open(database_url, true).await?;
+        repository.migrate().await?;
+        Ok(repository)
+    }
+
+    #[cfg(feature = "aws")]
+    pub(crate) async fn connect_for_migration(
+        database_url: &str,
+        initialize_uuid_schema: bool,
+    ) -> Result<Self> {
+        let repository = Self::open(database_url, initialize_uuid_schema).await?;
+        if initialize_uuid_schema {
+            repository.migrate().await?;
+        }
+        Ok(repository)
+    }
+
+    async fn open(database_url: &str, configure_sqlite_wal: bool) -> Result<Self> {
         sqlx::any::install_default_drivers();
         let dialect = if database_url.starts_with("sqlite:") {
             SqlDialect::Sqlite
@@ -75,15 +96,13 @@ impl SqlxJobRepository {
             .connect(database_url)
             .await
             .with_context(|| format!("connecting SQLx job repository at {database_url}"))?;
-        if dialect == SqlDialect::Sqlite {
+        if dialect == SqlDialect::Sqlite && configure_sqlite_wal {
             sqlx::query("PRAGMA journal_mode = WAL")
                 .execute(&pool)
                 .await
                 .context("enabling SQLite WAL mode")?;
         }
-        let repository = Self { pool, dialect };
-        repository.migrate().await?;
-        Ok(repository)
+        Ok(Self { pool, dialect })
     }
 
     #[cfg(feature = "aws")]
@@ -97,29 +116,137 @@ impl SqlxJobRepository {
     }
 
     async fn migrate(&self) -> Result<()> {
-        // BIGINT works in both PostgreSQL and SQLite. Job IDs come from an
-        // explicit counter rather than engine-specific AUTOINCREMENT syntax.
         for statement in [
-            "CREATE TABLE IF NOT EXISTS queue_counters (name TEXT PRIMARY KEY, value BIGINT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS jobs (id BIGINT PRIMARY KEY, owner TEXT NOT NULL, queue_weight DOUBLE PRECISION NOT NULL, object_key TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, solution_json TEXT, error TEXT, lease_token TEXT, lease_expires_at TEXT, attempts BIGINT NOT NULL DEFAULT 0)",
-            "CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at)",
-            "CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status, lease_expires_at)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS jobs_object_key_idx ON jobs(object_key)",
-            "CREATE TABLE IF NOT EXISTS validation_donations (job_id BIGINT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, solve_is_invalid BIGINT NOT NULL DEFAULT 0, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS jobs_v2 (id TEXT PRIMARY KEY, astrometry_id BIGINT NOT NULL UNIQUE, legacy_id BIGINT UNIQUE, owner TEXT NOT NULL, queue_weight DOUBLE PRECISION NOT NULL, object_key TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, solution_json TEXT, error TEXT, lease_token TEXT, lease_expires_at TEXT, attempts BIGINT NOT NULL DEFAULT 0)",
+            "CREATE INDEX IF NOT EXISTS jobs_v2_status_created_idx ON jobs_v2(status, created_at)",
+            "CREATE INDEX IF NOT EXISTS jobs_v2_lease_idx ON jobs_v2(status, lease_expires_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS jobs_v2_object_key_idx ON jobs_v2(object_key)",
+            "CREATE TABLE IF NOT EXISTS validation_donations_v2 (job_id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, solve_is_invalid BIGINT NOT NULL DEFAULT 0, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS client_service (owner TEXT PRIMARY KEY, last_served_at TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS queue_outbox (job_id BIGINT PRIMARY KEY, delivered_at TEXT)",
-            "INSERT INTO queue_counters (name, value) VALUES ('jobs', 0) ON CONFLICT(name) DO NOTHING",
+            "CREATE TABLE IF NOT EXISTS queue_outbox_v2 (job_id TEXT PRIMARY KEY, delivered_at TEXT)",
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
+        }
+        self.migrate_legacy_jobs().await?;
+        Ok(())
+    }
+
+    async fn table_exists(&self, table: &str) -> Result<bool> {
+        let present = match self.dialect {
+            SqlDialect::Sqlite => sqlx::query(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = $1",
+            )
+            .bind(table)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get::<i64, _>("count")?
+                > 0,
+            SqlDialect::Postgres => sqlx::query(
+                "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1",
+            )
+            .bind(table)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get::<i64, _>("count")?
+                > 0,
+        };
+        Ok(present)
+    }
+
+    async fn migrate_legacy_jobs(&self) -> Result<()> {
+        if !self.table_exists("jobs").await? {
+            return Ok(());
+        }
+
+        for row in sqlx::query("SELECT * FROM jobs")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let legacy_id = row.try_get::<i64, _>("id")?;
+            let object_key = row.try_get::<String, _>("object_key")?;
+            let job_id = job_id_from_object_key(&object_key).unwrap_or_else(Uuid::new_v4);
+            sqlx::query("INSERT INTO jobs_v2 (id, astrometry_id, legacy_id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at, started_at, completed_at, solution_json, error, lease_token, lease_expires_at, attempts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT(legacy_id) DO NOTHING")
+                .bind(job_id.to_string())
+                .bind(legacy_id)
+                .bind(legacy_id)
+                .bind(row.try_get::<String, _>("owner")?)
+                .bind(row.try_get::<f64, _>("queue_weight")?)
+                .bind(object_key)
+                .bind(row.try_get::<String, _>("original_filename")?)
+                .bind(row.try_get::<Option<String>, _>("content_type")?)
+                .bind(row.try_get::<String, _>("options_json")?)
+                .bind(row.try_get::<String, _>("status")?)
+                .bind(row.try_get::<String, _>("created_at")?)
+                .bind(row.try_get::<Option<String>, _>("started_at")?)
+                .bind(row.try_get::<Option<String>, _>("completed_at")?)
+                .bind(row.try_get::<Option<String>, _>("solution_json")?)
+                .bind(row.try_get::<Option<String>, _>("error")?)
+                .bind(row.try_get::<Option<String>, _>("lease_token")?)
+                .bind(row.try_get::<Option<String>, _>("lease_expires_at")?)
+                .bind(row.try_get::<i64, _>("attempts")?)
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if self.table_exists("validation_donations").await? {
+            for row in sqlx::query("SELECT * FROM validation_donations")
+                .fetch_all(&self.pool)
+                .await?
+            {
+                let legacy_id = row.try_get::<i64, _>("job_id")?;
+                let Some(job_id) = self.uuid_for_legacy_id(legacy_id).await? else {
+                    continue;
+                };
+                sqlx::query("INSERT INTO validation_donations_v2 (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(job_id) DO NOTHING")
+                    .bind(job_id.to_string())
+                    .bind(row.try_get::<String, _>("object_key")?)
+                    .bind(row.try_get::<Option<String>, _>("comment")?)
+                    .bind(row.try_get::<i64, _>("solve_is_invalid")?)
+                    .bind(row.try_get::<String, _>("license_version")?)
+                    .bind(row.try_get::<String, _>("donated_at")?)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+
+        if self.table_exists("queue_outbox").await? {
+            for row in sqlx::query("SELECT queue_outbox.job_id, queue_outbox.delivered_at, jobs.status FROM queue_outbox JOIN jobs ON jobs.id = queue_outbox.job_id")
+                .fetch_all(&self.pool)
+                .await?
+            {
+                let legacy_id = row.try_get::<i64, _>("job_id")?;
+                let Some(job_id) = self.uuid_for_legacy_id(legacy_id).await? else {
+                    continue;
+                };
+                let delivered_at = if row.try_get::<String, _>("status")? == "queued" {
+                    None
+                } else {
+                    row.try_get::<Option<String>, _>("delivered_at")?
+                };
+                sqlx::query("INSERT INTO queue_outbox_v2 (job_id, delivered_at) VALUES ($1, $2) ON CONFLICT(job_id) DO NOTHING")
+                    .bind(job_id.to_string())
+                    .bind(delivered_at)
+                    .execute(&self.pool)
+                    .await?;
+            }
         }
         Ok(())
     }
 
+    async fn uuid_for_legacy_id(&self, legacy_id: i64) -> Result<Option<JobId>> {
+        sqlx::query("SELECT id FROM jobs_v2 WHERE legacy_id = $1")
+            .bind(legacy_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| decode_job_id(&row.try_get::<String, _>("id")?))
+            .transpose()
+    }
+
     async fn validation_donation(&self, job_id: JobId) -> Result<Option<ValidationDonation>> {
         sqlx::query(
-            "SELECT object_key, comment, solve_is_invalid, license_version, donated_at FROM validation_donations WHERE job_id = $1",
+            "SELECT object_key, comment, solve_is_invalid, license_version, donated_at FROM validation_donations_v2 WHERE job_id = $1",
         )
-        .bind(as_i64(job_id)?)
+        .bind(job_id.to_string())
         .fetch_optional(&self.pool)
         .await?
         .map(|row| {
@@ -140,19 +267,19 @@ impl SqlxJobRepository {
         now: DateTime<Utc>,
     ) -> Result<()> {
         let expired =
-            sqlx::query("SELECT id FROM jobs WHERE status = $1 AND lease_expires_at <= $2")
+            sqlx::query("SELECT id FROM jobs_v2 WHERE status = $1 AND lease_expires_at <= $2")
                 .bind("solving")
                 .bind(encode_time(now))
                 .fetch_all(&mut *connection)
                 .await?;
         for row in expired {
-            let id = job_id(row.try_get::<i64, _>("id")?)?;
-            sqlx::query("UPDATE jobs SET status = 'queued', lease_token = NULL, lease_expires_at = NULL WHERE id = $1 AND status = 'solving'")
-                .bind(as_i64(id)?)
+            let id = decode_job_id(&row.try_get::<String, _>("id")?)?;
+            sqlx::query("UPDATE jobs_v2 SET status = 'queued', lease_token = NULL, lease_expires_at = NULL WHERE id = $1 AND status = 'solving'")
+                .bind(id.to_string())
                 .execute(&mut *connection)
                 .await?;
-            sqlx::query("INSERT INTO queue_outbox (job_id, delivered_at) VALUES ($1, NULL) ON CONFLICT(job_id) DO UPDATE SET delivered_at = NULL")
-                .bind(as_i64(id)?)
+            sqlx::query("INSERT INTO queue_outbox_v2 (job_id, delivered_at) VALUES ($1, NULL) ON CONFLICT(job_id) DO UPDATE SET delivered_at = NULL")
+                .bind(id.to_string())
                 .execute(&mut *connection)
                 .await?;
         }
@@ -180,15 +307,15 @@ impl SqlxJobRepository {
         now: DateTime<Utc>,
     ) -> Result<Option<JobRecord>> {
         if let Some(job_id) = requested_job_id {
-            return sqlx::query("SELECT * FROM jobs WHERE id = $1 AND status = 'queued'")
-                .bind(as_i64(job_id)?)
+            return sqlx::query("SELECT * FROM jobs_v2 WHERE id = $1 AND status = 'queued'")
+                .bind(job_id.to_string())
                 .fetch_optional(&mut *connection)
                 .await?
                 .map(record_from_row)
                 .transpose();
         }
         let jobs =
-            sqlx::query("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC")
+            sqlx::query("SELECT * FROM jobs_v2 WHERE status = 'queued' ORDER BY created_at ASC")
                 .fetch_all(&mut *connection)
                 .await?;
         let mut best: Option<(f64, JobRecord)> = None;
@@ -216,15 +343,11 @@ impl SqlxJobRepository {
 impl JobRepository for SqlxJobRepository {
     async fn enqueue(&self, mut job: JobRecord) -> Result<JobRecord> {
         let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query(
-            "UPDATE queue_counters SET value = value + 1 WHERE name = 'jobs' RETURNING value",
-        )
-        .fetch_one(&mut *transaction)
-        .await?;
-        job.id = job_id(row.try_get::<i64, _>("value")?)?;
+        job.astrometry_id = astrometry_id_for_job(job.id);
         job.status = JobStatus::Queued;
-        let inserted = sqlx::query("INSERT INTO jobs (id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8) ON CONFLICT(object_key) DO NOTHING")
-            .bind(as_i64(job.id)?)
+        let inserted = sqlx::query("INSERT INTO jobs_v2 (id, astrometry_id, legacy_id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, 'queued', $9) ON CONFLICT(object_key) DO NOTHING")
+            .bind(job.id.to_string())
+            .bind(i64::try_from(job.astrometry_id).context("Astrometry ID exceeds SQL BIGINT range")?)
             .bind(&job.owner)
             .bind(job.queue_weight)
             .bind(&job.object_key)
@@ -241,8 +364,8 @@ impl JobRepository for SqlxJobRepository {
                 .await?
                 .context("idempotent SQL enqueue could not find the existing job");
         }
-        sqlx::query("INSERT INTO queue_outbox (job_id, delivered_at) VALUES ($1, NULL)")
-            .bind(as_i64(job.id)?)
+        sqlx::query("INSERT INTO queue_outbox_v2 (job_id, delivered_at) VALUES ($1, NULL)")
+            .bind(job.id.to_string())
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
@@ -250,8 +373,38 @@ impl JobRepository for SqlxJobRepository {
     }
 
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>> {
-        let mut job = sqlx::query("SELECT * FROM jobs WHERE id = $1")
-            .bind(as_i64(job_id)?)
+        let mut job = sqlx::query("SELECT * FROM jobs_v2 WHERE id = $1")
+            .bind(job_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .map(record_from_row)
+            .transpose()?;
+        if let Some(job) = &mut job {
+            job.validation_donation = self.validation_donation(job.id).await?;
+        }
+        Ok(job)
+    }
+
+    async fn get_by_legacy_id(&self, legacy_id: LegacyJobId) -> Result<Option<JobRecord>> {
+        let legacy_id =
+            i64::try_from(legacy_id).context("legacy job ID exceeds SQL BIGINT range")?;
+        let mut job = sqlx::query("SELECT * FROM jobs_v2 WHERE legacy_id = $1")
+            .bind(legacy_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(record_from_row)
+            .transpose()?;
+        if let Some(job) = &mut job {
+            job.validation_donation = self.validation_donation(job.id).await?;
+        }
+        Ok(job)
+    }
+
+    async fn get_by_astrometry_id(&self, astrometry_id: AstrometryId) -> Result<Option<JobRecord>> {
+        let astrometry_id =
+            i64::try_from(astrometry_id).context("Astrometry ID exceeds SQL BIGINT range")?;
+        let mut job = sqlx::query("SELECT * FROM jobs_v2 WHERE astrometry_id = $1")
+            .bind(astrometry_id)
             .fetch_optional(&self.pool)
             .await?
             .map(record_from_row)
@@ -263,7 +416,7 @@ impl JobRepository for SqlxJobRepository {
     }
 
     async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>> {
-        let mut job = sqlx::query("SELECT * FROM jobs WHERE object_key = $1")
+        let mut job = sqlx::query("SELECT * FROM jobs_v2 WHERE object_key = $1")
             .bind(object_key)
             .fetch_optional(&self.pool)
             .await?
@@ -276,7 +429,7 @@ impl JobRepository for SqlxJobRepository {
     }
 
     async fn queue_depth(&self) -> Result<usize> {
-        let row = sqlx::query("SELECT COUNT(*) AS count FROM jobs WHERE status = 'queued'")
+        let row = sqlx::query("SELECT COUNT(*) AS count FROM jobs_v2 WHERE status = 'queued'")
             .fetch_one(&self.pool)
             .await?;
         Ok(row.try_get::<i64, _>("count")? as usize)
@@ -314,11 +467,11 @@ impl JobRepository for SqlxJobRepository {
         };
         let lease_token = Uuid::now_v7().to_string();
         let lease_expires_at = now + Duration::seconds(lease_seconds.max(1) as i64);
-        let claimed = sqlx::query("UPDATE jobs SET status = 'solving', started_at = COALESCE(started_at, $1), lease_token = $2, lease_expires_at = $3, attempts = attempts + 1 WHERE id = $4 AND status = 'queued'")
+        let claimed = sqlx::query("UPDATE jobs_v2 SET status = 'solving', started_at = COALESCE(started_at, $1), lease_token = $2, lease_expires_at = $3, attempts = attempts + 1 WHERE id = $4 AND status = 'queued'")
             .bind(encode_time(now))
             .bind(&lease_token)
             .bind(encode_time(lease_expires_at))
-            .bind(as_i64(job.id)?)
+            .bind(job.id.to_string())
             .execute(&mut *transaction)
             .await?
             .rows_affected() == 1;
@@ -348,9 +501,9 @@ impl JobRepository for SqlxJobRepository {
         lease_seconds: u64,
     ) -> Result<bool> {
         let now = Utc::now();
-        let result = sqlx::query("UPDATE jobs SET lease_expires_at = $1 WHERE id = $2 AND status = 'solving' AND lease_token = $3 AND lease_expires_at > $4")
+        let result = sqlx::query("UPDATE jobs_v2 SET lease_expires_at = $1 WHERE id = $2 AND status = 'solving' AND lease_token = $3 AND lease_expires_at > $4")
             .bind(encode_time(now + Duration::seconds(lease_seconds.max(1) as i64)))
-            .bind(as_i64(job_id)?)
+            .bind(job_id.to_string())
             .bind(lease_token)
             .bind(encode_time(now))
             .execute(&self.pool)
@@ -359,8 +512,8 @@ impl JobRepository for SqlxJobRepository {
     }
 
     async fn input_key(&self, job_id: JobId, lease_token: String) -> Result<Option<String>> {
-        sqlx::query("SELECT COALESCE((SELECT object_key FROM validation_donations WHERE job_id = jobs.id), object_key) AS object_key FROM jobs WHERE id = $1 AND status = 'solving' AND lease_token = $2 AND lease_expires_at > $3")
-            .bind(as_i64(job_id)?)
+        sqlx::query("SELECT COALESCE((SELECT object_key FROM validation_donations_v2 WHERE job_id = jobs_v2.id), object_key) AS object_key FROM jobs_v2 WHERE id = $1 AND status = 'solving' AND lease_token = $2 AND lease_expires_at > $3")
+            .bind(job_id.to_string())
             .bind(lease_token)
             .bind(encode_time(Utc::now()))
             .fetch_optional(&self.pool)
@@ -380,12 +533,12 @@ impl JobRepository for SqlxJobRepository {
             bail!("worker completion requires a solution or an error");
         }
         let now = Utc::now();
-        let result = sqlx::query("UPDATE jobs SET status = $1, completed_at = $2, solution_json = $3, error = $4, lease_token = NULL, lease_expires_at = NULL WHERE id = $5 AND status = 'solving' AND lease_token = $6 AND lease_expires_at > $7")
+        let result = sqlx::query("UPDATE jobs_v2 SET status = $1, completed_at = $2, solution_json = $3, error = $4, lease_token = NULL, lease_expires_at = NULL WHERE id = $5 AND status = 'solving' AND lease_token = $6 AND lease_expires_at > $7")
             .bind(if solution.is_some() { "succeeded" } else { "failed" })
             .bind(encode_time(now))
             .bind(solution.map(|value| serde_json::to_string(&value)).transpose()?)
             .bind(error)
-            .bind(as_i64(job_id)?)
+            .bind(job_id.to_string())
             .bind(lease_token)
             .bind(encode_time(now))
             .execute(&self.pool)
@@ -395,14 +548,14 @@ impl JobRepository for SqlxJobRepository {
 
     async fn retry_failed(&self, job_id: JobId, options: SolveOptions) -> Result<bool> {
         let mut transaction = self.pool.begin().await?;
-        let result = sqlx::query("UPDATE jobs SET options_json = $1, status = 'queued', started_at = NULL, completed_at = NULL, solution_json = NULL, error = NULL, lease_token = NULL, lease_expires_at = NULL WHERE id = $2 AND status = 'failed'")
+        let result = sqlx::query("UPDATE jobs_v2 SET options_json = $1, status = 'queued', started_at = NULL, completed_at = NULL, solution_json = NULL, error = NULL, lease_token = NULL, lease_expires_at = NULL WHERE id = $2 AND status = 'failed'")
             .bind(serde_json::to_string(&options)?)
-            .bind(as_i64(job_id)?)
+            .bind(job_id.to_string())
             .execute(&mut *transaction)
             .await?;
         if result.rows_affected() == 1 {
-            sqlx::query("INSERT INTO queue_outbox (job_id, delivered_at) VALUES ($1, NULL) ON CONFLICT(job_id) DO UPDATE SET delivered_at = NULL")
-                .bind(as_i64(job_id)?)
+            sqlx::query("INSERT INTO queue_outbox_v2 (job_id, delivered_at) VALUES ($1, NULL) ON CONFLICT(job_id) DO UPDATE SET delivered_at = NULL")
+                .bind(job_id.to_string())
                 .execute(&mut *transaction)
                 .await?;
             transaction.commit().await?;
@@ -416,12 +569,12 @@ impl JobRepository for SqlxJobRepository {
     async fn donate_validation(&self, job_id: JobId, donation: ValidationDonation) -> Result<bool> {
         let mut transaction = self.pool.begin().await?;
         let status_query = if self.dialect == SqlDialect::Postgres {
-            "SELECT status FROM jobs WHERE id = $1 FOR UPDATE"
+            "SELECT status FROM jobs_v2 WHERE id = $1 FOR UPDATE"
         } else {
-            "SELECT status FROM jobs WHERE id = $1"
+            "SELECT status FROM jobs_v2 WHERE id = $1"
         };
         let status = sqlx::query(status_query)
-            .bind(as_i64(job_id)?)
+            .bind(job_id.to_string())
             .fetch_optional(&mut *transaction)
             .await?
             .map(|row| row.try_get::<String, _>("status"))
@@ -430,8 +583,8 @@ impl JobRepository for SqlxJobRepository {
             transaction.rollback().await?;
             return Ok(false);
         }
-        sqlx::query("INSERT INTO validation_donations (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment, solve_is_invalid = EXCLUDED.solve_is_invalid")
-            .bind(as_i64(job_id)?)
+        sqlx::query("INSERT INTO validation_donations_v2 (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(job_id) DO UPDATE SET object_key = EXCLUDED.object_key, comment = EXCLUDED.comment, solve_is_invalid = EXCLUDED.solve_is_invalid")
+            .bind(job_id.to_string())
             .bind(donation.object_key)
             .bind(donation.comment)
             .bind(i64::from(donation.solve_is_invalid))
@@ -446,20 +599,20 @@ impl JobRepository for SqlxJobRepository {
     async fn pending_notifications(&self, limit: usize) -> Result<Vec<JobId>> {
         let mut transaction = self.pool.begin().await?;
         self.reclaim_expired(&mut transaction, Utc::now()).await?;
-        let rows = sqlx::query("SELECT job_id FROM queue_outbox WHERE delivered_at IS NULL ORDER BY job_id ASC LIMIT $1")
+        let rows = sqlx::query("SELECT queue_outbox_v2.job_id FROM queue_outbox_v2 JOIN jobs_v2 ON jobs_v2.id = queue_outbox_v2.job_id WHERE queue_outbox_v2.delivered_at IS NULL ORDER BY jobs_v2.created_at ASC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&mut *transaction)
             .await?;
         transaction.commit().await?;
         rows.into_iter()
-            .map(|row| job_id(row.try_get::<i64, _>("job_id")?))
+            .map(|row| decode_job_id(&row.try_get::<String, _>("job_id")?))
             .collect()
     }
 
     async fn mark_notification_delivered(&self, job_id: JobId) -> Result<()> {
-        sqlx::query("UPDATE queue_outbox SET delivered_at = $1 WHERE job_id = $2")
+        sqlx::query("UPDATE queue_outbox_v2 SET delivered_at = $1 WHERE job_id = $2")
             .bind(encode_time(Utc::now()))
-            .bind(as_i64(job_id)?)
+            .bind(job_id.to_string())
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -488,7 +641,9 @@ pub async fn job_repository(config: &Config) -> Result<Arc<dyn JobRepository>> {
 
 fn record_from_row(row: sqlx::any::AnyRow) -> Result<JobRecord> {
     Ok(JobRecord {
-        id: job_id(row.try_get::<i64, _>("id")?)?,
+        id: decode_job_id(&row.try_get::<String, _>("id")?)?,
+        astrometry_id: u64::try_from(row.try_get::<i64, _>("astrometry_id")?)
+            .context("SQL Astrometry ID is negative")?,
         owner: row.try_get("owner")?,
         queue_weight: row.try_get("queue_weight")?,
         object_key: row.try_get("object_key")?,
@@ -518,12 +673,21 @@ fn record_from_row(row: sqlx::any::AnyRow) -> Result<JobRecord> {
     })
 }
 
-fn as_i64(value: JobId) -> Result<i64> {
-    i64::try_from(value).context("job ID exceeds SQL BIGINT range")
+fn decode_job_id(value: &str) -> Result<JobId> {
+    Uuid::parse_str(value).context("SQL job ID is not a UUID")
 }
 
-fn job_id(value: i64) -> Result<JobId> {
-    u64::try_from(value).context("SQL job ID is negative")
+fn job_id_from_object_key(object_key: &str) -> Option<Uuid> {
+    let mut components = object_key.rsplit('/');
+    let filename = components.next()?;
+    let tagged_parent = components
+        .next()
+        .and_then(|value| value.strip_prefix("public-"))
+        .and_then(|value| Uuid::parse_str(value).ok());
+    tagged_parent.or_else(|| {
+        let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+        Uuid::parse_str(stem).ok()
+    })
 }
 
 fn encode_time(value: DateTime<Utc>) -> String {
@@ -548,11 +712,13 @@ mod tests {
     }
 
     fn job(owner: &str) -> JobRecord {
+        let id = Uuid::new_v4();
         JobRecord {
-            id: 0,
+            id,
+            astrometry_id: 0,
             owner: owner.into(),
             queue_weight: 1.0,
-            object_key: format!("test-{owner}-{}.fits", Uuid::now_v7()),
+            object_key: format!("public-{id}/{}.fits", Uuid::now_v7()),
             original_filename: "test.fits".into(),
             content_type: None,
             options: SolveOptions::default(),
@@ -618,5 +784,62 @@ mod tests {
             repository.get(queued.id).await.unwrap().unwrap().status,
             JobStatus::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn migrates_numeric_jobs_and_preserves_legacy_lookup() {
+        sqlx::any::install_default_drivers();
+        let path = std::env::temp_dir().join(format!(
+            "seiza-server-legacy-test-{}.sqlite3",
+            Uuid::now_v7()
+        ));
+        let database_url = format!("sqlite://{}?mode=rwc", path.display());
+        let pool = AnyPoolOptions::new().connect(&database_url).await.unwrap();
+        for statement in [
+            "CREATE TABLE jobs (id BIGINT PRIMARY KEY, owner TEXT NOT NULL, queue_weight DOUBLE PRECISION NOT NULL, object_key TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, solution_json TEXT, error TEXT, lease_token TEXT, lease_expires_at TEXT, attempts BIGINT NOT NULL DEFAULT 0)",
+            "CREATE TABLE validation_donations (job_id BIGINT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, solve_is_invalid BIGINT NOT NULL DEFAULT 0, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
+            "CREATE TABLE queue_outbox (job_id BIGINT PRIMARY KEY, delivered_at TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let job_id = Uuid::new_v4();
+        let storage_token = Uuid::now_v7();
+        let created_at = Utc::now();
+        sqlx::query("INSERT INTO jobs (id, owner, queue_weight, object_key, original_filename, content_type, options_json, status, created_at, attempts) VALUES (67, 'legacy', 1.0, $1, 'legacy.fits', NULL, $2, 'failed', $3, 1)")
+            .bind(format!("uploads/public-{job_id}/{storage_token}.fits"))
+            .bind(serde_json::to_string(&SolveOptions::default()).unwrap())
+            .bind(encode_time(created_at))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO validation_donations (job_id, object_key, comment, solve_is_invalid, license_version, donated_at) VALUES (67, 'validation/legacy.fits', 'legacy contribution', 1, 'validation-image-grant-v2', $1)")
+            .bind(encode_time(created_at))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO queue_outbox (job_id, delivered_at) VALUES (67, NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let repository = SqlxJobRepository::connect(&database_url).await.unwrap();
+        let migrated = repository.get_by_legacy_id(67).await.unwrap().unwrap();
+        assert_eq!(migrated.id, job_id);
+        assert_eq!(migrated.astrometry_id, 67);
+        assert!(migrated.validation_donation.is_some());
+        assert_eq!(
+            repository.get(job_id).await.unwrap().unwrap().id,
+            migrated.id
+        );
+        assert_eq!(
+            repository.pending_notifications(10).await.unwrap(),
+            vec![migrated.id]
+        );
+
+        let fresh = repository.enqueue(job("new-client")).await.unwrap();
+        assert_eq!(fresh.id.get_version_num(), 4);
+        assert_eq!(fresh.astrometry_id, astrometry_id_for_job(fresh.id));
+        assert_ne!(fresh.id, migrated.id);
     }
 }

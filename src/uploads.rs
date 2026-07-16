@@ -1,5 +1,5 @@
 use crate::{
-    models::{JobId, SolveOptions},
+    models::{JobId, LegacyJobId, SolveOptions},
     storage::ObjectStore,
 };
 use anyhow::Context;
@@ -35,6 +35,19 @@ struct UploadChunk {
     size: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PersistedJobId {
+    Uuid(JobId),
+    Legacy(LegacyJobId),
+}
+
+impl From<JobId> for PersistedJobId {
+    fn from(value: JobId) -> Self {
+        Self::Uuid(value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumableUpload {
     pub id: String,
@@ -47,7 +60,7 @@ pub struct ResumableUpload {
     pub owner: String,
     pub queue_weight: f64,
     pub created_at: DateTime<Utc>,
-    pub job_id: Option<JobId>,
+    pub job_id: Option<PersistedJobId>,
     #[serde(default)]
     pub partial: bool,
     #[serde(default)]
@@ -293,6 +306,23 @@ fn chunk_key(storage_prefix: &str, id: &str, offset: u64) -> String {
 mod tests {
     use super::*;
     use crate::storage::LocalObjectStore;
+
+    #[test]
+    fn accepts_legacy_numeric_job_ids_in_upload_manifests() {
+        let mut value = serde_json::to_value(ResumableUpload::new(
+            "legacy.fits".into(),
+            None,
+            0,
+            "uploads/legacy.fits".into(),
+            SolveOptions::default(),
+            "legacy".into(),
+            1.0,
+        ))
+        .unwrap();
+        value["job_id"] = serde_json::json!(67);
+        let upload: ResumableUpload = serde_json::from_value(value).unwrap();
+        assert!(matches!(upload.job_id, Some(PersistedJobId::Legacy(67))));
+    }
 
     #[tokio::test]
     async fn persists_and_resumes_chunks_by_offset() {

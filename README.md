@@ -40,10 +40,11 @@ disappears on a process restart.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
-- Every solve has a durable `/solutions/:public_id` web page. Its public ID
-  includes a random UUID and cannot be discovered by incrementing the internal
-  queue sequence. Uploaded originals and derived visual previews expire after
-  one day by default, while the job and its complete WCS and annotation
+- Every solve has a durable `/solutions/:public_id` web page. Its public ID is
+  the same random UUID used throughout the durable job and worker APIs; it
+  cannot be discovered by incrementing a queue sequence. Uploaded originals
+  and derived visual previews expire after one day by default, while the job
+  and its complete WCS and annotation
   metadata remain available. The React UI renders an interactive SVG layer over
   the retained image preview.
 
@@ -154,7 +155,7 @@ The response is `202 Accepted` with an opaque ID and artifact URLs. Poll it unti
 `status` becomes `succeeded` or `failed`:
 
 ```bash
-PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
+PUBLIC_ID='550e8400-e29b-41d4-a716-446655440000'
 curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID"
 ```
 
@@ -378,10 +379,17 @@ Run the API with `SEIZA_STORAGE_BACKEND=s3` and optionally
   [DynamoDB template](infra/aws/seiza-jobs-dynamodb.yaml) creates the required
   `pk` string partition key.
 
+Both backends use one UUIDv4 for each job: it is the durable primary key, public
+result locator, worker handle, object-path identity, and SQS message body.
+DynamoDB therefore needs no counter item. SQL deployments automatically copy
+records from the older numeric schema into the UUID schema, using each upload's
+existing public UUID, and retain mappings for legacy and Astrometry-compatible
+numeric URLs.
+
 SQS is a cross-process delivery adapter, not the authoritative scheduler: it
-carries only job IDs. The selected durable job store retains priority selection,
-leases, results, and the notification-outbox state, and retries failed SQS
-publishes after a restart.
+carries only the job UUID. The selected durable job store retains priority
+selection, leases, results, and the notification-outbox state, and retries
+failed SQS publishes after a restart.
 
 Run direct SQS workers with the same worker token and catalog:
 
@@ -416,11 +424,13 @@ database. The adapter boundary is documented in
 ## Migrating the job store
 
 An AWS-enabled build includes a bidirectional `migrate-store` command. It
-preserves job IDs and state, solve options and results, active lease metadata,
-retry attempts, weighted-LRU client timestamps, the ID counter, and durable
-outbox delivery state. Validation-donation metadata, including the invalid-solve
-classification, is included when present, and DynamoDB object-key index items
-are rebuilt from the authoritative job records.
+preserves job UUIDs and state, legacy and Astrometry.net numeric aliases, solve
+options and results, active lease metadata, retry attempts, weighted-LRU client
+timestamps, and durable outbox delivery state. Validation-contribution metadata,
+including the invalid-solve classification, is included when present, and
+DynamoDB object-key and compatibility-index items are rebuilt from the
+authoritative job records. Legacy numeric stores are converted by reusing the
+UUID already embedded in each upload's unguessable object key.
 
 Stop every API server and worker that can access either store before taking the
 snapshot, and keep them stopped until the destination has been verified and the

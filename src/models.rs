@@ -1,7 +1,17 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-pub type JobId = u64;
+pub type JobId = Uuid;
+pub type LegacyJobId = u64;
+pub type AstrometryId = u64;
+
+pub fn astrometry_id_for_job(job_id: JobId) -> AstrometryId {
+    let bytes = job_id.as_bytes();
+    let value = u64::from_be_bytes(bytes[8..16].try_into().expect("UUID tail is eight bytes"))
+        & i64::MAX as u64;
+    value.max(1)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -288,6 +298,7 @@ impl From<&ValidationDonation> for ValidationDonationResponse {
 #[derive(Debug, Clone)]
 pub struct JobRecord {
     pub id: JobId,
+    pub astrometry_id: AstrometryId,
     pub owner: String,
     pub queue_weight: f64,
     pub object_key: String,
@@ -313,8 +324,7 @@ impl JobRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResponse {
-    /// Opaque public locator. Its queue sequence is never sufficient without
-    /// the independent random token.
+    /// Opaque UUIDv4 capability used by public result and artifact URLs.
     pub id: String,
     pub status: JobStatus,
     pub created_at: DateTime<Utc>,

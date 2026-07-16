@@ -109,7 +109,7 @@ export default function App() {
     window.addEventListener('popstate', updatePath)
     return () => window.removeEventListener('popstate', updatePath)
   }, [])
-  const solutionMatch = path.match(/^\/solutions\/(\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
+  const solutionMatch = path.match(/^\/solutions\/((?:\d+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
 
   return <div className="site-shell">
     <SiteHeader />

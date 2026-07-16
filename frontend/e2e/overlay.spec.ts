@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
-const publicId = '42-550e8400-e29b-41d4-a716-446655440000'
+const publicId = '550e8400-e29b-41d4-a716-446655440000'
 const starFieldSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <radialGradient id="sky" cx="62%" cy="42%" r="70%">

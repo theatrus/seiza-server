@@ -1,7 +1,8 @@
 use crate::{
     config::Config,
     models::{
-        JobId, JobLease, JobRecord, JobStatus, SolutionResponse, SolveOptions, ValidationDonation,
+        AstrometryId, JobId, JobLease, JobRecord, JobStatus, LegacyJobId, SolutionResponse,
+        SolveOptions, ValidationDonation, astrometry_id_for_job,
     },
     repository::JobRepository,
 };
@@ -9,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{
     Client,
-    types::{AttributeValue, Put, ReturnValue, TransactWriteItem, Update},
+    types::{AttributeValue, Put, TransactWriteItem, Update},
 };
 use chrono::{DateTime, Duration, Utc};
 use std::{cmp::Ordering, collections::HashMap};
@@ -18,9 +19,9 @@ use uuid::Uuid;
 type Item = HashMap<String, AttributeValue>;
 
 /// DynamoDB's single-table implementation. The table only needs a string
-/// partition key named `pk`; `JOB#…`, `CLIENT#…`, and `COUNTER#jobs` records
-/// share it. Leases are changed conditionally, so duplicate queue messages and
-/// multiple worker processes are safe.
+/// partition key named `pk`; `JOB#…`, `ASTROMETRY#…`, and `CLIENT#…` records share
+/// it. Leases are changed conditionally, so duplicate queue messages and
+/// multiple worker processes are safe. UUID job IDs require no counter item.
 pub struct DynamoDbJobRepository {
     client: Client,
     table: String,
@@ -39,27 +40,6 @@ impl DynamoDbJobRepository {
             client: Client::new(&sdk_config),
             table,
         })
-    }
-
-    async fn next_id(&self) -> Result<JobId> {
-        let output = self
-            .client
-            .update_item()
-            .table_name(&self.table)
-            .key("pk", string("COUNTER#jobs"))
-            .update_expression("ADD #value :one")
-            .expression_attribute_names("#value", "value")
-            .expression_attribute_values(":one", number(1))
-            .return_values(ReturnValue::UpdatedNew)
-            .send()
-            .await
-            .context("incrementing DynamoDB job counter")?;
-        let value = output
-            .attributes()
-            .and_then(|attributes| attributes.get("value"))
-            .and_then(|value| value.as_n().ok())
-            .context("DynamoDB job counter did not return a numeric value")?;
-        value.parse().context("DynamoDB job counter is not a u64")
     }
 
     async fn client_last_served(&self, owner: &str) -> Result<Option<DateTime<Utc>>> {
@@ -208,7 +188,7 @@ impl DynamoDbJobRepository {
 #[async_trait]
 impl JobRepository for DynamoDbJobRepository {
     async fn enqueue(&self, mut job: JobRecord) -> Result<JobRecord> {
-        job.id = self.next_id().await?;
+        job.astrometry_id = astrometry_id_for_job(job.id);
         job.status = JobStatus::Queued;
         let job_put = Put::builder()
             .table_name(&self.table)
@@ -220,7 +200,16 @@ impl JobRepository for DynamoDbJobRepository {
             .set_item(Some(HashMap::from([
                 ("pk".into(), string(object_index_key(&job.object_key))),
                 ("entity".into(), string("object_index")),
-                ("job_id".into(), number(job.id)),
+                ("job_id".into(), string(job.id)),
+            ])))
+            .condition_expression("attribute_not_exists(pk)")
+            .build()?;
+        let astrometry_index_put = Put::builder()
+            .table_name(&self.table)
+            .set_item(Some(HashMap::from([
+                ("pk".into(), string(astrometry_index_key(job.astrometry_id))),
+                ("entity".into(), string("astrometry_index")),
+                ("job_id".into(), string(job.id)),
             ])))
             .condition_expression("attribute_not_exists(pk)")
             .build()?;
@@ -229,6 +218,11 @@ impl JobRepository for DynamoDbJobRepository {
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().put(job_put).build())
             .transact_items(TransactWriteItem::builder().put(index_put).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .put(astrometry_index_put)
+                    .build(),
+            )
             .send()
             .await;
         match result {
@@ -258,6 +252,44 @@ impl JobRepository for DynamoDbJobRepository {
             .transpose()
     }
 
+    async fn get_by_legacy_id(&self, legacy_id: LegacyJobId) -> Result<Option<JobRecord>> {
+        let index = self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("pk", string(legacy_index_key(legacy_id)))
+            .consistent_read(true)
+            .send()
+            .await?;
+        let Some(job_id) = index
+            .item()
+            .map(|item| required_uuid(item, "job_id"))
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+        self.get(job_id).await
+    }
+
+    async fn get_by_astrometry_id(&self, astrometry_id: AstrometryId) -> Result<Option<JobRecord>> {
+        let index = self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("pk", string(astrometry_index_key(astrometry_id)))
+            .consistent_read(true)
+            .send()
+            .await?;
+        let Some(job_id) = index
+            .item()
+            .map(|item| required_uuid(item, "job_id"))
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+        self.get(job_id).await
+    }
+
     async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>> {
         let index = self
             .client
@@ -269,7 +301,7 @@ impl JobRepository for DynamoDbJobRepository {
             .await?;
         if let Some(job_id) = index
             .item()
-            .map(|item| required_u64(item, "job_id"))
+            .map(|item| required_uuid(item, "job_id"))
             .transpose()?
         {
             return self
@@ -564,7 +596,7 @@ impl JobRepository for DynamoDbJobRepository {
         )
         .await?
         .into_iter()
-        .map(|item| required_u64(&item, "id"))
+        .map(|item| required_uuid(&item, "id"))
         .collect()
     }
 
@@ -585,7 +617,8 @@ fn job_item(job: &JobRecord) -> Result<Item> {
     let mut item = HashMap::from([
         ("pk".into(), string(job_key(job.id))),
         ("entity".into(), string("job")),
-        ("id".into(), number(job.id)),
+        ("id".into(), string(job.id)),
+        ("astrometry_id".into(), number(job.astrometry_id)),
         ("owner".into(), string(&job.owner)),
         ("queue_weight".into(), number(job.queue_weight)),
         ("object_key".into(), string(&job.object_key)),
@@ -606,7 +639,10 @@ fn job_item(job: &JobRecord) -> Result<Item> {
 
 fn record_from_item(item: &Item) -> Result<JobRecord> {
     Ok(JobRecord {
-        id: required_u64(item, "id")?,
+        id: required_uuid(item, "id")?,
+        astrometry_id: required_number(item, "astrometry_id")?
+            .parse()
+            .context("DynamoDB Astrometry ID is not a u64")?,
         owner: required_string(item, "owner")?,
         queue_weight: required_number(item, "queue_weight")?.parse()?,
         object_key: required_string(item, "object_key")?,
@@ -655,6 +691,12 @@ fn nullable_json(value: Option<SolutionResponse>) -> Result<AttributeValue> {
 fn job_key(job_id: JobId) -> String {
     format!("JOB#{job_id}")
 }
+fn legacy_index_key(legacy_id: LegacyJobId) -> String {
+    format!("LEGACY#{legacy_id}")
+}
+fn astrometry_index_key(astrometry_id: AstrometryId) -> String {
+    format!("ASTROMETRY#{astrometry_id}")
+}
 fn client_key(owner: &str) -> String {
     format!("CLIENT#{owner}")
 }
@@ -678,14 +720,13 @@ fn optional_bool(item: &Item, name: &str) -> Option<bool> {
 fn required_string(item: &Item, name: &str) -> Result<String> {
     optional_string(item, name).with_context(|| format!("DynamoDB item is missing string {name}"))
 }
+fn required_uuid(item: &Item, name: &str) -> Result<Uuid> {
+    Uuid::parse_str(&required_string(item, name)?)
+        .with_context(|| format!("DynamoDB item has invalid UUID {name}"))
+}
 fn required_number(item: &Item, name: &str) -> Result<String> {
     item.get(name)
         .and_then(|value| value.as_n().ok())
         .cloned()
         .with_context(|| format!("DynamoDB item is missing number {name}"))
-}
-fn required_u64(item: &Item, name: &str) -> Result<u64> {
-    required_number(item, name)?
-        .parse()
-        .with_context(|| format!("DynamoDB field {name} is not a u64"))
 }

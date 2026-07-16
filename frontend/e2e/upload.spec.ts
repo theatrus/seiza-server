@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { mockHealth } from './health'
 
-const publicId = '91-550e8400-e29b-41d4-a716-446655440000'
+const publicId = '550e8400-e29b-41d4-a716-446655440000'
 const uploadId = '8c741b20-3c42-4e75-95d4-fbc87cc68730'
 const chunkSize = 5 * 1024 * 1024
 
@@ -301,8 +301,8 @@ test('submitting the same completed file creates a new upload and solve job', as
     '22222222-2222-4222-8222-222222222222',
   ]
   const jobIds = [
-    '101-11111111-1111-4111-8111-111111111111',
-    '102-22222222-2222-4222-8222-222222222222',
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
   ]
   const sizes = new Map<string, number>()
   const offsets = new Map<string, number>()
@@ -371,7 +371,7 @@ test('changing settings does not resume an interrupted upload with stale metadat
     '33333333-3333-4333-8333-333333333333',
     '44444444-4444-4444-8444-444444444444',
   ]
-  const newJobId = '104-44444444-4444-4444-8444-444444444444'
+  const newJobId = '44444444-4444-4444-8444-444444444444'
   let creations = 0
 
   await page.route(/\/api\/v1\/uploads$/, async (route) => {

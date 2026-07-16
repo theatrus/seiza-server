@@ -4,7 +4,7 @@ const multipartExample = `curl -X POST https://seiza.fyi/api/v1/solves \\
   -F 'file=@M31.fits' \\
   -F 'options={"min_scale_arcsec_per_pixel":0.1,"max_scale_arcsec_per_pixel":20}'`
 
-const pollExample = `PUBLIC_ID='1-550e8400-e29b-41d4-a716-446655440000'
+const pollExample = `PUBLIC_ID='550e8400-e29b-41d4-a716-446655440000'
 curl "https://seiza.fyi/api/v1/solves/$PUBLIC_ID"`
 
 const retryExample = `# A failed solve can reuse its retained image with better hints.
@@ -103,7 +103,7 @@ export function ApiDocsPage() {
           <CodeExample label="Submit an image" code={multipartExample} />
           <CodeExample label="Poll the opaque result URL" code={pollExample} />
           <div className="api-note"><strong>Authentication modes</strong><span>Public installations need no credential. When stub-key mode is enabled, add <code>X-API-Key: …</code> or <code>Authorization: Bearer …</code> to submission and TUS requests.</span></div>
-          <div className="api-note"><strong>Result URLs are capabilities.</strong><span>The numeric queue sequence is not sufficient. Preserve the entire <code>id</code>, including its random UUID.</span></div>
+          <div className="api-note"><strong>Result URLs are capabilities.</strong><span>The returned <code>id</code> is an unguessable UUID. Preserve it to revisit the result; the same UUID identifies the durable job to workers and queue transports.</span></div>
           <div className="api-note"><strong>Your images remain yours.</strong><span>Ordinary uploads are stored only temporarily to provide the solve. Seiza does not claim ownership and does not retain the image long-term unless the user explicitly contributes it.</span></div>
         </DocSection>
 
@@ -191,7 +191,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="astrometry-api" eyebrow="COMPATIBILITY API" title="A practical Astrometry.net subset.">
-          <p>Existing clients can use the familiar <code>request-json</code> form field. Login returns an opaque stub session; upload accepts <code>ul</code> and <code>ev</code> scale types with <code>degwidth</code>, <code>arcminwidth</code>, or <code>arcsecperpix</code> units.</p>
+          <p>Existing clients can use the familiar <code>request-json</code> form field. Login returns an opaque stub session; upload returns a numeric compatibility ID while the native queue remains UUID-based. Upload accepts <code>ul</code> and <code>ev</code> scale types with <code>degwidth</code>, <code>arcminwidth</code>, or <code>arcsecperpix</code> units.</p>
           <div className="endpoint-list compact">
             <Endpoint method="POST" path="/api/login">Create an Astrometry-style session.</Endpoint>
             <Endpoint method="POST" path="/api/upload">Submit <code>request-json</code> plus one file.</Endpoint>
