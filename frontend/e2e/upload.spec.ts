@@ -108,6 +108,9 @@ test('places the solve action beside the file selector', async ({ page }) => {
   expect(buttonBox).not.toBeNull()
   expect(buttonBox!.x).toBeGreaterThan(fileBox!.x + fileBox!.width)
   expect(Math.abs((buttonBox!.y + buttonBox!.height) - (fileBox!.y + fileBox!.height))).toBeLessThan(2)
+  const viewport = page.viewportSize()
+  expect(viewport).not.toBeNull()
+  expect(fileBox!.y + fileBox!.height).toBeLessThan(viewport!.height)
 })
 
 test('uploads large images as parallel TUS parts and concatenates them', async ({ page, browserName }) => {
@@ -288,6 +291,7 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
 
   await expect(page).toHaveURL(`/solutions/${publicId}`)
   await expect(page.getByRole('heading', { name: 'Waiting in the queue.' })).toBeVisible()
+  await expect(page.locator('main.solution-page')).not.toHaveClass(/solution-page-settled/)
   expect(usedLegacyMultipart).toBe(false)
   expect(chunks).toEqual([
     { offset: 0, size: chunkSize },

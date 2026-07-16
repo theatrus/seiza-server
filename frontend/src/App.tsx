@@ -230,7 +230,7 @@ function SolvePage() {
     }
   }
 
-  return <main className="narrow-page">
+  return <main className="solve-page">
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Solve this image.</h1>
@@ -276,17 +276,26 @@ function SolutionPage({ jobId }: { jobId: string }) {
     return () => { active = false; if (timer) window.clearTimeout(timer) }
   }, [jobId, pollVersion])
 
-  return <main className="solution-page">
-    <header className="solution-heading">
-      <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
-      {job && <span className={`status ${job.status}`}>{job.status}</span>}
-    </header>
+  const isSettled = job != null && !pending.has(job.status)
+
+  return <main className={`solution-page${isSettled ? ' solution-page-settled' : ''}`}>
+    {isSettled && job ? <div className="settled-topbar">
+      <SolutionHeading job={job} />
+      <ValidationDonationPanel job={job} onDonated={setJob} />
+    </div> : <SolutionHeading job={job} />}
     {error && <p className="error" role="alert">{error}</p>}
     {job && <SolutionContent job={job} onRetried={(retried) => {
       setJob(retried)
       setPollVersion((version) => version + 1)
-    }} onDonated={setJob} />}
+    }} />}
   </main>
+}
+
+function SolutionHeading({ job }: { job: Job | null }) {
+  return <header className="solution-heading">
+    <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
+    {job && <span className={`status ${job.status}`}>{job.status}</span>}
+  </header>
 }
 
 function titleForStatus(status: Job['status']) {
@@ -296,7 +305,7 @@ function titleForStatus(status: Job['status']) {
   return 'The field is solved.'
 }
 
-function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (job: Job) => void; onDonated: (job: Job) => void }) {
+function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState(defaultOverlayLayers)
@@ -354,20 +363,14 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
     }
   }
   return <>
-    <section className="job-meta">
-      <div><span>File</span><strong>{job.original_filename}</strong></div>
-      <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
-      <div><span>Total solve time</span><strong>{job.solve_time_ms != null ? formatDurationMs(job.solve_time_ms) : job.status === 'solving' ? 'Timing…' : job.status === 'queued' ? 'Waiting for worker' : 'Not recorded'}</strong></div>
-      <div><span>Image retention</span><strong>{job.validation_donation ? 'contributed for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
-    </section>
-    {!pending.has(job.status) && <ValidationDonationPanel job={job} onDonated={onDonated} />}
+    {!solution && <JobMeta job={job} />}
     {job.error && <p className="error">{job.error}</p>}
     {job.status === 'failed' && job.input_available && <RetrySolveForm job={job} onRetried={onRetried} />}
     {job.status === 'failed' && !job.input_available && <p className="expired-note">This image can no longer be retried because its one-day upload retention period has ended. Upload it again to start a new solve.</p>}
     {pending.has(job.status) && <section className="panel waiting"><div className="orbit" aria-hidden="true"><span /></div><p>This durable page refreshes automatically. You can bookmark it or come back later.</p></section>}
     {solution && <>
       {job.preview_url ? <section className="overlay-card">
-        <div className="section-heading"><div><p className="eyebrow">SKY OVERLAY</p><h2>Explore the solved field</h2></div><div className="overlay-actions"><button className="button small secondary" type="button" onClick={() => setExpanded(true)}>Expand image</button><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div></div>
+        <div className="section-heading"><p className="eyebrow">SKY OVERLAY</p></div>
         <OverlayControls
           layers={layers}
           counts={overlayCounts}
@@ -382,15 +385,32 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
         {minorBodiesNeedCaptureTime && <p className="overlay-warning">Solar system positions require an acquisition time for this image. The minor-body catalog is installed.</p>}
         {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
         {exportError && <p className="overlay-warning">PNG rendering failed: {exportError}</p>}
-        <div className={`image-stage${expanded ? ' expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label={expanded ? 'Expanded astronomical image overlay' : undefined}>
+        <div
+          className={`image-stage${expanded ? ' expanded' : ''}`}
+          role={expanded ? 'dialog' : 'button'}
+          tabIndex={expanded ? undefined : 0}
+          aria-modal={expanded || undefined}
+          aria-label={expanded ? 'Expanded astronomical image overlay' : 'Expand image'}
+          onClick={() => { if (!expanded) setExpanded(true) }}
+          onKeyDown={(event) => {
+            if (!expanded && (event.key === 'Enter' || event.key === ' ')) {
+              event.preventDefault()
+              setExpanded(true)
+            }
+          }}
+        >
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
             <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} />
           </div>
         </div>
-        <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
+        <div className="overlay-footer">
+          <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
+          <div className="overlay-actions overlay-actions-below"><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
+        </div>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
+      <JobMeta job={job} />
       <section className="metric-grid">
         <Metric label="Center RA" value={`${solution.center_ra_deg.toFixed(8)}°`} />
         <Metric label="Center Dec" value={`${solution.center_dec_deg.toFixed(8)}°`} />
@@ -402,6 +422,15 @@ function SolutionContent({ job, onRetried, onDonated }: { job: Job; onRetried: (
       <ValidationDonationReminder job={job} />
     </>}
   </>
+}
+
+function JobMeta({ job }: { job: Job }) {
+  return <section className="job-meta">
+    <div><span>File</span><strong>{job.original_filename}</strong></div>
+    <div><span>Submitted</span><strong>{new Date(job.created_at).toLocaleString()}</strong></div>
+    <div><span>Total solve time</span><strong>{job.solve_time_ms != null ? formatDurationMs(job.solve_time_ms) : job.status === 'solving' ? 'Timing…' : job.status === 'queued' ? 'Waiting for worker' : 'Not recorded'}</strong></div>
+    <div><span>Image retention</span><strong>{job.validation_donation ? 'contributed for long-term validation' : job.input_available ? `until ${new Date(job.input_expires_at).toLocaleString()}` : 'expired and deleted'}</strong></div>
+  </section>
 }
 
 function SolverStatistics({ job }: { job: Job }) {
