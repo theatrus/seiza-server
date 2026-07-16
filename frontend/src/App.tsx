@@ -230,7 +230,7 @@ function SolvePage() {
     }
   }
 
-  return <main className="narrow-page">
+  return <main className="solve-page">
     <header className="page-heading">
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Solve this image.</h1>
@@ -276,7 +276,9 @@ function SolutionPage({ jobId }: { jobId: string }) {
     return () => { active = false; if (timer) window.clearTimeout(timer) }
   }, [jobId, pollVersion])
 
-  return <main className="solution-page">
+  const isSettled = job != null && !pending.has(job.status)
+
+  return <main className={`solution-page${isSettled ? ' solution-page-settled' : ''}`}>
     <header className="solution-heading">
       <div><p className="eyebrow">SOLUTION</p><h1>{job ? titleForStatus(job.status) : 'Loading solution…'}</h1></div>
       {job && <span className={`status ${job.status}`}>{job.status}</span>}

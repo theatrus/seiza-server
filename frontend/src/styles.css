@@ -47,8 +47,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .about-copy strong { color: #e4eef0; }
 .about-copy code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: #10252d; font-size: .9em; }
 .narrow-page { width: min(880px, calc(100% - 2rem)); }
+.solve-page { width: min(1040px, calc(100% - 2rem)); padding-top: 2.2rem; }
 .page-heading { max-width: 760px; margin-bottom: 2.4rem; }
+.solve-page .page-heading { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(380px, 1.2fr); gap: .6rem clamp(2.5rem, 6vw, 5rem); align-items: end; max-width: none; margin-bottom: 1.4rem; }
+.solve-page .page-heading .eyebrow { grid-column: 1; margin-bottom: .65rem; }
+.solve-page .page-heading h1 { grid-column: 1; margin-bottom: 0; }
+.solve-page .page-heading .intro { grid-column: 2; grid-row: 1 / span 2; margin-bottom: 0; font-size: 1rem; line-height: 1.6; }
+.solve-page .ownership-note { grid-column: 2; grid-row: 3; max-width: none; margin-top: 0; }
 .page-heading h1, .solution-heading h1, .empty-state h1 { font-size: clamp(2.7rem, 6vw, 5rem); }
+.solve-page .page-heading h1 { font-size: clamp(2.8rem, 5vw, 4.25rem); }
 .panel, .wcs-card, .overlay-card { padding: clamp(1.25rem, 4vw, 2.2rem); border: 1px solid #25414a; border-radius: 8px; background: rgb(9 27 34 / 86%); box-shadow: 0 2rem 5rem rgb(0 0 0 / 18%); }
 form { display: grid; gap: 1.4rem; }
 .upload-progress { display: grid; gap: .45rem; color: #8fa9b1; font-size: .78rem; font-weight: 700; }
@@ -77,6 +84,14 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .solution-heading, .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; }
 .solution-heading { align-items: center; margin-bottom: 2rem; }
 .solution-heading h1 { margin-bottom: 0; }
+.solution-page-settled { padding-top: 2.5rem; }
+.solution-page-settled .solution-heading { align-items: flex-end; margin-bottom: 1.2rem; }
+.solution-page-settled .solution-heading .eyebrow { margin-bottom: .55rem; }
+.solution-page-settled .solution-heading h1 { font-size: clamp(2.5rem, 4.5vw, 3.8rem); }
+.solution-page-settled .job-meta { margin-bottom: .8rem; }
+.solution-page-settled .job-meta div { padding-block: .75rem; }
+.solution-page-settled .donation-cta { margin-block: .75rem 1rem; }
+.solution-page-settled .overlay-card { margin-top: 1rem; }
 .status { flex: 0 0 auto; padding: .4rem .7rem; border-radius: 99px; color: #b9d4db; background: #263e47; font-size: .75rem; font-weight: 850; text-transform: capitalize; }
 .status.succeeded { color: #bdf4d7; background: #174834; }
 .status.failed { color: #ffd6db; background: #652536; }
@@ -244,15 +259,24 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .hero-mark img { width: 150px; }
   .kanji { font-size: 3.4rem; }
   .story-grid { padding: 4.5rem 0; }
+  .solve-page .page-heading { grid-template-columns: 1fr; gap: .8rem; align-items: start; }
+  .solve-page .page-heading .eyebrow, .solve-page .page-heading h1, .solve-page .page-heading .intro, .solve-page .ownership-note { grid-column: 1; grid-row: auto; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .job-meta { grid-template-columns: 1fr; }
   .job-meta div { border-right: 0; border-bottom: 1px solid #25414a; }
   .job-meta div:last-child { border-bottom: 0; }
+  .solution-page-settled .job-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .solution-page-settled .job-meta div { border-right: 1px solid #25414a; }
+  .solution-page-settled .job-meta div:nth-child(2n) { border-right: 0; }
+  .solution-page-settled .job-meta div:nth-last-child(-n + 2) { border-bottom: 0; }
 }
 @media (max-width: 600px) {
   .site-nav { min-height: 74px; }
   .nav-links > a:first-child { display: none; }
   main { padding-block: 3rem 5rem; }
+  .solve-page, .solution-page-settled { padding-top: 2rem; }
+  .solve-page .page-heading { margin-bottom: 1.25rem; }
+  .solve-page .page-heading h1, .solution-page-settled .solution-heading h1 { font-size: 2.65rem; }
   .hero { min-height: auto; }
   .hero-mark { display: none; }
   .form-grid, .wcs-grid, .footprint-wrap ol, .object-list ul, .metric-grid { grid-template-columns: 1fr; }
