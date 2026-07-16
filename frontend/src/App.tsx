@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
+import { FormEvent, ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
 import { Annotations, Health, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getHealth, getSolve, retrySolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
@@ -18,10 +18,17 @@ const defaultOverlayLayers: OverlayLayers = {
   grid: true,
 }
 
+type CaptureTimeZone = 'local' | 'utc'
+
 function numberOrUndefined(value: FormDataEntryValue | null): number | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function parseCaptureDateTime(value: string, timeZone: CaptureTimeZone) {
+  const parsed = new Date(timeZone === 'utc' ? `${value}Z` : value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
 }
 
 function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOptions {
@@ -45,22 +52,41 @@ function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOpt
   }
   const captureTime = form.get('capture_time')
   if (typeof captureTime === 'string' && captureTime !== '') {
-    const parsed = new Date(captureTime)
-    if (Number.isNaN(parsed.getTime())) throw new Error('Acquisition time is not a valid date and time.')
+    const captureTimeZone = form.get('capture_time_zone') ?? 'local'
+    if (captureTimeZone !== 'local' && captureTimeZone !== 'utc') {
+      throw new Error('Choose whether the acquisition time is local time or UTC.')
+    }
+    const parsed = parseCaptureDateTime(captureTime, captureTimeZone)
+    if (!parsed) throw new Error('Acquisition time is not a valid date and time.')
     options.capture_time = parsed.toISOString()
   }
   return options
 }
 
-function localDateTimeValue(value?: string | null) {
+function dateTimeInputValue(value: string | null | undefined, timeZone: CaptureTimeZone) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
+  if (timeZone === 'utc') return date.toISOString().slice(0, 19)
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
   return local.toISOString().slice(0, 19)
 }
 
+function localTimeZoneDescription(value: string) {
+  const date = parseCaptureDateTime(value, 'local') ?? new Date()
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const hours = String(Math.floor(Math.abs(offsetMinutes) / 60)).padStart(2, '0')
+  const minutes = String(Math.abs(offsetMinutes) % 60).padStart(2, '0')
+  const zoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'browser local time'
+  return `${zoneName} (UTC${sign}${hours}:${minutes})`
+}
+
 function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
+  const [captureTimeZone, setCaptureTimeZone] = useState<CaptureTimeZone>('local')
+  const [captureTime, setCaptureTime] = useState(() => dateTimeInputValue(defaults?.capture_time, 'local'))
+  const captureTimeHelpId = useId()
+
   return <>
     <fieldset className="optional-fields">
       <legend>Position and scale <span className="optional-badge">Optional</span></legend>
@@ -74,8 +100,22 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
     </fieldset>
     <fieldset className="optional-fields">
       <legend>Acquisition time <span className="optional-badge">Optional</span></legend>
-      <p><strong>FITS DATE-OBS is used automatically.</strong> For JPEG, PNG, and other images, add the capture time when known so Seiza can position comets and asteroids and scope transient events.</p>
-      <label>Acquisition time<input name="capture_time" type="datetime-local" step="1" defaultValue={localDateTimeValue(defaults?.capture_time)} /></label>
+      <p><strong>FITS DATE-OBS is used automatically; timestamps without an offset are treated as UTC.</strong> For other images, enter the time shown by the camera or acquisition software and identify whether that clock used local time or UTC. This lets Seiza position comets and asteroids and scope transient events.</p>
+      <div className="capture-time-grid">
+        <label>Date and time<input name="capture_time" type="datetime-local" step="1" value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
+        <label>Time zone<select name="capture_time_zone" value={captureTimeZone} aria-describedby={captureTimeHelpId} onChange={(event) => {
+          const nextTimeZone = event.target.value as CaptureTimeZone
+          const instant = captureTime ? parseCaptureDateTime(captureTime, captureTimeZone) : null
+          setCaptureTimeZone(nextTimeZone)
+          if (instant) setCaptureTime(dateTimeInputValue(instant.toISOString(), nextTimeZone))
+        }}>
+          <option value="local">Local · {localTimeZoneDescription(captureTime)}</option>
+          <option value="utc">UTC · Coordinated Universal Time</option>
+        </select></label>
+      </div>
+      <p id={captureTimeHelpId} className="capture-time-note">{captureTimeZone === 'local'
+        ? <><strong>Local entry:</strong> this browser will interpret the value as {localTimeZoneDescription(captureTime)}.</>
+        : <><strong>UTC entry:</strong> the value will be interpreted as Coordinated Universal Time, with no local offset.</>} Seiza submits and stores the instant in UTC.</p>
     </fieldset>
     <details>
       <summary>Advanced blind-solve limits <span className="optional-badge">Optional</span></summary>

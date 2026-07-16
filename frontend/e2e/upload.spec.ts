@@ -18,6 +18,28 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
+test.describe('acquisition time zone', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' })
+
+  test('labels local time explicitly and preserves the instant when switching to UTC', async ({ page }) => {
+    await page.goto('/solve')
+    const captureTime = page.getByLabel('Date and time')
+    const timeZone = page.getByLabel('Time zone')
+
+    await expect(timeZone).toHaveValue('local')
+    await captureTime.fill('2026-07-16T12:30')
+    await expect(timeZone.locator('option:checked')).toContainText('America/Los_Angeles (UTC-07:00)')
+    await expect(page.locator('.capture-time-note')).toContainText('this browser will interpret the value as America/Los_Angeles (UTC-07:00)')
+
+    await timeZone.selectOption('utc')
+    await expect(captureTime).toHaveValue('2026-07-16T19:30')
+    await expect(page.locator('.capture-time-note')).toContainText('Coordinated Universal Time, with no local offset')
+
+    await timeZone.selectOption('local')
+    await expect(captureTime).toHaveValue('2026-07-16T12:30')
+  })
+})
+
 async function instrumentUploadConcurrency(page: Page) {
   await page.addInitScript(() => {
     const state: UploadConcurrencyState = { active: 0, maxActive: 0 }
@@ -463,6 +485,7 @@ test('retries a failed retained image with hints without uploading it again', as
         center_dec_deg: 47.2,
         scale_arcsec_per_pixel: 1.35,
         radius_deg: 3,
+        capture_time: '2026-07-16T12:30:00.000Z',
         sigma: 5.5,
         ignore_border: 12,
         max_stars: 300,
@@ -493,6 +516,8 @@ test('retries a failed retained image with hints without uploading it again', as
   await page.getByLabel('Dec (degrees)').fill('47.2')
   await page.getByLabel('Pixel scale (arcsec/px)').fill('1.35')
   await page.getByLabel('Search radius (degrees)').fill('3')
+  await page.getByLabel('Time zone').selectOption('utc')
+  await page.getByLabel('Date and time').fill('2026-07-16T12:30')
   await page.getByRole('button', { name: 'Retry retained image' }).click()
 
   await expect(page).toHaveURL(`/solutions/${publicId}`)
