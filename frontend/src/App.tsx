@@ -213,10 +213,10 @@ function HomePage() {
         <h2 id="nina-integration">Bring Seiza into N.I.N.A. without a plugin.</h2>
       </div>
       <div className="about-copy">
-        <p><code>seiza-cli</code> 0.5 speaks the ASTAP command-line contract N.I.N.A. already uses. Select ASTAP for the normal and blind solver, point it at <code>seiza.exe</code>, and keep the star catalog on the imaging machine.</p>
+        <p>Download the pre-built Windows <code>seiza.exe</code>, add the hosted catalog files, and select ASTAP for N.I.N.A.’s normal and blind solvers. No Rust toolchain, installer, or plugin is required.</p>
         <div className="text-links">
           <a href="/docs/api#integrations">Set up N.I.N.A. <span aria-hidden="true">→</span></a>
-          <a href="https://github.com/theatrus/seiza/releases">Windows releases <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/seiza/releases">Download Windows binary <span aria-hidden="true">↗</span></a>
         </div>
       </div>
     </section>
