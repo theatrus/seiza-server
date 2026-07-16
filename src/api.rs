@@ -45,7 +45,7 @@ use tower_http::{
 };
 use uuid::Uuid;
 
-const VALIDATION_LICENSE_VERSION: &str = "seiza-validation-image-grant-v1";
+const VALIDATION_LICENSE_VERSION: &str = "seiza-validation-image-grant-v2";
 const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
 
 #[derive(Clone)]

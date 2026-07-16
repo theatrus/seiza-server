@@ -95,6 +95,7 @@ function queuedJob(id: string, filename: string) {
 
 test('places the solve action beside the file selector', async ({ page }) => {
   await page.goto('/solve')
+  await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
@@ -527,7 +528,7 @@ for (const status of ['succeeded', 'failed'] as const) {
           validation_donation: {
             comment: 'Useful sparse-field regression image',
             solve_is_invalid: true,
-            license_version: 'seiza-validation-image-grant-v1',
+            license_version: 'seiza-validation-image-grant-v2',
             donated_at: '2026-07-14T02:05:00Z',
           },
         }
@@ -545,10 +546,12 @@ for (const status of ['succeeded', 'failed'] as const) {
     await expect(page.getByLabel('Optional comment')).toBeHidden()
     await donationCta.locator('summary').click()
     await expect(donationDetails).toHaveAttribute('open', '')
-    await expect(page.getByText('I attest that I own this image or have authority to grant this license.')).toBeVisible()
+    await expect(page.getByText('I attest that I own this image or have authority to contribute it.')).toBeVisible()
+    await expect(donationCta).toContainText('only to test, validate, debug, and improve the Seiza plate solver')
+    await expect(donationCta).not.toContainText('any purpose')
     await page.getByLabel('Optional comment').fill('Useful sparse-field regression image')
     await page.getByLabel('Mark this solve result as invalid').check()
-    await page.getByLabel('I attest that I own this image or have authority to grant this license.').check()
+    await page.getByLabel('I attest that I own this image or have authority to contribute it.').check()
     await page.getByRole('button', { name: 'Contribute image for validation' }).click()
 
     await expect(page.getByText('Contributed to Seiza’s validation set')).toBeVisible()
