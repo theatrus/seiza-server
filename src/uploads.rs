@@ -1,6 +1,6 @@
 use crate::{
     models::{JobId, LegacyJobId, SolveOptions},
-    storage::ObjectStore,
+    storage::{ObjectStore, StoredObjectPart},
 };
 use anyhow::Context;
 use bytes::Bytes;
@@ -27,12 +27,6 @@ pub enum ResumableUploadError {
     Completed,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UploadChunk {
-    key: String,
-    size: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -65,7 +59,7 @@ pub struct ResumableUpload {
     pub partial: bool,
     #[serde(default)]
     pub concat_parts: Vec<String>,
-    chunks: Vec<UploadChunk>,
+    chunks: Vec<StoredObjectPart>,
 }
 
 impl ResumableUpload {
@@ -217,7 +211,7 @@ impl ResumableUpload {
         store
             .put(&key, data, Some("application/offset+octet-stream"))
             .await?;
-        self.chunks.push(UploadChunk { key, size });
+        self.chunks.push(StoredObjectPart { key, size });
         self.offset = new_offset;
         self.save(store, storage_prefix).await?;
         Ok(new_offset)
@@ -248,11 +242,74 @@ impl ResumableUpload {
         Ok(Bytes::from(output))
     }
 
+    pub async fn read_prefix(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        limit: usize,
+    ) -> Result<Bytes, ResumableUploadError> {
+        if self.offset != self.total_size {
+            return Err(ResumableUploadError::Incomplete {
+                offset: self.offset,
+                total: self.total_size,
+            });
+        }
+        let capacity = usize::try_from(self.total_size)
+            .map_err(anyhow::Error::from)?
+            .min(limit);
+        let mut output = Vec::with_capacity(capacity);
+        for chunk in &self.chunks {
+            if output.len() == capacity {
+                break;
+            }
+            let requested = (capacity - output.len())
+                .min(usize::try_from(chunk.size).map_err(anyhow::Error::from)?);
+            let bytes = store.get_range(&chunk.key, 0, requested).await?;
+            if bytes.len() != requested {
+                return Err(anyhow::anyhow!(
+                    "stored upload chunk has the wrong length while reading its prefix"
+                )
+                .into());
+            }
+            output.extend_from_slice(&bytes);
+        }
+        if output.len() != capacity {
+            return Err(anyhow::anyhow!("stored upload prefix has the wrong length").into());
+        }
+        Ok(Bytes::from(output))
+    }
+
+    pub async fn compose(&self, store: &Arc<dyn ObjectStore>) -> Result<(), ResumableUploadError> {
+        if self.offset != self.total_size {
+            return Err(ResumableUploadError::Incomplete {
+                offset: self.offset,
+                total: self.total_size,
+            });
+        }
+        store
+            .compose(&self.object_key, &self.chunks, self.content_type.as_deref())
+            .await?;
+        Ok(())
+    }
+
     pub async fn cleanup_chunks(&mut self, store: &Arc<dyn ObjectStore>) {
         let chunks = std::mem::take(&mut self.chunks);
+        let mut deletes = tokio::task::JoinSet::new();
         for chunk in chunks {
-            if let Err(error) = store.delete(&chunk.key).await {
-                tracing::warn!(key = %chunk.key, %error, "could not remove completed upload chunk");
+            let store = store.clone();
+            deletes.spawn(async move {
+                let result = store.delete(&chunk.key).await;
+                (chunk.key, result)
+            });
+        }
+        while let Some(result) = deletes.join_next().await {
+            match result {
+                Ok((_, Ok(()))) => {}
+                Ok((key, Err(error))) => {
+                    tracing::warn!(%key, %error, "could not remove completed upload chunk");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "upload chunk cleanup task failed");
+                }
             }
         }
     }

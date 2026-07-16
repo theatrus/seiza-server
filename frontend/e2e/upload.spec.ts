@@ -204,9 +204,9 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   )
   expect(uploadConcurrency).toBeGreaterThan(1)
   expect([...partLengths.values()]).toEqual([
-    4 * 1024 * 1024,
-    4 * 1024 * 1024,
-    4 * 1024 * 1024,
+    5 * 1024 * 1024,
+    5 * 1024 * 1024,
+    2 * 1024 * 1024,
   ])
 })
 

@@ -9,7 +9,10 @@ use crate::{
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
-    solver::{SolverEngine, capture_time_from_bytes, dimensions_from_bytes, full_png, preview_png},
+    solver::{
+        FITS_HEADER_PROBE_BYTES, SolverEngine, dimensions_from_bytes, full_png,
+        prepare_solve_options, preview_png,
+    },
     star_identifiers::StarIdentifierMatch,
     storage::{ObjectStore, object_store},
     transport::{QueueTransport, queue_transport},
@@ -35,7 +38,7 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, Weak},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::sync::Mutex;
 use tower_http::{
@@ -335,9 +338,7 @@ impl AppState {
         upload: UploadedFile,
         mut options: SolveOptions,
     ) -> Result<JobRecord, ApiError> {
-        if options.capture_time.is_none() {
-            options.capture_time = capture_time_from_bytes(&upload.data, &upload.filename);
-        }
+        prepare_solve_options(&mut options, &upload.data, &upload.filename);
         options.validate().map_err(ApiError::bad_request)?;
         self.limiter
             .check(&client.id)
@@ -461,18 +462,26 @@ impl AppState {
             .map_err(ApiError::internal)?;
             return job.ok_or_else(|| ApiError::internal("completed upload job is missing"));
         }
-        let bytes = upload
-            .assemble(&self.store)
+        let header_prefix = upload
+            .read_prefix(&self.store, FITS_HEADER_PROBE_BYTES)
             .await
             .map_err(resumable_api_error)?;
-        if upload.options.capture_time.is_none() {
-            upload.options.capture_time =
-                capture_time_from_bytes(&bytes, &upload.original_filename);
-        }
-        self.store
-            .put(&upload.object_key, bytes, upload.content_type.as_deref())
+        prepare_solve_options(
+            &mut upload.options,
+            &header_prefix,
+            &upload.original_filename,
+        );
+        let compose_started = Instant::now();
+        upload
+            .compose(&self.store)
             .await
-            .map_err(ApiError::internal)?;
+            .map_err(resumable_api_error)?;
+        tracing::info!(
+            upload_id = %upload.id,
+            bytes = upload.total_size,
+            compose_ms = compose_started.elapsed().as_secs_f64() * 1_000.0,
+            "composed resumable upload"
+        );
         let job = self
             .enqueue_stored(
                 Client {
@@ -1438,6 +1447,7 @@ async fn retry_solve(
     if options.capture_time.is_none() {
         options.capture_time = job.options.capture_time;
     }
+    prepare_solve_options(&mut options, &[], &job.original_filename);
     options.validate().map_err(ApiError::bad_request)?;
     state
         .limiter
@@ -2609,6 +2619,73 @@ mod tests {
         assert_eq!(restarted.repository.queue_depth().await.unwrap(), 1);
 
         drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resumable_fits_headers_promote_a_hinted_solve_before_queueing() {
+        let root = std::env::temp_dir().join(format!("seiza-api-fits-hint-{}", Uuid::now_v7()));
+        let mut config = test_config(&root);
+        config.max_upload_bytes = 4_096;
+        let state = AppState::new(config).await.unwrap();
+        let mut fits = vec![b' '; 2_880];
+        for (index, card) in [
+            "SIMPLE  =                    T",
+            "RA      =                202.5",
+            "DEC     =                 47.2",
+            "PIXSCALE=                 1.25",
+            "END",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fits[index * 80..index * 80 + card.len()].copy_from_slice(card.as_bytes());
+        }
+        let metadata = [("filename", "hinted.fits"), ("options", "{}")]
+            .map(|(key, value)| {
+                format!(
+                    "{key} {}",
+                    base64::engine::general_purpose::STANDARD.encode(value)
+                )
+            })
+            .join(",");
+        let mut headers = tus_request_headers();
+        headers.insert("upload-length", HeaderValue::from_static("2880"));
+        headers.insert("upload-metadata", HeaderValue::from_str(&metadata).unwrap());
+        let response = create_resumable_upload(State(state.clone()), headers)
+            .await
+            .unwrap();
+        let upload_id = response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        patch_resumable_upload(
+            State(state.clone()),
+            Path(upload_id.clone()),
+            chunk_headers(0),
+            Bytes::from(fits),
+        )
+        .await
+        .unwrap();
+        let Json(result) =
+            get_resumable_upload_result(State(state.clone()), Path(upload_id), HeaderMap::new())
+                .await
+                .unwrap();
+
+        assert_eq!(result.options.center_ra_deg, Some(202.5));
+        assert_eq!(result.options.center_dec_deg, Some(47.2));
+        assert_eq!(result.options.scale_arcsec_per_pixel, Some(1.25));
+        assert_eq!(
+            result.options.hint_source,
+            Some(crate::models::SolveHintSource::FitsHeader)
+        );
+        assert_eq!(result.options.hint_keywords, ["RA", "DEC", "PIXSCALE"]);
+
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 

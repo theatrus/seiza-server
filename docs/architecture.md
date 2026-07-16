@@ -109,14 +109,18 @@ cleanup. S3 deployments should keep the validation prefix outside the
 temporary-upload lifecycle rule.
 
 The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. Files of
-at least 10 MiB are split into three concurrent TUS partial uploads and joined
-with the concatenation extension; smaller files remain sequential. A random
-upload-session URL identifies each manifest stored beside its chunks in the
-selected object store. `HEAD` returns the durable byte offset, so a client can
-resume after a browser, network, or API-process interruption. Finalization is
-idempotent: the jobs table enforces one row per private object key, and a lost
-completion response reuses that row rather than queueing the image twice.
-Partial sessions follow the same retention sweep as completed originals.
+at least 10 MiB are split into up to three concurrent TUS partial uploads. The
+partial boundaries stay aligned to chunk boundaries, leaving only the final
+chunk smaller than S3’s 5 MiB multipart minimum. A random upload-session URL
+identifies each manifest stored beside its chunks in the selected object store.
+`HEAD` returns the durable byte offset, so a client can resume after a browser,
+network, or API-process interruption. Local finalization streams chunks into
+the destination file; S3 uses multipart `UploadPartCopy` and completion without
+downloading and re-uploading the image through the API process. Non-aligned TUS
+clients retain a compatible buffered S3 fallback. Finalization is idempotent:
+the jobs table enforces one row per private object key, and a lost completion
+response reuses that row rather than queueing the image twice. Partial sessions
+follow the same retention sweep as completed originals.
 
 A failed job can transition back to `queued` with replacement solve options
 while its input is still retained. The job ID, opaque public URL, object key,
