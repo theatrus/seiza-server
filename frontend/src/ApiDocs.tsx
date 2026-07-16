@@ -52,6 +52,15 @@ curl -X POST https://seiza.fyi/api/upload \\
   -F 'request-json={"session":"seiza-…","scale_type":"ul","scale_units":"arcsecperpix","scale_lower":0.5,"scale_upper":2.0}' \\
   -F 'file=@M31.fits'`
 
+const ninaExample = `# Install seiza-cli and a local catalog on the N.I.N.A. machine.
+cargo install seiza-cli --version 0.5.0
+seiza download-data prebuilt --output C:\\seiza-data --file stars-gaia.bin
+setx SEIZA_STAR_DATA C:\\seiza-data\\stars-gaia.bin
+
+# In N.I.N.A.: Options → Plate Solving
+# Plate Solver: ASTAP
+# ASTAP path: C:\\path\\to\\seiza.exe`
+
 const errorExample = `{
   "error": {
     "code": "bad_request",
@@ -78,6 +87,7 @@ export function ApiDocsPage() {
       <aside className="api-toc" aria-label="API documentation sections">
         <strong>On this page</strong>
         <a href="#quick-start">Quick start</a>
+        <a href="#integrations">Integrations</a>
         <a href="#native-api">Native API</a>
         <a href="#solve-options">Solve options</a>
         <a href="#resumable-uploads">Large uploads</a>
@@ -95,6 +105,13 @@ export function ApiDocsPage() {
           <div className="api-note"><strong>Authentication modes</strong><span>Public installations need no credential. When stub-key mode is enabled, add <code>X-API-Key: …</code> or <code>Authorization: Bearer …</code> to submission and TUS requests.</span></div>
           <div className="api-note"><strong>Result URLs are capabilities.</strong><span>The numeric queue sequence is not sufficient. Preserve the entire <code>id</code>, including its random UUID.</span></div>
           <div className="api-note"><strong>Your images remain yours.</strong><span>Ordinary uploads are stored only temporarily to provide the solve. Seiza does not claim ownership and does not retain the image long-term unless the user explicitly contributes it.</span></div>
+        </DocSection>
+
+        <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="N.I.N.A., ASTAP, and persistent clients.">
+          <p><code>seiza-cli</code> 0.5 implements the ASTAP command-line contract that N.I.N.A. already understands. Install the CLI or use a <a href="https://github.com/theatrus/seiza/releases">Windows release</a>, download a local star catalog, select ASTAP in N.I.N.A., and point its ASTAP executable path at <code>seiza.exe</code>. No N.I.N.A. plugin is required.</p>
+          <CodeExample label="Use seiza-cli as N.I.N.A.’s ASTAP solver" code={ninaExample} />
+          <div className="api-note"><strong>Hinted and blind solving</strong><span>N.I.N.A. supplies FITS input, field of view, and optional mount coordinates through ASTAP-style flags. Seiza solves the frame and writes the <code>.ini</code> calibration file N.I.N.A. expects, including scale, rotation, and parity. The same binary can be selected for both the normal and blind-solver slots.</span></div>
+          <div className="api-note"><strong>Server-backed applications</strong><span>Applications that want a persistent newline-delimited JSON-RPC process can run <code>seiza worker --server https://seiza.fyi</code>. That adapter uploads local image paths to this queued service; it is separate from the authenticated internal worker API used to add server compute capacity.</span></div>
         </DocSection>
 
         <DocSection id="native-api" eyebrow="NATIVE JSON API" title="Jobs and durable result artifacts.">
