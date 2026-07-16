@@ -95,9 +95,7 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .solution-page-settled .job-meta div { padding: .6rem .8rem; }
 .solution-page-settled .overlay-card { margin-top: 0; padding: 1.25rem; }
 .solution-page-settled .overlay-card .section-heading { align-items: center; }
-.solution-page-settled .overlay-card .section-heading > div { display: flex; align-items: baseline; gap: .9rem; }
 .solution-page-settled .overlay-card .section-heading .eyebrow { margin: 0; }
-.solution-page-settled .overlay-card .section-heading h2 { margin: 0; font-size: clamp(1.85rem, 2.8vw, 2.3rem); }
 .solution-page-settled .overlay-control-row { margin-top: .6rem; }
 .solution-page-settled .image-stage { margin-top: .7rem; }
 .solution-page-settled .overlay-card + .job-meta, .solution-page-settled .expired-note + .job-meta { margin-top: .8rem; }
@@ -289,8 +287,6 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .solve-page .page-heading h1, .solution-page-settled .solution-heading h1 { font-size: 2.65rem; }
   .solution-page-settled .solution-heading { position: relative; flex-direction: row; width: 100%; }
   .solution-page-settled .solution-heading .status { position: absolute; top: 0; right: 0; }
-  .solution-page-settled .overlay-card .section-heading > div { display: block; }
-  .solution-page-settled .overlay-card .section-heading .eyebrow { margin-bottom: .35rem; }
   .solution-page-settled .overlay-actions { flex-wrap: nowrap; justify-content: flex-start; width: 100%; gap: .4rem; }
   .solution-page-settled .overlay-actions .button.small { padding: .58rem .65rem; font-size: .72rem; }
   .hero { min-height: auto; }
