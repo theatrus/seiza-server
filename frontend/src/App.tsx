@@ -3,6 +3,7 @@ import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
 import { Annotations, Health, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getHealth, getSolve, retrySolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
+import { DataSourcesPage } from './DataSources'
 import type { OverlayLayers } from './AstroOverlay'
 import type { DeepSkyCatalogId } from './catalogs'
 
@@ -156,8 +157,9 @@ export default function App() {
     {path === '/' && <HomePage />}
     {path === '/solve' && <SolvePage />}
     {path === '/docs/api' && <ApiDocsPage />}
+    {path === '/data-sources' && <DataSourcesPage />}
     {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
-    {path !== '/' && path !== '/solve' && path !== '/docs/api' && !solutionMatch && <NotFoundPage />}
+    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && !solutionMatch && <NotFoundPage />}
     <SiteFooter />
   </div>
 }
@@ -186,6 +188,7 @@ function HomePage() {
         <div className="actions">
           <Link to="/solve" className="button">Solve an image</Link>
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
+          <Link to="/data-sources">See our data sources <span aria-hidden="true">→</span></Link>
         </div>
       </div>
       <div className="hero-mark" aria-hidden="true">
@@ -232,6 +235,7 @@ function HomePage() {
         <div className="text-links">
           <a href="https://crates.io/crates/seiza">seiza on crates.io <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza-server">server on GitHub <span aria-hidden="true">↗</span></a>
+          <Link to="/data-sources">Data sources &amp; acknowledgements <span aria-hidden="true">→</span></Link>
         </div>
       </div>
     </section>
@@ -770,6 +774,7 @@ function SiteFooter() {
     </div>
     <nav className="footer-links" aria-label="Project links">
       <span>Apache-2.0</span>
+      <Link to="/data-sources">Data sources</Link>
       <a href="https://theatr.us">Built by Yann Ramin</a>
       <a href="https://github.com/theatrus/seiza">Seiza GitHub <span aria-hidden="true">↗</span></a>
       <a href="https://github.com/theatrus/seiza-server">Server GitHub <span aria-hidden="true">↗</span></a>

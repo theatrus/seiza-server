@@ -14,6 +14,13 @@ test('advertises N.I.N.A. ASTAP integration on the home page', async ({ page }) 
   await expect(page.getByRole('link', { name: 'Download Windows binary' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
 })
 
+test('links the data-source acknowledgements from the home hero and about section', async ({ page }) => {
+  await page.goto('/')
+
+  await expect(page.getByRole('link', { name: 'See our data sources' })).toHaveAttribute('href', '/data-sources')
+  await expect(page.getByRole('link', { name: 'Data sources & acknowledgements' })).toHaveAttribute('href', '/data-sources')
+})
+
 test('publishes only indexable public pages in the sitemap', async ({ request }) => {
   const response = await request.get('/sitemap.xml')
   expect(response.ok()).toBe(true)
@@ -22,7 +29,38 @@ test('publishes only indexable public pages in the sitemap', async ({ request })
   expect(sitemap).toContain('<loc>https://seiza.fyi/</loc>')
   expect(sitemap).toContain('<loc>https://seiza.fyi/solve</loc>')
   expect(sitemap).toContain('<loc>https://seiza.fyi/docs/api</loc>')
+  expect(sitemap).toContain('<loc>https://seiza.fyi/data-sources</loc>')
   expect(sitemap).not.toContain('/solutions/')
+})
+
+test('credits the upstream catalogues and links their primary sources', async ({ page }) => {
+  await page.goto('/solve')
+  await page.locator('footer').getByRole('link', { name: 'Data sources' }).click()
+
+  await expect(page).toHaveURL('/data-sources')
+  await expect(page.getByRole('heading', { name: 'Built on generations of sky surveys.' })).toBeVisible()
+  await expect(page.getByText('Credit: ESA/Gaia/DPAC.')).toBeVisible()
+  await expect(page.getByRole('link', { name: /Tycho-2 · CDS I\/259/ })).toHaveAttribute('href', 'https://cdsarc.cds.unistra.fr/viz-bin/cat/I/259')
+  await expect(page.getByRole('link', { name: /OpenNGC project/ })).toHaveAttribute('href', 'https://github.com/mattiaverga/OpenNGC')
+  await expect(page.getByRole('link', { name: /General Catalogue of Variable Stars/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: /Washington Double Star Catalog/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: /Galactic supernova remnants/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: /Latest Supernovae/ })).toHaveAttribute('href', 'https://www.rochesterastronomy.org/snimages/snactive.html')
+  await expect(page.getByRole('link', { name: /Minor Planet Center/ }).first()).toHaveAttribute('href', 'https://www.minorplanetcenter.net/')
+  await expect(page.getByRole('link', { name: /Small-body orbits/ })).toHaveAttribute('href', 'https://ssd.jpl.nasa.gov/sb/orbits.html')
+  await expect(page.getByText(/Seiza’s Apache-2.0 license covers Seiza software, not third-party catalogue data/)).toBeVisible()
+})
+
+test('keeps the data-source credits readable on a narrow screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/data-sources')
+
+  await expect(page.getByRole('heading', { name: 'Transient and Solar System data.' })).toBeVisible()
+  const dimensions = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    page: document.documentElement.scrollWidth,
+  }))
+  expect(dimensions.page).toBeLessThanOrEqual(dimensions.viewport)
 })
 
 test('documents the public, catalog, compatibility, and worker APIs', async ({ page }) => {
@@ -74,6 +112,7 @@ test('links the author and both source repositories from the footer', async ({ p
   const footer = page.locator('footer')
 
   await expect(footer.getByRole('link', { name: 'Built by Yann Ramin' })).toHaveAttribute('href', 'https://theatr.us')
+  await expect(footer.getByRole('link', { name: 'Data sources' })).toHaveAttribute('href', '/data-sources')
   await expect(footer.getByRole('link', { name: 'Seiza GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza')
   await expect(footer.getByRole('link', { name: 'Server GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-server')
   await expect(footer.getByLabel('Software versions')).toHaveText('Seiza Server v0.1.0 · Seiza v0.5.0')
