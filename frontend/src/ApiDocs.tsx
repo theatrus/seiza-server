@@ -23,6 +23,9 @@ curl 'https://seiza.fyi/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&k
 # Exact designation or stable-ID lookup
 curl 'https://seiza.fyi/api/v1/catalog/objects/search?q=M31'
 
+# Source records, selections, relations, geometries, outlines, and provenance
+curl 'https://seiza.fyi/api/v1/catalog/objects/details/openngc:NGC224'
+
 # Prefix search across names, aliases, and stable IDs
 curl 'https://seiza.fyi/api/v1/catalog/objects/search?q=ced&prefix=true&limit=20'
 
@@ -177,11 +180,12 @@ export function ApiDocsPage() {
           <CodeExample label="Raw TUS sequence" code={tusExample} />
         </DocSection>
 
-        <DocSection id="catalog-api" eyebrow="SEIZA 0.5 CATALOGS" title="Search the sky without uploading an image.">
-          <p>The object API reads Seiza’s memory-mapped v3 catalog and returns stable IDs, aliases, hierarchy, source provenance, sizes, magnitudes, and predicted prominence. The stellar API reads the Tycho identifier sidecar for exact TYC/HIP/catalog lookup and proper, Bayer/Flamsteed, variable, and double-star name completion.</p>
+        <DocSection id="catalog-api" eyebrow="SEIZA CATALOGS" title="Search the sky without uploading an image.">
+          <p>The object API reads Seiza’s extensible memory-mapped v4 catalog. Fast spatial and name queries return canonical IDs, aliases, hierarchy, source attribution, sizes, magnitudes, and predicted prominence; the detail endpoint pages in source records, properties, relations, facet selections, catalog geometries, outlines, and build provenance only for the requested object. The stellar API reads the Tycho identifier sidecar for exact TYC/HIP/catalog lookup and proper, Bayer/Flamsteed, variable, and double-star name completion.</p>
           <div className="endpoint-list compact">
             <Endpoint method="GET" path="/api/v1/catalog/objects">Cone query using required <code>ra</code>, <code>dec</code>, and <code>radius</code>.</Endpoint>
             <Endpoint method="GET" path="/api/v1/catalog/objects/search">Exact or prefix lookup across designations, aliases, common names, and stable IDs.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/catalog/objects/details/{canonical_id}">Retrieve source-qualified records, relations, selections, geometries, catalog capabilities, and provenance for one stable ID.</Endpoint>
             <Endpoint method="GET" path="/api/v1/catalog/stars/search">Exact TYC/HIP/name lookup or textual stellar-name prefix completion.</Endpoint>
           </div>
           <div className="option-table">

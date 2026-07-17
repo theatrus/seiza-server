@@ -22,6 +22,7 @@ export interface SolveOptions {
 }
 
 export interface OverlayObject {
+  stable_id?: string
   name: string
   common_name: string
   kind: string
@@ -30,8 +31,13 @@ export interface OverlayObject {
   y: number
   semi_major_px: number
   semi_minor_px: number
-  angle_deg: number
+  angle_deg: number | null
   source?: string
+  catalog_source?: string
+  aliases?: string[]
+  parent_ids?: string[]
+  alternate_ids?: string[]
+  alternate_sources?: string[]
   ra_deg?: number
   dec_deg?: number
   discovered?: string
@@ -39,6 +45,17 @@ export interface OverlayObject {
   distance_au?: number
   direction_pa_deg?: number
   direction_angle_deg?: number
+  outlines?: Array<{
+    geometry_id: string
+    source_record_id: string
+    role: string
+    quality: string
+    level: string | null
+    contours: Array<{
+      closed: boolean
+      points: Array<[number, number]>
+    }>
+  }>
 }
 
 export interface Solution {

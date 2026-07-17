@@ -29,8 +29,8 @@ use base64::Engine;
 use bytes::Bytes;
 use chrono::{Duration as ChronoDuration, Utc};
 use seiza::objects::{
-    ObjectHit, ObjectKind, ObjectNameMatch, ObjectQuery, ObjectQueryError, ObjectSort, SkyObject,
-    SkyRegion,
+    ObjectCatalogCapabilities, ObjectCatalogProvenance, ObjectDetails, ObjectHit, ObjectKind,
+    ObjectNameMatch, ObjectQuery, ObjectQueryError, ObjectSort, SkyObject, SkyRegion,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -516,6 +516,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/catalog/objects/search",
             get(search_catalog_objects),
         )
+        .route(
+            "/api/v1/catalog/objects/details/{canonical_id}",
+            get(get_catalog_object_details),
+        )
         .route("/api/v1/catalog/stars/search", get(search_star_identifiers))
         .route("/api/v1/solves", post(post_solve))
         .route(
@@ -700,6 +704,41 @@ struct CatalogObjectSearchResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CatalogObjectDetailsResponse {
+    catalog_version: String,
+    format_version: u8,
+    capabilities: CatalogCapabilitiesResponse,
+    object: CatalogObjectResponse,
+    details: ObjectDetails,
+    provenance: Option<ObjectCatalogProvenance>,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogCapabilitiesResponse {
+    source_records: bool,
+    relations: bool,
+    selections: bool,
+    ellipses: bool,
+    outlines: bool,
+    provenance: bool,
+    unknown_optional_sections: usize,
+}
+
+impl From<ObjectCatalogCapabilities> for CatalogCapabilitiesResponse {
+    fn from(capabilities: ObjectCatalogCapabilities) -> Self {
+        Self {
+            source_records: capabilities.source_records,
+            relations: capabilities.relations,
+            selections: capabilities.selections,
+            ellipses: capabilities.ellipses,
+            outlines: capabilities.outlines,
+            provenance: capabilities.provenance,
+            unknown_optional_sections: capabilities.unknown_optional_sections,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct StarIdentifierSearchResponse {
     catalog_version: String,
     catalog_entries: usize,
@@ -855,6 +894,28 @@ async fn search_catalog_objects(
         catalog_objects,
         returned: matches.len(),
         matches,
+    }))
+}
+
+async fn get_catalog_object_details(
+    State(state): State<AppState>,
+    Path(canonical_id): Path<String>,
+) -> Result<Json<CatalogObjectDetailsResponse>, ApiError> {
+    if canonical_id.trim().is_empty() {
+        return Err(ApiError::bad_request("canonical object ID is required"));
+    }
+    let lookup = state
+        .annotations
+        .object_details(&canonical_id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found_message("catalog object not found"))?;
+    Ok(Json(CatalogObjectDetailsResponse {
+        catalog_version: lookup.catalog_version,
+        format_version: lookup.format_version,
+        capabilities: lookup.capabilities.into(),
+        object: lookup.object.into(),
+        details: lookup.details,
+        provenance: lookup.provenance,
     }))
 }
 
@@ -3017,7 +3078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v3_catalog_api_supports_spatial_and_alias_queries() {
+    async fn v4_catalog_api_supports_spatial_alias_and_detail_queries() {
         let root = std::env::temp_dir().join(format!("seiza-api-catalog-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         let catalog_path = root.join("objects.bin");
@@ -3081,6 +3142,17 @@ mod tests {
         assert_eq!(matches.returned, 1);
         assert_eq!(matches.matches[0].matched_name, "Andromeda Galaxy");
         assert_eq!(matches.matches[0].object.source, "OpenNGC");
+
+        let Json(details) =
+            get_catalog_object_details(State(state.clone()), Path("openngc:NGC224".into()))
+                .await
+                .unwrap();
+        assert_eq!(details.format_version, 4);
+        assert!(details.capabilities.source_records);
+        assert!(details.capabilities.selections);
+        assert!(details.capabilities.ellipses);
+        assert_eq!(details.object.id, "openngc:NGC224");
+        assert_eq!(details.details.source_records[0].source, "OpenNGC");
 
         drop(state);
         std::fs::remove_dir_all(root).unwrap();

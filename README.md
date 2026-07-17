@@ -241,6 +241,7 @@ common-name, extent-overlap, result-limit, and sort controls:
 curl "http://127.0.0.1:8080/api/v1/catalog/objects?ra=10.6848&dec=41.2691&radius=3&kinds=galaxy,nebula&max_mag=14&sort=prominence&limit=100"
 curl "http://127.0.0.1:8080/api/v1/catalog/objects/search?q=M31"
 curl "http://127.0.0.1:8080/api/v1/catalog/objects/search?q=ced&prefix=true&limit=20"
+curl "http://127.0.0.1:8080/api/v1/catalog/objects/details/openngc%3ANGC7000"
 curl "http://127.0.0.1:8080/api/v1/catalog/stars/search?q=TYC%205949-2777-1"
 curl "http://127.0.0.1:8080/api/v1/catalog/stars/search?q=RR%20L&prefix=true&limit=20"
 ```

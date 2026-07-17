@@ -435,15 +435,23 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
             }
         }
         _ => {
-            let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
-            let radius_y = object.semi_minor_px.max(10.0).min(height * 2.0);
-            let _ = write!(
-                output,
-                r#"<ellipse class="marker" stroke="{color}" cx="{x:.2}" cy="{y:.2}" rx="{radius_x:.2}" ry="{radius_y:.2}" transform="rotate({angle:.2} {x:.2} {y:.2})" />"#,
-                x = object.x,
-                y = object.y,
-                angle = object.angle_deg,
-            );
+            if object.outlines.is_empty() {
+                let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
+                let radius_y = if object.angle_deg.is_none() {
+                    radius_x
+                } else {
+                    object.semi_minor_px.max(10.0).min(height * 2.0)
+                };
+                let _ = write!(
+                    output,
+                    r#"<ellipse class="marker" stroke="{color}" cx="{x:.2}" cy="{y:.2}" rx="{radius_x:.2}" ry="{radius_y:.2}" transform="rotate({angle:.2} {x:.2} {y:.2})" />"#,
+                    x = object.x,
+                    y = object.y,
+                    angle = object.angle_deg.unwrap_or(0.0),
+                );
+            } else {
+                render_outlines(output, object, color);
+            }
         }
     }
     let _ = write!(
@@ -452,6 +460,29 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         x = (object.x + 14.0).clamp(8.0, width - 8.0),
         y = (object.y - 14.0).clamp(18.0, height - 8.0),
     );
+}
+
+fn render_outlines(output: &mut String, object: &OverlayObject, color: &str) {
+    for outline in &object.outlines {
+        for contour in &outline.contours {
+            let Some(([first_x, first_y], rest)) = contour.points.split_first() else {
+                continue;
+            };
+            let mut path = format!("M {first_x:.2} {first_y:.2}");
+            for [x, y] in rest {
+                let _ = write!(path, " L {x:.2} {y:.2}");
+            }
+            if contour.closed {
+                path.push_str(" Z");
+            }
+            let _ = write!(
+                output,
+                r#"<path class="marker object-outline" data-geometry-id="{geometry_id}" data-outline-level="{level}" stroke="{color}" d="{path}" />"#,
+                geometry_id = xml_escape(&outline.geometry_id),
+                level = xml_escape(outline.level.as_deref().unwrap_or("")),
+            );
+        }
+    }
 }
 
 fn render_direction_tail(
@@ -521,15 +552,20 @@ fn encompasses_frame(object: &OverlayObject, width: f64, height: f64) -> bool {
     if object.semi_major_px <= 0.0 {
         return false;
     }
-    let radians = object.angle_deg.to_radians();
+    let radians = object.angle_deg.unwrap_or(0.0).to_radians();
     let (sin, cos) = radians.sin_cos();
+    let semi_minor_px = if object.angle_deg.is_none() {
+        object.semi_major_px
+    } else {
+        object.semi_minor_px.max(1.0)
+    };
     [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
         .into_iter()
         .all(|(x, y)| {
             let dx = x - object.x;
             let dy = y - object.y;
             let u = (dx * cos + dy * sin) / object.semi_major_px;
-            let v = (-dx * sin + dy * cos) / object.semi_minor_px.max(1.0);
+            let v = (-dx * sin + dy * cos) / semi_minor_px;
             u * u + v * v <= 1.0
         })
 }
@@ -546,7 +582,7 @@ fn xml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::WcsResponse;
+    use crate::models::{OverlayContour, OverlayOutline, WcsResponse};
 
     fn solution() -> SolutionResponse {
         SolutionResponse {
@@ -568,6 +604,7 @@ mod tests {
             },
             footprint: [[0.0; 2]; 4],
             objects: vec![OverlayObject {
+                stable_id: Some("test:A&B".into()),
                 name: "A&B".into(),
                 common_name: "<target>".into(),
                 kind: "galaxy".into(),
@@ -576,8 +613,13 @@ mod tests {
                 y: 40.0,
                 semi_major_px: 10.0,
                 semi_minor_px: 5.0,
-                angle_deg: 20.0,
+                angle_deg: Some(20.0),
                 source: Some("deep_sky".into()),
+                catalog_source: Some("test".into()),
+                aliases: Vec::new(),
+                parent_ids: Vec::new(),
+                alternate_ids: Vec::new(),
+                alternate_sources: Vec::new(),
                 ra_deg: Some(12.0),
                 dec_deg: Some(-4.0),
                 discovered: None,
@@ -585,6 +627,7 @@ mod tests {
                 distance_au: None,
                 direction_pa_deg: None,
                 direction_angle_deg: None,
+                outlines: Vec::new(),
             }],
             catalog_version: None,
             capture_time: None,
@@ -602,6 +645,44 @@ mod tests {
         assert!(svg.contains("data:image/png;base64,cG5n"));
         assert!(svg.contains("&lt;target&gt;"));
         assert!(svg.contains("A&amp;B"));
+    }
+
+    #[test]
+    fn unknown_orientation_renders_a_conservative_circle() {
+        let mut solution = solution();
+        solution.objects[0].angle_deg = None;
+        let svg = render_svg(
+            &solution,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(svg.contains("rx=\"10.00\" ry=\"10.00\""));
+        assert!(svg.contains("rotate(0.00 50.00 40.00)"));
+    }
+
+    #[test]
+    fn projected_catalog_outlines_replace_the_fallback_ellipse() {
+        let mut solution = solution();
+        solution.objects[0].outlines = vec![OverlayOutline {
+            geometry_id: "openngc:NGC1#outline-1".into(),
+            source_record_id: "openngc:NGC1".into(),
+            role: "brightness-level".into(),
+            quality: "catalog".into(),
+            level: Some("1".into()),
+            contours: vec![OverlayContour {
+                closed: true,
+                points: vec![[10.0, 20.0], [30.0, 40.0], [50.0, 20.0]],
+            }],
+        }];
+        let svg = render_svg(
+            &solution,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(svg.contains("class=\"marker object-outline\""));
+        assert!(svg.contains("data-outline-level=\"1\""));
+        assert!(svg.contains("M 10.00 20.00 L 30.00 40.00 L 50.00 20.00 Z"));
+        assert!(!svg.contains("<ellipse class=\"marker\""));
     }
 
     #[test]

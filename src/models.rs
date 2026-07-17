@@ -175,7 +175,25 @@ const fn default_equinox() -> f64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayContour {
+    pub closed: bool,
+    pub points: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayOutline {
+    pub geometry_id: String,
+    pub source_record_id: String,
+    pub role: String,
+    pub quality: String,
+    pub level: Option<String>,
+    pub contours: Vec<OverlayContour>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayObject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_id: Option<String>,
     pub name: String,
     pub common_name: String,
     pub kind: String,
@@ -184,9 +202,19 @@ pub struct OverlayObject {
     pub y: f64,
     pub semi_major_px: f64,
     pub semi_minor_px: f64,
-    pub angle_deg: f64,
+    pub angle_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternate_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternate_sources: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ra_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,6 +229,8 @@ pub struct OverlayObject {
     pub direction_pa_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction_angle_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outlines: Vec<OverlayOutline>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
