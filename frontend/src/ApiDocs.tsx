@@ -111,7 +111,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="N.I.N.A., ASTAP, and persistent clients.">
-          <p><code>seiza-cli</code> 0.5 implements the ASTAP command-line contract that N.I.N.A. already understands. The pre-built Windows binary is the shortest path: no Rust toolchain, installer, or N.I.N.A. plugin is required.</p>
+          <p><code>seiza-cli</code> 0.6 implements the ASTAP command-line contract that N.I.N.A. already understands. The pre-built Windows binary is the shortest path: no Rust toolchain, installer, or N.I.N.A. plugin is required.</p>
           <ol className="integration-steps">
             <li><strong>Download the binary.</strong><span>Open the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.zip</code>, and extract it to a stable directory such as <code>C:\Seiza</code>.</span></li>
             <li><strong>Download the solving data.</strong><span>Run the command below once in PowerShell. Keeping the deep Gaia catalog and maintained blind index beside <code>seiza.exe</code> lets Seiza discover them automatically.</span></li>
