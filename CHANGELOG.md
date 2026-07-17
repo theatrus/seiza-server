@@ -5,6 +5,20 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-17
+
+- Upgrade to Seiza 0.6.0 and `@seiza/astro-overlay` 0.2.0 with object-catalog
+  v4 provenance, aliases, hierarchy, source records, and projected outlines.
+- Add searchable deep-sky and stellar-identifier catalogs, per-catalog overlay
+  controls, RA/Dec grids, moving-body direction tails, and branded PNG export.
+- Add durable, unguessable solution pages with complete WCS metadata, solve
+  timing, fit statistics, and retained catalog metadata after image expiry.
+- Add parallel resumable TUS uploads, FITS-derived hints, retry-with-hints
+  without re-uploading, and durable image contribution workflows.
+- Add SQLx/DynamoDB store migration, unified UUID job identity, and improved
+  cached Amazon Linux 2023 and Fedora 44 RPM builds.
+- Add API, N.I.N.A./ASTAP, data-source attribution, sitemap, and production
+  deployment documentation.
 - Auto-discover canonically named solver and annotation catalogs from a shared
   catalog directory, including the production sibling-directory layout.
 - Report unavailable overlay data explicitly and render catalog markers with
