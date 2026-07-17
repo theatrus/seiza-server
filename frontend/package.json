@@ -11,7 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@seiza/astro-overlay": "git+https://github.com/theatrus/seiza-overlay.git#7b00c1761b84a22e6ee2269296fa8f502b6fbd9f",
+    "@seiza/astro-overlay": "0.2.0",
     "@uppy/core": "^5.2.0",
     "@uppy/tus": "^5.1.1",
     "@vitejs/plugin-react": "latest",

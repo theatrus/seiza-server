@@ -5,7 +5,7 @@ export async function mockHealth(page: Page) {
     contentType: 'application/json',
     body: JSON.stringify({
       status: 'ready',
-      versions: { seiza_server: '0.1.0', seiza: '0.5.0' },
+      versions: { seiza_server: '0.1.0', seiza: '0.6.0' },
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'public',
