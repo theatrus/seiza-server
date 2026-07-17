@@ -91,7 +91,7 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Download the prebuilt datasets with Seiza CLI 0.5.0 or newer before starting the
+Download the prebuilt datasets with Seiza CLI 0.6.0 or newer before starting the
 service:
 
 ```bash
@@ -102,7 +102,7 @@ sudo chmod -R g+rX /srv/seiza/catalog
 ```
 
 The hosted prebuilt set supplies the star, stellar-identifier,
-deep-sky/named-star, and transient catalogs. The v3 object files are
+deep-sky/named-star, and transient catalogs. The v4 object files are
 memory-mapped and contain their spatial and
 name indices; downloading in place is safe because the CLI verifies a temporary
 file and atomically renames it into place. The server notices that replacement
