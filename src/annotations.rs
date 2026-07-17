@@ -1,5 +1,5 @@
 use crate::{
-    models::{AnnotationResponse, OverlayObject, SolutionResponse},
+    models::{AnnotationResponse, OverlayContour, OverlayObject, OverlayOutline, SolutionResponse},
     star_identifiers::{StarIdentifierLayer, StarIdentifierMatch},
 };
 use chrono::{DateTime, NaiveDate, Utc};
@@ -7,8 +7,9 @@ use seiza::{
     catalog::{StarCatalog, TileCatalog, angular_separation_deg},
     minor_bodies::{MinorBodyCatalog, MinorBodyKind},
     objects::{
-        ObjectCatalog, ObjectHit, ObjectKind, ObjectNameMatch, ObjectQuery, ObjectQueryError,
-        SkyRegion,
+        GeometryData, GeometryQuality, GeometryRole, ObjectCatalog, ObjectCatalogCapabilities,
+        ObjectCatalogProvenance, ObjectDetails, ObjectHit, ObjectKind, ObjectNameMatch,
+        ObjectQuery, ObjectQueryError, SkyObject, SkyRegion,
     },
     wcs::Wcs,
 };
@@ -42,6 +43,15 @@ pub struct StarIdentifierCatalogSearch {
     pub spatial_labels: usize,
     pub attribution: String,
     pub epoch: f64,
+}
+
+pub struct ObjectCatalogDetailsLookup {
+    pub object: SkyObject,
+    pub details: ObjectDetails,
+    pub capabilities: ObjectCatalogCapabilities,
+    pub provenance: Option<ObjectCatalogProvenance>,
+    pub format_version: u8,
+    pub catalog_version: String,
 }
 
 impl Default for AnnotationOptions {
@@ -284,6 +294,44 @@ impl AnnotationEngine {
         Ok(Some((matches, version, catalog_objects)))
     }
 
+    pub fn object_details(
+        &self,
+        canonical_id: &str,
+    ) -> io::Result<Option<ObjectCatalogDetailsLookup>> {
+        let Some(catalog) = &self.objects else {
+            return Ok(None);
+        };
+        let Some((catalog, catalog_version)) = catalog.current() else {
+            return Ok(None);
+        };
+        let Some(details) = catalog.object_details(canonical_id)? else {
+            return Ok(None);
+        };
+        let object = catalog
+            .lookup_name(canonical_id)?
+            .into_iter()
+            .find(|item| item.object.metadata.id == canonical_id)
+            .map(|item| item.object)
+            .or_else(|| {
+                details
+                    .source_records
+                    .iter()
+                    .find(|record| record.object.metadata.id == canonical_id)
+                    .map(|record| record.object.clone())
+            });
+        let Some(object) = object else {
+            return Ok(None);
+        };
+        Ok(Some(ObjectCatalogDetailsLookup {
+            object,
+            details,
+            capabilities: catalog.capabilities(),
+            provenance: catalog.provenance()?,
+            format_version: catalog.format_version(),
+            catalog_version,
+        }))
+    }
+
     pub fn search_star_identifiers(
         &self,
         query: &str,
@@ -359,7 +407,14 @@ fn append_object_catalog(
         if transient && near_capture == Some(false) && !options.historical_transients {
             continue;
         }
+        let stable_id =
+            (!placed.object.metadata.id.is_empty()).then(|| placed.object.metadata.id.clone());
+        let outlines = stable_id
+            .as_deref()
+            .map(|id| projected_outlines(catalog, id, wcs))
+            .unwrap_or_default();
         output.push(OverlayObject {
+            stable_id,
             name: placed.object.name,
             common_name: placed.object.common_name,
             kind: if force_transient {
@@ -374,6 +429,12 @@ fn append_object_catalog(
             semi_minor_px: placed.semi_minor_px,
             angle_deg: placed.angle_deg,
             source: Some(if transient { "transient" } else { "deep_sky" }.into()),
+            catalog_source: (!placed.object.metadata.source.is_empty())
+                .then_some(placed.object.metadata.source),
+            aliases: placed.object.metadata.aliases,
+            parent_ids: placed.object.metadata.parent_ids,
+            alternate_ids: placed.object.metadata.alternate_ids,
+            alternate_sources: placed.object.metadata.alternate_sources,
             ra_deg: Some(placed.object.ra),
             dec_deg: Some(placed.object.dec),
             discovered,
@@ -381,7 +442,68 @@ fn append_object_catalog(
             distance_au: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
+            outlines,
         });
+    }
+}
+
+fn projected_outlines(
+    catalog: &ObjectCatalog,
+    canonical_id: &str,
+    wcs: &Wcs,
+) -> Vec<OverlayOutline> {
+    let Ok(geometries) = catalog.geometries(canonical_id) else {
+        return Vec::new();
+    };
+    geometries
+        .into_iter()
+        .filter_map(|geometry| {
+            let GeometryData::OutlineSet { level, contours } = geometry.data else {
+                return None;
+            };
+            let contours = contours
+                .into_iter()
+                .filter_map(|contour| {
+                    let points = contour
+                        .vertices
+                        .into_iter()
+                        .map(|(ra, dec)| wcs.world_to_pixel(ra, dec).map(|(x, y)| [x, y]))
+                        .collect::<Option<Vec<_>>>()?;
+                    let minimum_points = if contour.closed { 3 } else { 2 };
+                    (points.len() >= minimum_points).then_some(OverlayContour {
+                        closed: contour.closed,
+                        points,
+                    })
+                })
+                .collect::<Vec<_>>();
+            (!contours.is_empty()).then_some(OverlayOutline {
+                geometry_id: geometry.id,
+                source_record_id: geometry.source_record_id,
+                role: geometry_role_name(geometry.role).into(),
+                quality: geometry_quality_name(geometry.quality).into(),
+                level,
+                contours,
+            })
+        })
+        .collect()
+}
+
+fn geometry_role_name(role: GeometryRole) -> &'static str {
+    match role {
+        GeometryRole::CatalogExtent => "catalog-extent",
+        GeometryRole::PreferredRender => "preferred-render",
+        GeometryRole::FallbackExtent => "fallback-extent",
+        GeometryRole::BrightnessLevel => "brightness-level",
+        GeometryRole::Component => "component",
+    }
+}
+
+fn geometry_quality_name(quality: GeometryQuality) -> &'static str {
+    match quality {
+        GeometryQuality::Catalog => "catalog",
+        GeometryQuality::Curated => "curated",
+        GeometryQuality::Estimated => "estimated",
+        GeometryQuality::Derived => "derived",
     }
 }
 
@@ -417,6 +539,7 @@ fn append_star_identifier_catalog(
             continue;
         };
         output.push(OverlayObject {
+            stable_id: None,
             name: label.designation,
             common_name: label.detail,
             kind: "identified-star".into(),
@@ -425,8 +548,13 @@ fn append_star_identifier_catalog(
             y,
             semi_major_px: 0.0,
             semi_minor_px: 0.0,
-            angle_deg: 0.0,
+            angle_deg: Some(0.0),
             source: Some(format!("star_identifiers:{}", label.catalog.as_str())),
+            catalog_source: None,
+            aliases: Vec::new(),
+            parent_ids: Vec::new(),
+            alternate_ids: Vec::new(),
+            alternate_sources: Vec::new(),
             ra_deg: Some(label.ra),
             dec_deg: Some(label.dec),
             discovered: None,
@@ -434,6 +562,7 @@ fn append_star_identifier_catalog(
             distance_au: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
+            outlines: Vec::new(),
         });
         added += 1;
         if added >= options.max_star_identifiers {
@@ -470,6 +599,7 @@ fn append_field_stars(
             continue;
         }
         output.push(OverlayObject {
+            stable_id: None,
             name: String::new(),
             common_name: String::new(),
             kind: "field-star".into(),
@@ -478,8 +608,13 @@ fn append_field_stars(
             y,
             semi_major_px: 0.0,
             semi_minor_px: 0.0,
-            angle_deg: 0.0,
+            angle_deg: Some(0.0),
             source: Some("star_catalog".into()),
+            catalog_source: None,
+            aliases: Vec::new(),
+            parent_ids: Vec::new(),
+            alternate_ids: Vec::new(),
+            alternate_sources: Vec::new(),
             ra_deg: Some(star.ra),
             dec_deg: Some(star.dec),
             discovered: None,
@@ -487,6 +622,7 @@ fn append_field_stars(
             distance_au: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
+            outlines: Vec::new(),
         });
         field_count += 1;
         if field_count >= limit {
@@ -509,6 +645,7 @@ fn append_minor_bodies(
             MinorBodyKind::Asteroid => "asteroid",
         };
         output.push(OverlayObject {
+            stable_id: None,
             name: placed.body.name,
             common_name: format!("V~{:.1}, {:.2} AU", placed.mag, placed.delta_au),
             kind: kind.into(),
@@ -517,8 +654,13 @@ fn append_minor_bodies(
             y: placed.y,
             semi_major_px: 0.0,
             semi_minor_px: 0.0,
-            angle_deg: 0.0,
+            angle_deg: Some(0.0),
             source: Some("minor_body".into()),
+            catalog_source: None,
+            aliases: Vec::new(),
+            parent_ids: Vec::new(),
+            alternate_ids: Vec::new(),
+            alternate_sources: Vec::new(),
             ra_deg: Some(placed.ra),
             dec_deg: Some(placed.dec),
             discovered: None,
@@ -528,6 +670,7 @@ fn append_minor_bodies(
             direction_angle_deg: placed
                 .direction_pa_deg
                 .and_then(|angle| direction_image_angle(wcs, placed.ra, placed.dec, angle)),
+            outlines: Vec::new(),
         });
     }
 }
@@ -678,7 +821,10 @@ mod tests {
     use super::*;
     use crate::models::WcsResponse;
     use seiza::{
-        objects::{ObjectMetadata, SkyObject},
+        objects::{
+            ObjectCatalogData, ObjectContour, ObjectDetails, ObjectGeometry, ObjectMetadata,
+            SkyObject,
+        },
         star_ids::{StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind},
     };
 
@@ -754,6 +900,102 @@ mod tests {
         let second = engine.annotate(1, &solution, None, &AnnotationOptions::default());
         assert_eq!(second.objects.len(), 2);
         assert_ne!(first.catalog_version, second.catalog_version);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn v4_metadata_and_outlines_are_projected_without_inventing_an_angle() {
+        let path = std::env::temp_dir().join(format!(
+            "seiza-server-annotation-v4-{}.bin",
+            uuid::Uuid::now_v7()
+        ));
+        let object = SkyObject {
+            kind: ObjectKind::Nebula,
+            ra: 10.0,
+            dec: 20.0,
+            mag: None,
+            major_arcmin: Some(30.0),
+            minor_arcmin: Some(10.0),
+            position_angle_deg: None,
+            name: "NGC 1".into(),
+            common_name: "Test Nebula".into(),
+            metadata: ObjectMetadata {
+                id: "openngc:NGC1".into(),
+                source: "OpenNGC".into(),
+                aliases: vec!["Test 1".into()],
+                ..ObjectMetadata::default()
+            },
+        };
+        let mut details = ObjectDetails::from_canonical(&object);
+        details.geometries.push(ObjectGeometry {
+            id: "openngc:NGC1#outline-1".into(),
+            source_record_id: "openngc:NGC1".into(),
+            role: GeometryRole::BrightnessLevel,
+            quality: GeometryQuality::Catalog,
+            method: "OpenNGC outline".into(),
+            evidence: String::new(),
+            data: GeometryData::OutlineSet {
+                level: Some("1".into()),
+                contours: vec![ObjectContour {
+                    closed: true,
+                    vertices: vec![(9.99, 19.99), (10.01, 19.99), (10.0, 20.01)],
+                }],
+            },
+        });
+        ObjectCatalog::from_data(ObjectCatalogData {
+            objects: vec![object],
+            details: vec![details],
+            provenance: Default::default(),
+        })
+        .unwrap()
+        .write_to(&path)
+        .unwrap();
+        let engine = AnnotationEngine::new(None, None, Some(&path), None, None, None);
+        let solution = SolutionResponse {
+            center_ra_deg: 10.0,
+            center_dec_deg: 20.0,
+            pixel_scale_arcsec_per_pixel: 3.6,
+            matched_stars: 10,
+            rms_arcsec: 0.5,
+            image_width: 200,
+            image_height: 200,
+            wcs: WcsResponse {
+                crval: [10.0, 20.0],
+                crpix: [100.0, 100.0],
+                cd: [[-0.001, 0.0], [0.0, -0.001]],
+                ctype: ["RA---TAN".into(), "DEC--TAN".into()],
+                cunit: ["deg".into(), "deg".into()],
+                radesys: "ICRS".into(),
+                equinox: 2000.0,
+            },
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
+            statistics: None,
+        };
+
+        let annotation = engine.annotate(1, &solution, None, &AnnotationOptions::default());
+        assert_eq!(annotation.objects.len(), 1);
+        assert_eq!(
+            annotation.objects[0].stable_id.as_deref(),
+            Some("openngc:NGC1")
+        );
+        assert_eq!(
+            annotation.objects[0].catalog_source.as_deref(),
+            Some("OpenNGC")
+        );
+        assert_eq!(annotation.objects[0].angle_deg, None);
+        assert_eq!(annotation.objects[0].outlines.len(), 1);
+        assert_eq!(
+            annotation.objects[0].outlines[0].contours[0].points.len(),
+            3
+        );
+
+        let lookup = engine.object_details("openngc:NGC1").unwrap().unwrap();
+        assert_eq!(lookup.format_version, 4);
+        assert!(lookup.capabilities.outlines);
+        assert_eq!(lookup.details.source_records[0].source, "OpenNGC");
         std::fs::remove_file(path).unwrap();
     }
 

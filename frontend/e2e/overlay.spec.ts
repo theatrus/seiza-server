@@ -40,13 +40,19 @@ const baseObjects = [
     source: 'deep_sky', ra_deg: 10.68, dec_deg: 41.27,
   },
   {
+    stable_id: 'openngc:Sh2-101', catalog_source: 'OpenNGC',
     name: 'Sh2-101', common_name: 'Tulip Nebula', kind: 'hii-region', mag: null,
     x: 220, y: 690, semi_major_px: 48, semi_minor_px: 36, angle_deg: 8,
     source: 'deep_sky', ra_deg: 10.92, dec_deg: 41.08,
+    outlines: [{
+      geometry_id: 'openngc:Sh2-101#outline-1', source_record_id: 'openngc:Sh2-101',
+      role: 'brightness-level', quality: 'catalog', level: '1',
+      contours: [{ closed: true, points: [[170, 690], [205, 650], [255, 665], [270, 710], [215, 730]] }],
+    }],
   },
   {
     name: 'LDN 935', common_name: '', kind: 'dark-nebula', mag: null,
-    x: 790, y: 430, semi_major_px: 42, semi_minor_px: 25, angle_deg: 61,
+    x: 790, y: 430, semi_major_px: 42, semi_minor_px: 25, angle_deg: null,
     source: 'deep_sky', ra_deg: 10.31, dec_deg: 41.35,
   },
   {
@@ -263,7 +269,10 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
     expect(box.fontSize).toBeGreaterThanOrEqual(18)
   }
 
-  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(4)
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(3)
+  await expect(page.locator('.seiza-overlay__marker--outline')).toHaveCount(1)
+  const unorientedExtent = page.locator('[data-kind="dark-nebula"] ellipse')
+  expect(await unorientedExtent.getAttribute('rx')).toBe(await unorientedExtent.getAttribute('ry'))
   await expect(page.locator('[data-kind="galaxy"]')).toHaveCount(2)
   await expect(page.locator('[data-kind="star"]')).toBeVisible()
   await expect(page.locator('[data-kind="identified-star"]')).toHaveCount(0)
@@ -299,10 +308,11 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await expect(skyOverlay.getByText('PGC 12345', { exact: false })).toHaveCount(0)
   await expect(skyOverlay.getByText('M 31 · Andromeda Galaxy', { exact: false })).toBeVisible()
   await expect(skyOverlay.getByText('Sh2-101 · Tulip Nebula', { exact: false })).toBeVisible()
-  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(3)
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(2)
 
   await page.getByRole('button', { name: /Deep sky/ }).click()
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(0)
+  await expect(page.locator('.seiza-overlay__marker--outline')).toHaveCount(0)
 
   await expect(page.locator('.overlay-actions-below').getByRole('button')).toHaveCount(1)
   await expect(page.getByRole('button', { name: 'Download rendered PNG' })).toBeVisible()
