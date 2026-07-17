@@ -371,7 +371,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         "transient" => "#ff4fd8",
         "comet" => "#6df2a2",
         "asteroid" => "#ffad5c",
-        _ => "#5ee7f2",
+        _ => deep_sky_catalog_color(&object.name),
     };
     if object.kind == "field-star" {
         let _ = write!(
@@ -460,6 +460,61 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         x = (object.x + 14.0).clamp(8.0, width - 8.0),
         y = (object.y - 14.0).clamp(18.0, height - 8.0),
     );
+}
+
+fn deep_sky_catalog_color(name: &str) -> &'static str {
+    let name = name.trim().to_ascii_uppercase();
+    if catalog_prefix(&name, "PGC") {
+        "#87c5df"
+    } else if catalog_prefix(&name, "UGC") {
+        "#73cbed"
+    } else if catalog_prefix(&name, "LBN") {
+        "#78d4b6"
+    } else if catalog_prefix(&name, "CED") || catalog_prefix(&name, "CEDERBLAD") {
+        "#88d5c4"
+    } else if catalog_prefix(&name, "LDN") || numbered_designation(&name, "B") {
+        "#aaa7e8"
+    } else if catalog_prefix(&name, "SNR") {
+        "#e2bd76"
+    } else if sharpless_designation(&name) || catalog_prefix(&name, "VDB") {
+        "#69d8c7"
+    } else if numbered_designation(&name, "NGC")
+        || numbered_designation(&name, "IC")
+        || numbered_designation(&name, "M")
+    {
+        "#5fd3ff"
+    } else {
+        "#72ced8"
+    }
+}
+
+fn catalog_prefix(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_whitespace())
+    })
+}
+
+fn numbered_designation(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|rest| {
+        rest.trim_start()
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+fn sharpless_designation(name: &str) -> bool {
+    name.strip_prefix("SH").is_some_and(|rest| {
+        rest.trim_start().strip_prefix('2').is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_some_and(|character| character == '-' || character.is_ascii_whitespace())
+        })
+    })
 }
 
 fn render_outlines(output: &mut String, object: &OverlayObject, color: &str) {
@@ -683,6 +738,52 @@ mod tests {
         assert!(svg.contains("data-outline-level=\"1\""));
         assert!(svg.contains("M 10.00 20.00 L 30.00 40.00 L 50.00 20.00 Z"));
         assert!(!svg.contains("<ellipse class=\"marker\""));
+    }
+
+    #[test]
+    fn deep_sky_catalogs_use_a_restrained_marker_palette() {
+        assert_eq!(deep_sky_catalog_color("M 31"), "#5fd3ff");
+        assert_eq!(deep_sky_catalog_color("NGC7000"), "#5fd3ff");
+        assert_eq!(deep_sky_catalog_color("Sh 2-101"), "#69d8c7");
+        assert_eq!(deep_sky_catalog_color("LBN 437"), "#78d4b6");
+        assert_eq!(deep_sky_catalog_color("LDN 935"), "#aaa7e8");
+        assert_eq!(deep_sky_catalog_color("SNR G120.1+1.4"), "#e2bd76");
+        assert_eq!(deep_sky_catalog_color("UGC 123"), "#73cbed");
+        assert_eq!(deep_sky_catalog_color("PGC 123"), "#87c5df");
+        assert_eq!(deep_sky_catalog_color("Abell 426"), "#72ced8");
+    }
+
+    #[test]
+    fn direct_svg_uses_catalog_color_for_ellipses_and_outlines() {
+        let mut colored = solution();
+        colored.objects[0].name = "LDN 935".into();
+        let ellipse_svg = render_svg(
+            &colored,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(ellipse_svg.contains("<ellipse class=\"marker\" stroke=\"#aaa7e8\""));
+
+        colored.objects[0].name = "Sh2-101".into();
+        colored.objects[0].outlines = vec![OverlayOutline {
+            geometry_id: "openngc:Sh2-101#outline-1".into(),
+            source_record_id: "openngc:Sh2-101".into(),
+            role: "brightness-level".into(),
+            quality: "catalog".into(),
+            level: Some("1".into()),
+            contours: vec![OverlayContour {
+                closed: true,
+                points: vec![[10.0, 20.0], [30.0, 40.0], [50.0, 20.0]],
+            }],
+        }];
+        let outline_svg = render_svg(
+            &colored,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(outline_svg.contains(
+            "class=\"marker object-outline\" data-geometry-id=\"openngc:Sh2-101#outline-1\" data-outline-level=\"1\" stroke=\"#69d8c7\""
+        ));
     }
 
     #[test]

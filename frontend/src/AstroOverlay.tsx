@@ -1,12 +1,19 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { AstroOverlay as ReusableAstroOverlay } from '@seiza/astro-overlay/react'
 import {
+  defaultLayerForObject,
   defaultOverlayDensity,
   defaultOverlayTheme,
+  type OverlayLayerResolver,
   type OverlayLayerVisibility,
 } from '@seiza/astro-overlay'
 import type { OverlayObject, Solution } from './api'
-import { deepSkyCatalogForObject, deepSkyCatalogs } from './catalogs'
+import {
+  deepSkyCatalogColors,
+  deepSkyCatalogForObject,
+  deepSkyCatalogLayer,
+  deepSkyCatalogs,
+} from './catalogs'
 import type { DeepSkyCatalogId } from './catalogs'
 
 export interface OverlayLayers {
@@ -134,22 +141,44 @@ export function AstroOverlay({
   layers: OverlayLayers
   hiddenCatalogs: DeepSkyCatalogId[]
 }) {
+  const overlayRef = useRef<SVGSVGElement>(null)
   const visibleObjects = objects.filter((object) => {
     const catalog = deepSkyCatalogForObject(object)
     return catalog == null || !hiddenCatalogs.includes(catalog)
   })
+
+  // Inline variables survive SVG serialization, so browser and PNG exports use
+  // the same catalog colors without expanding the reusable package theme API.
+  useLayoutEffect(() => {
+    const overlay = overlayRef.current
+    if (!overlay) return
+    for (const [catalog] of deepSkyCatalogs) {
+      const layer = deepSkyCatalogLayer(catalog)
+      for (const group of overlay.querySelectorAll<SVGGElement>(`[data-layer="${layer}"]`)) {
+        group.style.setProperty('--seiza-overlay-deep-sky-color', deepSkyCatalogColors[catalog])
+      }
+    }
+  }, [visibleObjects])
+
   return <ReusableAstroOverlay
+    ref={overlayRef}
     className="sky-overlay"
     solution={solution}
     objects={visibleObjects}
     layers={toPackageLayers(layers)}
+    layerForObject={catalogLayerForObject}
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}
   />
 }
 
+const catalogLayerForObject: OverlayLayerResolver = (object) => {
+  const catalog = deepSkyCatalogForObject(object)
+  return catalog ? deepSkyCatalogLayer(catalog) : defaultLayerForObject(object)
+}
+
 function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
-  return {
+  const visibility: Record<string, boolean> = {
     deep_sky: layers.deepSky,
     named_stars: layers.namedStars,
     star_identifiers: layers.starIdentifiers,
@@ -159,4 +188,8 @@ function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
     historical_transients: layers.historicalTransients,
     grid: layers.grid,
   }
+  for (const [catalog] of deepSkyCatalogs) {
+    visibility[deepSkyCatalogLayer(catalog)] = layers.deepSky
+  }
+  return visibility
 }

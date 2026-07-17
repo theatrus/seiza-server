@@ -271,6 +271,16 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
 
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(3)
   await expect(page.locator('.seiza-overlay__marker--outline')).toHaveCount(1)
+  const catalogMarkers = {
+    ngc: page.locator('[data-layer="deep-sky:ngc-ic-messier"] .seiza-overlay__marker'),
+    sharpless: page.locator('[data-layer="deep-sky:sharpless-vdb"] .seiza-overlay__marker'),
+    darkNebula: page.locator('[data-layer="deep-sky:dark-nebulae"] .seiza-overlay__marker'),
+    pgc: page.locator('[data-layer="deep-sky:pgc"] .seiza-overlay__marker'),
+  }
+  await expect(catalogMarkers.ngc).toHaveCSS('stroke', 'rgb(95, 211, 255)')
+  await expect(catalogMarkers.sharpless).toHaveCSS('stroke', 'rgb(105, 216, 199)')
+  await expect(catalogMarkers.darkNebula).toHaveCSS('stroke', 'rgb(170, 167, 232)')
+  await expect(catalogMarkers.pgc).toHaveCSS('stroke', 'rgb(135, 197, 223)')
   const unorientedExtent = page.locator('[data-kind="dark-nebula"] ellipse')
   expect(await unorientedExtent.getAttribute('rx')).toBe(await unorientedExtent.getAttribute('ry'))
   await expect(page.locator('[data-kind="galaxy"]')).toHaveCount(2)
@@ -414,6 +424,7 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
       gridWeight: '',
       haloWidth: '',
       objectLabels: [],
+      catalogColors: {},
     }
     const markup = await state.__seizaSerializedOverlay
     const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml')
@@ -439,8 +450,15 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
     const haloWidth = svg.style.getPropertyValue('--seiza-overlay-label-halo-width')
     const objectLabels = [...svg.querySelectorAll<SVGTextElement>('.catalog-objects text')]
       .map((label) => label.textContent ?? '')
+    const catalogColors = Object.fromEntries(
+      [...svg.querySelectorAll<SVGGElement>('.catalog-objects > g[data-layer^="deep-sky:"]')]
+        .map((group) => [
+          group.dataset.layer ?? '',
+          group.style.getPropertyValue('--seiza-overlay-deep-sky-color'),
+        ]),
+    )
     host.remove()
-    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels }
+    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels, catalogColors }
   })
   expect(renderedOverlay.markerStroke).toBe('0.7')
   expect(renderedOverlay.gridStroke).toBe('0.65')
@@ -449,6 +467,11 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
   expect(renderedOverlay.haloWidth).toBe('0.1em')
   expect(renderedOverlay.objectLabels).toContain('M 31 · Andromeda Galaxy')
   expect(renderedOverlay.objectLabels).not.toContain('PGC 12345')
+  expect(renderedOverlay.catalogColors).toMatchObject({
+    'deep-sky:ngc-ic-messier': '#5fd3ff',
+    'deep-sky:sharpless-vdb': '#69d8c7',
+    'deep-sky:dark-nebulae': '#aaa7e8',
+  })
   expect(renderedOverlay.labels.length).toBeGreaterThan(0)
   for (const label of renderedOverlay.labels) {
     expect(label.x).toBeGreaterThanOrEqual(0)

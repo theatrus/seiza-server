@@ -23,6 +23,26 @@ export const deepSkyCatalogs: ReadonlyArray<readonly [DeepSkyCatalogId, string]>
   ['other-deep-sky', 'Other deep sky'],
 ]
 
+/**
+ * A deliberately restrained catalog palette: related catalogs stay in the same
+ * cool family, with only dark nebulae and remnants receiving distinct accents.
+ */
+export const deepSkyCatalogColors: Readonly<Record<DeepSkyCatalogId, string>> = Object.freeze({
+  'ngc-ic-messier': '#5fd3ff',
+  'sharpless-vdb': '#69d8c7',
+  lbn: '#78d4b6',
+  cederblad: '#88d5c4',
+  'dark-nebulae': '#aaa7e8',
+  snr: '#e2bd76',
+  ugc: '#73cbed',
+  pgc: '#87c5df',
+  'other-deep-sky': '#72ced8',
+})
+
+export function deepSkyCatalogLayer(catalog: DeepSkyCatalogId): string {
+  return `deep-sky:${catalog}`
+}
+
 const nonDeepSkyKinds = new Set([
   'star',
   'double-star',
@@ -34,7 +54,9 @@ const nonDeepSkyKinds = new Set([
 ])
 
 /** Mirrors Tenrankai's designation-based catalog grouping for deep-sky objects. */
-export function deepSkyCatalogForObject(object: OverlayObject): DeepSkyCatalogId | null {
+export function deepSkyCatalogForObject(
+  object: Pick<OverlayObject, 'kind' | 'name'>,
+): DeepSkyCatalogId | null {
   if (nonDeepSkyKinds.has(object.kind)) return null
   const name = object.name.trim()
   if (/^PGC(?:\s|$)/i.test(name)) return 'pgc'
