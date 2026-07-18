@@ -40,7 +40,7 @@ use std::{
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -62,6 +62,7 @@ pub struct AppState {
     solver: SolverEngine,
     annotations: AnnotationEngine,
     upload_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    embedded_worker_wakeup: Arc<Notify>,
 }
 
 impl AppState {
@@ -90,6 +91,7 @@ impl AppState {
             solver,
             annotations,
             upload_locks: Arc::new(Mutex::new(HashMap::new())),
+            embedded_worker_wakeup: Arc::new(Notify::new()),
         })
     }
 
@@ -108,14 +110,26 @@ impl AppState {
             let state = self.clone();
             tokio::spawn(async move {
                 tracing::info!(worker, "solver worker started");
+                let fallback_poll = Duration::from_secs(state.config.lease_seconds);
                 loop {
+                    // Register before checking the repository so a job queued
+                    // concurrently with the startup/recovery claim cannot miss
+                    // its wakeup.
+                    let wakeup = state.embedded_worker_wakeup.notified();
+                    tokio::pin!(wakeup);
+                    wakeup.as_mut().enable();
                     match state
                         .repository
                         .claim(None, state.config.lease_seconds)
                         .await
                     {
                         Ok(Some(lease)) => state.run_embedded_job(lease).await,
-                        Ok(None) => tokio::time::sleep(Duration::from_secs(1)).await,
+                        Ok(None) => {
+                            tokio::select! {
+                                _ = &mut wakeup => {}
+                                _ = tokio::time::sleep(fallback_poll) => {}
+                            }
+                        }
                         Err(error) => {
                             tracing::error!(%error, "failed to claim durable queue job");
                             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -397,6 +411,9 @@ impl AppState {
             .await
             .map_err(ApiError::internal)?
         {
+            if job.status == JobStatus::Queued {
+                self.embedded_worker_wakeup.notify_waiters();
+            }
             return Ok(job);
         }
         let created_at = Utc::now();
@@ -424,6 +441,9 @@ impl AppState {
             .enqueue(job)
             .await
             .map_err(ApiError::internal)?;
+        if job.status == JobStatus::Queued {
+            self.embedded_worker_wakeup.notify_waiters();
+        }
         if self.transport.uses_external_queue() {
             match self.transport.publish(job.id).await {
                 Ok(()) => self
@@ -1536,6 +1556,7 @@ async fn retry_solve(
             "the solve is no longer in a failed state",
         ));
     }
+    state.embedded_worker_wakeup.notify_waiters();
     if state.transport.uses_external_queue() {
         match state.transport.publish(job.id).await {
             Ok(()) => state
@@ -2628,6 +2649,40 @@ mod tests {
         assert_eq!(legacy_public_job_id("42-not-a-token"), None);
     }
 
+    #[tokio::test]
+    async fn enqueue_wakes_embedded_workers() {
+        let root = std::env::temp_dir().join(format!("seiza-api-wakeup-{}", Uuid::now_v7()));
+        let state = AppState::new(test_config(&root)).await.unwrap();
+        {
+            let wakeup_signal = Arc::clone(&state.embedded_worker_wakeup);
+            let wakeup = wakeup_signal.notified();
+            tokio::pin!(wakeup);
+            wakeup.as_mut().enable();
+
+            let job = state
+                .enqueue_stored(
+                    Client {
+                        id: "public".into(),
+                        queue_weight: 1.0,
+                    },
+                    state.new_object_key("wakeup.fits"),
+                    "wakeup.fits".into(),
+                    Some("application/fits".into()),
+                    SolveOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            tokio::time::timeout(Duration::from_secs(1), wakeup.as_mut())
+                .await
+                .expect("enqueue did not wake embedded workers");
+            assert_eq!(job.status, JobStatus::Queued);
+        }
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn solve_time_reports_the_completed_worker_attempt() {
         let started = "2026-07-15T10:00:00Z"
@@ -2979,14 +3034,24 @@ mod tests {
             scale_arcsec_per_pixel: Some(1.24),
             ..SolveOptions::default()
         };
-        let (status, Json(retried)) = retry_solve(
-            State(state.clone()),
-            Path(job.id.clone()),
-            HeaderMap::new(),
-            Json(hints),
-        )
-        .await
-        .unwrap();
+        let (status, Json(retried)) = {
+            let wakeup_signal = Arc::clone(&state.embedded_worker_wakeup);
+            let wakeup = wakeup_signal.notified();
+            tokio::pin!(wakeup);
+            wakeup.as_mut().enable();
+            let response = retry_solve(
+                State(state.clone()),
+                Path(job.id.clone()),
+                HeaderMap::new(),
+                Json(hints),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), wakeup.as_mut())
+                .await
+                .expect("retry did not wake embedded workers");
+            response
+        };
         assert_eq!(status, StatusCode::ACCEPTED);
         assert_eq!(retried.id, job.id);
         assert_eq!(retried.status, JobStatus::Queued);

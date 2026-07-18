@@ -48,6 +48,12 @@ the same exclusive lease boundary. Workers must present that token to fetch
 input, heartbeat, or complete. Expired leases return to `queued`; completion
 updates only apply to the current token.
 
+Embedded workers check the repository once at startup to recover durable queued
+work, registering an in-process wakeup before that claim. Enqueue and retry
+operations signal the wakeup after their durable update. Thereafter, an idle
+worker checks the repository only after one configured lease period as a
+recovery path for cross-process writes and expired leases.
+
 Admission is separate and uses a token bucket per client/IP. It returns HTTP
 429 with `Retry-After` before the upload is persisted when the bucket is empty.
 

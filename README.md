@@ -94,6 +94,10 @@ By default the API process starts `SEIZA_WORKER_COUNT` embedded workers. The
 default queue is an SQLx SQLite database at `SEIZA_QUEUE_DATABASE` (default
 `data/jobs.sqlite3`) and preserves queued jobs after a restart. Set a
 `SEIZA_SQL_DATABASE_URL` for a SQLite URL or PostgreSQL connection instead.
+Embedded workers check the durable queue once at startup to recover queued work.
+New and retried jobs then wake them in memory. A fallback check after one lease
+period (15 minutes by default) recovers jobs written by another process and
+expired leases without continuously polling an idle job store.
 To separate API and CPU work, set a shared worker token and disable embedded
 workers on the API process:
 
