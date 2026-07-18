@@ -445,19 +445,23 @@ impl JobRepository for DynamoDbJobRepository {
             .key("pk", string(job_key(job.id)))
             .update_expression("SET #status = :solving, started_at = :started_at, lease_token = :lease_token, lease_expires_at = :lease_expires_at ADD attempts :one")
             .expression_attribute_names("#status", "status")
-            .expression_attribute_names("#lease_expires_at", "lease_expires_at")
-            .expression_attribute_values(":queued", string("queued"))
             .expression_attribute_values(":solving", string("solving"))
-            .expression_attribute_values(":now", string(encode_time(now)))
             .expression_attribute_values(":started_at", string(encode_time(now)))
             .expression_attribute_values(":lease_token", string(&lease_token))
             .expression_attribute_values(":lease_expires_at", string(encode_time(lease_expires_at)))
             .expression_attribute_values(":one", number(1));
+        // Declare only the eligibility-specific names/values the chosen condition
+        // actually uses: DynamoDB rejects a request that carries unused
+        // ExpressionAttributeNames/Values with a ValidationException, so the
+        // shared `:now`/`#lease_expires_at` would break the Queued claim path.
         job_update = match eligibility {
-            ClaimEligibility::Queued => job_update.condition_expression("#status = :queued"),
-            ClaimEligibility::ExpiredLease => {
-                job_update.condition_expression("#status = :solving AND #lease_expires_at <= :now")
-            }
+            ClaimEligibility::Queued => job_update
+                .expression_attribute_values(":queued", string("queued"))
+                .condition_expression("#status = :queued"),
+            ClaimEligibility::ExpiredLease => job_update
+                .expression_attribute_names("#lease_expires_at", "lease_expires_at")
+                .expression_attribute_values(":now", string(encode_time(now)))
+                .condition_expression("#status = :solving AND #lease_expires_at <= :now"),
         };
         let job_update = job_update.build()?;
         let client_update = Update::builder()
