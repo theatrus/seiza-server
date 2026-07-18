@@ -453,11 +453,14 @@ impl AppState {
         }
         if self.transport.uses_external_queue() {
             match self.transport.publish(job.id).await {
-                Ok(()) => self
-                    .repository
-                    .mark_notification_delivered(job.id)
-                    .await
-                    .map_err(ApiError::internal)?,
+                Ok(()) => {
+                    if let Err(error) = self.repository.mark_notification_delivered(job.id).await {
+                        // The job and its input are already durable, and SQS may
+                        // already deliver this notification. Leave the outbox
+                        // pending so recovery can safely publish a duplicate.
+                        tracing::warn!(job_id = %job.id, %error, "external queue publish succeeded but outbox acknowledgement failed; keeping the notification pending");
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(job_id = %job.id, %error, "external queue publish deferred to durable outbox")
                 }
@@ -1586,7 +1589,20 @@ async fn resolve_solve(
     {
         Ok(job) => job,
         Err(error) => {
-            if let Err(cleanup_error) = state.store.delete(&object_key).await {
+            // A database/network error can be ambiguous after persistence. Do
+            // not delete an input that a durable queued job may already own.
+            let safe_to_delete = match state.repository.find_by_object_key(&object_key).await {
+                Ok(Some(job)) => {
+                    tracing::warn!(job_id = %job.id, %object_key, "re-solve enqueue returned an error after the job was persisted; preserving its input");
+                    false
+                }
+                Ok(None) => true,
+                Err(lookup_error) => {
+                    tracing::warn!(%lookup_error, %object_key, "could not confirm whether the failed re-solve enqueue persisted; preserving its input");
+                    false
+                }
+            };
+            if safe_to_delete && let Err(cleanup_error) = state.store.delete(&object_key).await {
                 tracing::warn!(%cleanup_error, %object_key, "could not clean up failed re-solve copy");
             }
             return Err(error);
