@@ -1,10 +1,52 @@
 use anyhow::{Context, Result, bail};
 use std::{
-    env,
+    env, fmt,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
 };
+
+#[derive(Clone, Default)]
+pub(crate) struct PriorityApiKeys(Vec<String>);
+
+impl PriorityApiKeys {
+    pub(crate) fn parse(value: Option<String>) -> Self {
+        Self(
+            value
+                .into_iter()
+                .flat_map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+        )
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.0.iter().any(|candidate| candidate == key)
+    }
+
+    fn queue_weight(&self, api_key: Option<&str>, priority_weight: usize) -> f64 {
+        if api_key.is_some_and(|key| self.contains(key)) {
+            priority_weight as f64
+        } else {
+            1.0
+        }
+    }
+}
+
+impl fmt::Debug for PriorityApiKeys {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PriorityApiKeys")
+            .field("count", &self.0.len())
+            .finish()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
@@ -94,6 +136,9 @@ pub struct Config {
     pub dynamodb_table: Option<String>,
     pub queue_transport: QueueDelivery,
     pub sqs_queue_url: Option<String>,
+    pub sqs_priority_queue_url: Option<String>,
+    pub sqs_priority_weight: usize,
+    pub(crate) priority_api_keys: PriorityApiKeys,
     pub embedded_workers: bool,
     pub worker_token: Option<String>,
     pub lease_seconds: u64,
@@ -127,11 +172,15 @@ impl Config {
         let rate_limit_burst = parse_env("SEIZA_RATE_LIMIT_BURST", 3.0f64)?;
         let embedded_workers = parse_env("SEIZA_EMBEDDED_WORKERS", true)?;
         let lease_seconds = parse_env("SEIZA_LEASE_SECONDS", 900u64)?;
+        let sqs_priority_weight = parse_env("SEIZA_SQS_PRIORITY_WEIGHT", 2usize)?;
         if rate_limit_per_minute <= 0.0 || rate_limit_burst < 1.0 {
             bail!("rate limit values must be positive and burst must be at least 1");
         }
         if lease_seconds == 0 {
             bail!("SEIZA_LEASE_SECONDS must be at least 1");
+        }
+        if !(1..=100).contains(&sqs_priority_weight) {
+            bail!("SEIZA_SQS_PRIORITY_WEIGHT must be between 1 and 100");
         }
         if upload_retention_seconds == 0 || upload_retention_seconds > i64::MAX as u64 {
             bail!("SEIZA_UPLOAD_RETENTION_SECONDS must be between 1 and i64::MAX");
@@ -221,6 +270,11 @@ impl Config {
             sqs_queue_url: env::var("SEIZA_SQS_QUEUE_URL")
                 .ok()
                 .filter(|value| !value.is_empty()),
+            sqs_priority_queue_url: env::var("SEIZA_SQS_PRIORITY_QUEUE_URL")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            sqs_priority_weight,
+            priority_api_keys: PriorityApiKeys::parse(env::var("SEIZA_PRIORITY_API_KEYS").ok()),
             embedded_workers,
             worker_token: env::var("SEIZA_WORKER_TOKEN")
                 .ok()
@@ -240,6 +294,11 @@ impl Config {
             s3_prefix,
             validation_prefix,
         })
+    }
+
+    pub(crate) fn queue_weight_for_api_key(&self, api_key: Option<&str>) -> f64 {
+        self.priority_api_keys
+            .queue_weight(api_key, self.sqs_priority_weight)
     }
 }
 
@@ -376,5 +435,17 @@ mod tests {
             ),
             Some(explicit)
         );
+    }
+
+    #[test]
+    fn priority_api_keys_are_trimmed_and_redacted() {
+        let keys = PriorityApiKeys::parse(Some(" first-key,second-key ,, ".into()));
+        assert!(keys.contains("first-key"));
+        assert!(keys.contains("second-key"));
+        assert!(!keys.contains("missing"));
+        assert_eq!(keys.queue_weight(Some("first-key"), 2), 2.0);
+        assert_eq!(keys.queue_weight(Some("missing"), 2), 1.0);
+        assert_eq!(keys.queue_weight(None, 2), 1.0);
+        assert_eq!(format!("{keys:?}"), "PriorityApiKeys { count: 2 }");
     }
 }

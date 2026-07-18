@@ -129,9 +129,18 @@ SEIZA_JOB_BACKEND=dynamodb
 SEIZA_DYNAMODB_TABLE=seiza-jobs
 SEIZA_QUEUE_TRANSPORT=sqs
 SEIZA_SQS_QUEUE_URL=https://sqs.us-west-2.amazonaws.com/123456789012/seiza-solves
+SEIZA_SQS_PRIORITY_QUEUE_URL=https://sqs.us-west-2.amazonaws.com/123456789012/seiza-solves-priority
+SEIZA_SQS_PRIORITY_WEIGHT=2
+# Supply from a protected EnvironmentFile or secret manager, not source control.
+SEIZA_PRIORITY_API_KEYS=replace-with-an-operator-api-key
 SEIZA_EMBEDDED_WORKERS=false
 SEIZA_WORKER_TOKEN=replace-with-a-secret-from-your-secret-manager
 ```
+
+The normal and priority queues must both be standard queues. The producer adds
+an owner-based `MessageGroupId` to enable fair queueing within each class. The
+priority queue is optional; without it, every job safely falls back to the
+normal queue.
 
 ## nginx
 

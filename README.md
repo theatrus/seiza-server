@@ -358,6 +358,9 @@ are currently supported:
 | `SEIZA_S3_PREFIX` | `uploads` | S3 object-key prefix |
 | `SEIZA_VALIDATION_PREFIX` | `validation` | Object-key prefix protected from temporary-upload cleanup for contributed validation images |
 | `SEIZA_SQS_QUEUE_URL` | unset | Required when queue transport is `sqs` |
+| `SEIZA_SQS_PRIORITY_QUEUE_URL` | unset | Optional second standard queue for jobs whose durable queue weight is above `1.0` |
+| `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged; also becomes the configured priority client's durable queue weight |
+| `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
 
 `X-Forwarded-For`/`X-Real-IP` are used for anonymous fairness and rate limits.
 Only accept those headers from a trusted reverse proxy in production.
@@ -422,6 +425,10 @@ existing public UUID, and retain mappings for legacy and Astrometry-compatible
 numeric URLs.
 
 SQS carries only the job UUID and is the normal cross-process delivery path.
+Every standard-queue message also receives an owner-based `MessageGroupId`,
+which enables SQS fair-queue treatment without changing the body or imposing
+FIFO ordering. Anonymous IPv6 owners are normalized to a `/64` before they are
+persisted, preventing address rotation from manufacturing extra fair shares.
 The selected durable job store remains the lease and result authority. The API
 publishes directly after committing a queued job; after one lease period, a
 slow recovery pass queries only old, undelivered `queued` records through the
@@ -433,6 +440,16 @@ Run direct SQS workers with the same worker token and catalog:
 ```bash
 cargo run --features aws -- worker --mode sqs --server http://api-host:8080
 ```
+
+For soft priority, keep `SEIZA_SQS_QUEUE_URL` as the normal standard queue and
+set `SEIZA_SQS_PRIORITY_QUEUE_URL` to a second standard queue with the same
+visibility and retention policy. Only API keys listed in
+`SEIZA_PRIORITY_API_KEYS` receive the configured weight and route there;
+arbitrary client-supplied keys remain normal. A worker polls both queues. When
+both are backlogged it processes `SEIZA_SQS_PRIORITY_WEIGHT` priority jobs for
+every normal job; if the preferred queue is empty, it falls back to the other
+after a bounded two-second poll. Both queues retain fair treatment among their
+own owner groups.
 
 The worker receives a job ID from SQS, claims that exact job from the API's
 selected job store, and renews SQS visibility whenever it heartbeats the job
