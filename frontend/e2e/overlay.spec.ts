@@ -500,13 +500,15 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
       [...svg.querySelectorAll<SVGGElement>('.catalog-objects > g[data-layer^="deep-sky:"]')]
         .map((group) => [
           group.dataset.layer ?? '',
-          group.style.getPropertyValue('--seiza-overlay-deep-sky-color'),
+          group.querySelector<SVGElement>('.seiza-overlay__marker')?.getAttribute('stroke') ?? '',
         ]),
     )
+    const catalogColorOverrides = [...svg.querySelectorAll<SVGGElement>('.catalog-objects > g[data-layer^="deep-sky:"]')]
+      .map((group) => group.style.getPropertyValue('--seiza-overlay-deep-sky-color'))
     const outlineCount = svg.querySelectorAll('.seiza-overlay__marker--outline').length
     const sharplessEllipseCount = svg.querySelectorAll('[data-layer="deep-sky:sharpless-vdb"] ellipse').length
     host.remove()
-    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels, catalogColors, outlineCount, sharplessEllipseCount }
+    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels, catalogColors, catalogColorOverrides, outlineCount, sharplessEllipseCount }
   })
   expect(renderedOverlay.markerStroke).toBe('0.7')
   expect(renderedOverlay.gridStroke).toBe('0.65')
@@ -522,6 +524,7 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
     'deep-sky:sharpless-vdb': '#ee9a78',
     'deep-sky:dark-nebulae': '#b4a3f0',
   })
+  expect(renderedOverlay.catalogColorOverrides.every((color) => color === '')).toBe(true)
   expect(renderedOverlay.outlineCount).toBe(0)
   expect(renderedOverlay.sharplessEllipseCount).toBe(1)
   expect(renderedOverlay.labels.length).toBeGreaterThan(0)
