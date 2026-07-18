@@ -17,14 +17,23 @@ use std::{cmp::Ordering, collections::HashMap};
 use uuid::Uuid;
 
 type Item = HashMap<String, AttributeValue>;
+const JOB_STATUS_CREATED_AT_INDEX: &str = "job-status-created-at";
 
-/// DynamoDB's single-table implementation. The table only needs a string
-/// partition key named `pk`; `JOB#…`, `ASTROMETRY#…`, and `CLIENT#…` records share
-/// it. Leases are changed conditionally, so duplicate queue messages and
-/// multiple worker processes are safe. UUID job IDs require no counter item.
+#[derive(Clone, Copy)]
+enum ClaimEligibility {
+    Queued,
+    ExpiredLease,
+}
+
+/// DynamoDB's single-table implementation. `JOB#…`, `ASTROMETRY#…`, and
+/// `CLIENT#…` records share the string `pk` partition key; job records are also
+/// indexed by `status` and `created_at` for bounded queue recovery. Leases are
+/// changed conditionally, so duplicate queue messages and multiple worker
+/// processes are safe. UUID job IDs require no counter item.
 pub struct DynamoDbJobRepository {
     client: Client,
     table: String,
+    recovery_delay: Duration,
 }
 
 impl DynamoDbJobRepository {
@@ -39,7 +48,83 @@ impl DynamoDbJobRepository {
         Ok(Self {
             client: Client::new(&sdk_config),
             table,
+            recovery_delay: Duration::seconds(config.lease_seconds.max(1) as i64),
         })
+    }
+
+    async fn job_item(&self, job_id: JobId, consistent: bool) -> Result<Option<Item>> {
+        Ok(self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("pk", string(job_key(job_id)))
+            .consistent_read(consistent)
+            .send()
+            .await?
+            .item()
+            .cloned())
+    }
+
+    async fn job_ids_by_status(
+        &self,
+        status: JobStatus,
+        created_before: Option<DateTime<Utc>>,
+        undelivered_only: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<JobId>> {
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut names = HashMap::from([("#status".into(), "status".into())]);
+        let mut values = HashMap::from([(":status".into(), string(status.as_str()))]);
+        let key_condition = if let Some(created_before) = created_before {
+            names.insert("#created_at".into(), "created_at".into());
+            values.insert(
+                ":created_before".into(),
+                string(encode_time(created_before)),
+            );
+            "#status = :status AND #created_at <= :created_before"
+        } else {
+            "#status = :status"
+        };
+        let mut job_ids = Vec::new();
+        let mut start_key = None;
+        loop {
+            let mut request = self
+                .client
+                .query()
+                .table_name(&self.table)
+                .index_name(JOB_STATUS_CREATED_AT_INDEX)
+                .key_condition_expression(key_condition)
+                .set_expression_attribute_names(Some(names.clone()))
+                .set_expression_attribute_values(Some(values.clone()));
+            if undelivered_only {
+                request =
+                    request.filter_expression("attribute_not_exists(notification_delivered_at)");
+            }
+            if let Some(key) = start_key {
+                request = request.set_exclusive_start_key(Some(key));
+            }
+            if let Some(limit) = limit {
+                request = request.limit(
+                    limit
+                        .saturating_sub(job_ids.len())
+                        .max(1)
+                        .min(i32::MAX as usize) as i32,
+                );
+            }
+            let output = request.send().await?;
+            for item in output.items() {
+                job_ids.push(job_id_from_key(&required_string(item, "pk")?)?);
+                if limit.is_some_and(|limit| job_ids.len() >= limit) {
+                    return Ok(job_ids);
+                }
+            }
+            start_key = output.last_evaluated_key().cloned();
+            if start_key.is_none() {
+                return Ok(job_ids);
+            }
+        }
     }
 
     async fn client_last_served(&self, owner: &str) -> Result<Option<DateTime<Utc>>> {
@@ -58,31 +143,15 @@ impl DynamoDbJobRepository {
     }
 
     async fn reclaim_expired(&self, now: DateTime<Utc>) -> Result<()> {
-        let mut values = HashMap::new();
-        values.insert(":job".into(), string("job"));
-        values.insert(":solving".into(), string("solving"));
-        values.insert(":now".into(), string(encode_time(now)));
-        let mut names = HashMap::new();
-        names.insert("#entity".into(), "entity".into());
-        names.insert("#status".into(), "status".into());
-        names.insert("#lease_expires_at".into(), "lease_expires_at".into());
-        for item in self
-            .scan(
-                "#entity = :job AND #status = :solving AND #lease_expires_at <= :now",
-                names,
-                values,
-                None,
-            )
+        for job_id in self
+            .job_ids_by_status(JobStatus::Solving, None, false, None)
             .await?
         {
-            let Some(pk) = optional_string(&item, "pk") else {
-                continue;
-            };
             let requeue = self
                 .client
                 .update_item()
                 .table_name(&self.table)
-                .key("pk", string(pk))
+                .key("pk", string(job_key(job_id)))
                 .condition_expression("#status = :solving AND #lease_expires_at <= :now")
                 .update_expression("SET #status = :queued REMOVE lease_token, #lease_expires_at, notification_delivered_at")
                 .expression_attribute_names("#status", "status")
@@ -104,29 +173,18 @@ impl DynamoDbJobRepository {
         Ok(())
     }
 
-    async fn queued_candidate(
-        &self,
-        requested_job_id: Option<JobId>,
-        now: DateTime<Utc>,
-    ) -> Result<Option<JobRecord>> {
-        if let Some(job_id) = requested_job_id {
-            return Ok(self
-                .get(job_id)
-                .await?
-                .filter(|job| job.status == JobStatus::Queued));
-        }
-        let mut values = HashMap::new();
-        values.insert(":job".into(), string("job"));
-        values.insert(":queued".into(), string("queued"));
-        let mut names = HashMap::new();
-        names.insert("#entity".into(), "entity".into());
-        names.insert("#status".into(), "status".into());
-        let jobs = self
-            .scan("#entity = :job AND #status = :queued", names, values, None)
+    async fn queued_candidate(&self, now: DateTime<Utc>) -> Result<Option<JobRecord>> {
+        let mut jobs = Vec::new();
+        for job_id in self
+            .job_ids_by_status(JobStatus::Queued, None, false, None)
             .await?
-            .into_iter()
-            .map(|item| record_from_item(&item))
-            .collect::<Result<Vec<_>>>()?;
+        {
+            if let Some(job) = self.get(job_id).await?
+                && job.status == JobStatus::Queued
+            {
+                jobs.push(job);
+            }
+        }
         let mut best: Option<(f64, JobRecord)> = None;
         for job in jobs {
             let score = match self.client_last_served(&job.owner).await? {
@@ -144,6 +202,29 @@ impl DynamoDbJobRepository {
             }
         }
         Ok(best.map(|(_, job)| job))
+    }
+
+    async fn requested_candidate(
+        &self,
+        job_id: JobId,
+        now: DateTime<Utc>,
+    ) -> Result<Option<(JobRecord, ClaimEligibility)>> {
+        let Some(item) = self.job_item(job_id, true).await? else {
+            return Ok(None);
+        };
+        let job = record_from_item(&item)?;
+        match job.status {
+            JobStatus::Queued => Ok(Some((job, ClaimEligibility::Queued))),
+            JobStatus::Solving
+                if optional_string(&item, "lease_expires_at")
+                    .map(|value| decode_time(&value))
+                    .transpose()?
+                    .is_some_and(|expires_at| expires_at <= now) =>
+            {
+                Ok(Some((job, ClaimEligibility::ExpiredLease)))
+            }
+            _ => Ok(None),
+        }
     }
 
     async fn scan(
@@ -241,13 +322,9 @@ impl JobRepository for DynamoDbJobRepository {
     }
 
     async fn get(&self, job_id: JobId) -> Result<Option<JobRecord>> {
-        self.client
-            .get_item()
-            .table_name(&self.table)
-            .key("pk", string(job_key(job_id)))
-            .send()
+        self.job_item(job_id, false)
             .await?
-            .item()
+            .as_ref()
             .map(record_from_item)
             .transpose()
     }
@@ -337,14 +414,8 @@ impl JobRepository for DynamoDbJobRepository {
     }
 
     async fn queue_depth(&self) -> Result<usize> {
-        let mut values = HashMap::new();
-        values.insert(":job".into(), string("job"));
-        values.insert(":queued".into(), string("queued"));
-        let mut names = HashMap::new();
-        names.insert("#entity".into(), "entity".into());
-        names.insert("#status".into(), "status".into());
         Ok(self
-            .scan("#entity = :job AND #status = :queued", names, values, None)
+            .job_ids_by_status(JobStatus::Queued, None, false, None)
             .await?
             .len())
     }
@@ -355,25 +426,40 @@ impl JobRepository for DynamoDbJobRepository {
         lease_seconds: u64,
     ) -> Result<Option<JobLease>> {
         let now = Utc::now();
-        self.reclaim_expired(now).await?;
-        let Some(job) = self.queued_candidate(requested_job_id, now).await? else {
+        let candidate = match requested_job_id {
+            Some(job_id) => self.requested_candidate(job_id, now).await?,
+            None => {
+                self.reclaim_expired(now).await?;
+                self.queued_candidate(now)
+                    .await?
+                    .map(|job| (job, ClaimEligibility::Queued))
+            }
+        };
+        let Some((job, eligibility)) = candidate else {
             return Ok(None);
         };
         let lease_token = Uuid::now_v7().to_string();
         let lease_expires_at = now + Duration::seconds(lease_seconds.max(1) as i64);
-        let job_update = Update::builder()
+        let mut job_update = Update::builder()
             .table_name(&self.table)
             .key("pk", string(job_key(job.id)))
-            .condition_expression("#status = :queued")
             .update_expression("SET #status = :solving, started_at = :started_at, lease_token = :lease_token, lease_expires_at = :lease_expires_at ADD attempts :one")
             .expression_attribute_names("#status", "status")
+            .expression_attribute_names("#lease_expires_at", "lease_expires_at")
             .expression_attribute_values(":queued", string("queued"))
             .expression_attribute_values(":solving", string("solving"))
+            .expression_attribute_values(":now", string(encode_time(now)))
             .expression_attribute_values(":started_at", string(encode_time(now)))
             .expression_attribute_values(":lease_token", string(&lease_token))
             .expression_attribute_values(":lease_expires_at", string(encode_time(lease_expires_at)))
-            .expression_attribute_values(":one", number(1))
-            .build()?;
+            .expression_attribute_values(":one", number(1));
+        job_update = match eligibility {
+            ClaimEligibility::Queued => job_update.condition_expression("#status = :queued"),
+            ClaimEligibility::ExpiredLease => {
+                job_update.condition_expression("#status = :solving AND #lease_expires_at <= :now")
+            }
+        };
+        let job_update = job_update.build()?;
         let client_update = Update::builder()
             .table_name(&self.table)
             .key("pk", string(client_key(&job.owner)))
@@ -581,23 +667,13 @@ impl JobRepository for DynamoDbJobRepository {
     }
 
     async fn pending_notifications(&self, limit: usize) -> Result<Vec<JobId>> {
-        self.reclaim_expired(Utc::now()).await?;
-        let mut values = HashMap::new();
-        values.insert(":job".into(), string("job"));
-        values.insert(":queued".into(), string("queued"));
-        let mut names = HashMap::new();
-        names.insert("#entity".into(), "entity".into());
-        names.insert("#status".into(), "status".into());
-        self.scan(
-            "#entity = :job AND #status = :queued AND attribute_not_exists(notification_delivered_at)",
-            names,
-            values,
+        self.job_ids_by_status(
+            JobStatus::Queued,
+            Some(Utc::now() - self.recovery_delay),
+            true,
             Some(limit),
         )
-        .await?
-        .into_iter()
-        .map(|item| required_uuid(&item, "id"))
-        .collect()
+        .await
     }
 
     async fn mark_notification_delivered(&self, job_id: JobId) -> Result<()> {
@@ -691,6 +767,12 @@ fn nullable_json(value: Option<SolutionResponse>) -> Result<AttributeValue> {
 fn job_key(job_id: JobId) -> String {
     format!("JOB#{job_id}")
 }
+fn job_id_from_key(key: &str) -> Result<JobId> {
+    let job_id = key
+        .strip_prefix("JOB#")
+        .context("DynamoDB job key is missing JOB# prefix")?;
+    Uuid::parse_str(job_id).context("DynamoDB job key does not contain a UUID")
+}
 fn legacy_index_key(legacy_id: LegacyJobId) -> String {
     format!("LEGACY#{legacy_id}")
 }
@@ -729,4 +811,17 @@ fn required_number(item: &Item, name: &str) -> Result<String> {
         .and_then(|value| value.as_n().ok())
         .cloned()
         .with_context(|| format!("DynamoDB item is missing number {name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_index_keys_decode_only_job_records() {
+        let job_id = Uuid::now_v7();
+        assert_eq!(job_id_from_key(&job_key(job_id)).unwrap(), job_id);
+        assert!(job_id_from_key(&client_key("owner")).is_err());
+        assert!(job_id_from_key("JOB#not-a-uuid").is_err());
+    }
 }

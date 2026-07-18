@@ -74,12 +74,23 @@ SQLite survives process restarts and supports multiple worker processes that
 claim through one API process. It is intentionally a single-host durable queue:
 do not place its database file on object storage or use it as a multi-AZ
 database. SQLx also supports a PostgreSQL URL, and the DynamoDB repository is
-a single table with a string `pk` partition key. For direct cloud delivery, the
-durable outbox publishes only job IDs to SQS; the API remains the lease
-authority and protects worker operations with a shared token. Each job has one
+a single table with a string `pk` partition key plus a
+`job-status-created-at` GSI. For direct cloud delivery, the API publishes only
+job IDs to SQS after the durable job write; the API remains the lease authority
+and protects worker operations with a shared token. Each job has one
 random UUIDv4 used by the repository, public result URL, worker API, upload
 object path, and SQS message, so neither backend needs a centralized sequence
-generator. This makes duplicate SQS messages and worker crashes safe.
+generator. A direct worker claims that UUID with one primary-key read and
+renews SQS visibility with its database heartbeat. SQS therefore redelivers a
+crashed worker's message after its lease expires without a database sweep.
+
+The GSI is the finite-time safety net, not a second queue. After one lease
+period, the API queries `status = queued` ordered by `created_at` for records
+whose initial publish was never acknowledged and republishes them. Recovery of
+expired leases and embedded-worker scheduling also query the small active
+`queued` or `solving` partitions. Historical completed jobs are never scanned
+during queue operation; table `Scan` remains only for store migration and one
+legacy object-key compatibility lookup.
 
 The AWS-enabled `migrate-store` command copies the complete logical job-store
 snapshot between SQLx and DynamoDB while the service is quiesced. It preserves
