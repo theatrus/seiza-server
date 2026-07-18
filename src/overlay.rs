@@ -8,6 +8,7 @@ use std::fmt::Write;
 pub struct OverlayOptions {
     pub objects: bool,
     pub grid: bool,
+    pub outlines: bool,
 }
 
 impl Default for OverlayOptions {
@@ -15,6 +16,7 @@ impl Default for OverlayOptions {
         Self {
             objects: true,
             grid: false,
+            outlines: true,
         }
     }
 }
@@ -33,7 +35,13 @@ pub fn render_svg(
     let mut objects = String::new();
     if options.objects {
         for object in &solution.objects {
-            render_object(&mut objects, object, width as f64, height as f64);
+            render_object(
+                &mut objects,
+                object,
+                width as f64,
+                height as f64,
+                options.outlines,
+            );
         }
     }
     let GridMarkup {
@@ -364,14 +372,20 @@ fn format_dec(dec_degrees: f64) -> String {
     )
 }
 
-fn render_object(output: &mut String, object: &OverlayObject, width: f64, height: f64) {
+fn render_object(
+    output: &mut String,
+    object: &OverlayObject,
+    width: f64,
+    height: f64,
+    show_outlines: bool,
+) {
     let color = match object.kind.as_str() {
         "star" | "double-star" => "#ffe45e",
         "identified-star" => "#b7a6ff",
         "transient" => "#ff4fd8",
         "comet" => "#6df2a2",
         "asteroid" => "#ffad5c",
-        _ => "#5ee7f2",
+        _ => deep_sky_catalog_color(&object.name),
     };
     if object.kind == "field-star" {
         let _ = write!(
@@ -435,7 +449,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
             }
         }
         _ => {
-            if object.outlines.is_empty() {
+            if object.outlines.is_empty() || !show_outlines {
                 let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
                 let radius_y = if object.angle_deg.is_none() {
                     radius_x
@@ -460,6 +474,62 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
         x = (object.x + 14.0).clamp(8.0, width - 8.0),
         y = (object.y - 14.0).clamp(18.0, height - 8.0),
     );
+}
+
+fn deep_sky_catalog_color(name: &str) -> &'static str {
+    let name = name.trim().to_ascii_uppercase();
+    if catalog_prefix(&name, "PGC") {
+        "#a1aed8"
+    } else if catalog_prefix(&name, "UGC") {
+        "#79aff5"
+    } else if catalog_prefix(&name, "LBN") {
+        "#a2d96f"
+    } else if catalog_prefix(&name, "CED") || catalog_prefix(&name, "CEDERBLAD") {
+        "#70d7d0"
+    } else if catalog_prefix(&name, "LDN") || numbered_designation(&name, "B") {
+        "#b4a3f0"
+    } else if catalog_prefix(&name, "SNR") {
+        "#f18782"
+    } else if sharpless_designation(&name) || catalog_prefix(&name, "VDB") {
+        "#ee9a78"
+    } else if numbered_designation(&name, "M") {
+        "#f2ca72"
+    } else if numbered_designation(&name, "NGC") {
+        "#55cfff"
+    } else if numbered_designation(&name, "IC") {
+        "#72dfb9"
+    } else {
+        "#c1d1d3"
+    }
+}
+
+fn catalog_prefix(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_whitespace())
+    })
+}
+
+fn numbered_designation(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|rest| {
+        rest.trim_start()
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+fn sharpless_designation(name: &str) -> bool {
+    name.strip_prefix("SH").is_some_and(|rest| {
+        rest.trim_start().strip_prefix('2').is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_some_and(|character| character == '-' || character.is_ascii_whitespace())
+        })
+    })
 }
 
 fn render_outlines(output: &mut String, object: &OverlayObject, color: &str) {
@@ -686,6 +756,64 @@ mod tests {
     }
 
     #[test]
+    fn deep_sky_catalogs_use_a_restrained_marker_palette() {
+        assert_eq!(deep_sky_catalog_color("M 31"), "#f2ca72");
+        assert_eq!(deep_sky_catalog_color("NGC7000"), "#55cfff");
+        assert_eq!(deep_sky_catalog_color("IC 5070"), "#72dfb9");
+        assert_eq!(deep_sky_catalog_color("Sh 2-101"), "#ee9a78");
+        assert_eq!(deep_sky_catalog_color("LBN 437"), "#a2d96f");
+        assert_eq!(deep_sky_catalog_color("LDN 935"), "#b4a3f0");
+        assert_eq!(deep_sky_catalog_color("SNR G120.1+1.4"), "#f18782");
+        assert_eq!(deep_sky_catalog_color("UGC 123"), "#79aff5");
+        assert_eq!(deep_sky_catalog_color("PGC 123"), "#a1aed8");
+        assert_eq!(deep_sky_catalog_color("Abell 426"), "#c1d1d3");
+    }
+
+    #[test]
+    fn direct_svg_uses_catalog_color_for_ellipses_and_outlines() {
+        let mut colored = solution();
+        colored.objects[0].name = "LDN 935".into();
+        let ellipse_svg = render_svg(
+            &colored,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(ellipse_svg.contains("<ellipse class=\"marker\" stroke=\"#b4a3f0\""));
+
+        colored.objects[0].name = "Sh2-101".into();
+        colored.objects[0].outlines = vec![OverlayOutline {
+            geometry_id: "openngc:Sh2-101#outline-1".into(),
+            source_record_id: "openngc:Sh2-101".into(),
+            role: "brightness-level".into(),
+            quality: "catalog".into(),
+            level: Some("1".into()),
+            contours: vec![OverlayContour {
+                closed: true,
+                points: vec![[10.0, 20.0], [30.0, 40.0], [50.0, 20.0]],
+            }],
+        }];
+        let outline_svg = render_svg(
+            &colored,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(outline_svg.contains(
+            "class=\"marker object-outline\" data-geometry-id=\"openngc:Sh2-101#outline-1\" data-outline-level=\"1\" stroke=\"#ee9a78\""
+        ));
+
+        let fallback_svg = render_svg(
+            &colored,
+            &Bytes::from_static(b"png"),
+            OverlayOptions {
+                outlines: false,
+                ..OverlayOptions::default()
+            },
+        );
+        assert!(!fallback_svg.contains("class=\"marker object-outline\""));
+        assert!(fallback_svg.contains("<ellipse class=\"marker\" stroke=\"#ee9a78\""));
+    }
+
+    #[test]
     fn grid_option_projects_coordinate_graticule() {
         let svg = render_svg(
             &solution(),
@@ -693,6 +821,7 @@ mod tests {
             OverlayOptions {
                 objects: false,
                 grid: true,
+                ..OverlayOptions::default()
             },
         );
         assert!(svg.contains("class=\"grid-line\""));
@@ -717,6 +846,7 @@ mod tests {
             OverlayOptions {
                 objects: false,
                 grid: true,
+                ..OverlayOptions::default()
             },
         );
         assert!(svg.contains("class=\"grid-line\""));
@@ -735,6 +865,7 @@ mod tests {
             OverlayOptions {
                 objects: false,
                 grid: true,
+                ..OverlayOptions::default()
             },
         );
         assert!(svg.contains("font: 700 68.27px ui-monospace"));
