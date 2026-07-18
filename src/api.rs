@@ -37,6 +37,7 @@ use std::{
     collections::HashMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
+    net::{IpAddr, Ipv6Addr},
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime},
 };
@@ -238,7 +239,23 @@ impl AppState {
             match self.repository.pending_notifications(100).await {
                 Ok(job_ids) => {
                     for job_id in job_ids {
-                        match self.transport.publish(job_id).await {
+                        let job = match self.repository.get(job_id).await {
+                            Ok(Some(job)) => job,
+                            Ok(None) => {
+                                tracing::warn!(%job_id, "discarding outbox notification for a missing job");
+                                if let Err(error) =
+                                    self.repository.mark_notification_delivered(job_id).await
+                                {
+                                    tracing::error!(%error, %job_id, "failed to discard orphaned durable queue notification");
+                                }
+                                continue;
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, %job_id, "failed to load durable queue job; keeping outbox record");
+                                continue;
+                            }
+                        };
+                        match self.transport.publish(&job).await {
                             Ok(()) => {
                                 if let Err(error) =
                                     self.repository.mark_notification_delivered(job_id).await
@@ -452,7 +469,7 @@ impl AppState {
             self.embedded_worker_wakeup.notify_waiters();
         }
         if self.transport.uses_external_queue() {
-            match self.transport.publish(job.id).await {
+            match self.transport.publish(&job).await {
                 Ok(()) => {
                     if let Err(error) = self.repository.mark_notification_delivered(job.id).await {
                         // The job and its input are already durable, and SQS may
@@ -2352,13 +2369,24 @@ fn client_from_headers(
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.split(',').next())
                 .unwrap_or("anonymous");
-            format!("public:{source_ip}")
+            public_client_id(source_ip)
         }
     };
     Ok(Client {
         id,
-        queue_weight: 1.0,
+        queue_weight: state.config.queue_weight_for_api_key(api_key),
     })
+}
+
+fn public_client_id(source_ip: &str) -> String {
+    match source_ip.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => format!("public:{address}"),
+        Ok(IpAddr::V6(address)) => {
+            let prefix = u128::from(address) & (u128::MAX << 64);
+            format!("public:{}", Ipv6Addr::from(prefix))
+        }
+        Err(_) => "public:anonymous".into(),
+    }
 }
 
 fn stable_hash(value: &str) -> u64 {
@@ -3614,6 +3642,38 @@ mod tests {
         headers
     }
 
+    #[test]
+    fn public_client_ids_normalize_ip_addresses_for_queue_fairness() {
+        assert_eq!(public_client_id("192.0.2.42"), "public:192.0.2.42");
+        assert_eq!(
+            public_client_id("2001:db8:1234:5678:90ab:cdef:1234:5678"),
+            "public:2001:db8:1234:5678::"
+        );
+        assert_eq!(public_client_id("not an ip"), "public:anonymous");
+    }
+
+    #[tokio::test]
+    async fn only_configured_api_keys_receive_priority_weight() {
+        let root = std::env::temp_dir().join(format!("seiza-priority-key-{}", Uuid::now_v7()));
+        let mut config = test_config(&root);
+        config.priority_api_keys =
+            crate::config::PriorityApiKeys::parse(Some("operator-secret".into()));
+        let state = AppState::new(config).await.unwrap();
+
+        let mut priority_headers = HeaderMap::new();
+        priority_headers.insert("x-api-key", HeaderValue::from_static("operator-secret"));
+        let priority = client_from_headers(&state, &priority_headers, None).unwrap();
+        assert_eq!(priority.queue_weight, 2.0);
+
+        let mut ordinary_headers = HeaderMap::new();
+        ordinary_headers.insert("x-api-key", HeaderValue::from_static("unconfigured-key"));
+        let ordinary = client_from_headers(&state, &ordinary_headers, None).unwrap();
+        assert_eq!(ordinary.queue_weight, 1.0);
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn test_config(root: &std::path::Path) -> Config {
         Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -3630,6 +3690,9 @@ mod tests {
             dynamodb_table: None,
             queue_transport: QueueDelivery::Local,
             sqs_queue_url: None,
+            sqs_priority_queue_url: None,
+            sqs_priority_weight: 2,
+            priority_api_keys: Default::default(),
             embedded_workers: false,
             worker_token: None,
             lease_seconds: 900,

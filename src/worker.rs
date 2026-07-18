@@ -11,6 +11,10 @@ use std::{env, time::Duration};
 
 const WORKER_HEARTBEAT_SECONDS: u64 = 60;
 const SQS_MAX_VISIBILITY_SECONDS: u64 = 43_200;
+#[cfg(feature = "aws")]
+const SQS_LONG_POLL_SECONDS: i32 = 20;
+#[cfg(feature = "aws")]
+const SQS_PRIORITY_POLL_SECONDS: i32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerMode {
@@ -170,13 +174,26 @@ pub async fn run(args: WorkerArgs) -> Result<()> {
         config.blind_index_path.as_deref(),
     );
     let lease_seconds = config.lease_seconds;
+    let sqs_queue_url = config.sqs_queue_url.clone();
+    let sqs_priority_queue_url = config.sqs_priority_queue_url.clone();
+    let sqs_priority_weight = config.sqs_priority_weight;
     if !engine.is_ready() {
         bail!("worker requires SEIZA_STAR_DATA to point at a Seiza tile catalog");
     }
     let client = WorkerClient::new(args.server, args.token);
     match args.mode {
         WorkerMode::Http => run_http_worker(client, engine).await,
-        WorkerMode::Sqs => run_sqs_worker(client, engine, lease_seconds).await,
+        WorkerMode::Sqs => {
+            run_sqs_worker(
+                client,
+                engine,
+                lease_seconds,
+                sqs_queue_url,
+                sqs_priority_queue_url,
+                sqs_priority_weight,
+            )
+            .await
+        }
     }
 }
 
@@ -281,68 +298,214 @@ async fn process_lease(
 }
 
 #[cfg(feature = "aws")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqsQueueClass {
+    Priority,
+    Normal,
+}
+
+#[cfg(feature = "aws")]
+struct SqsQueueSchedule {
+    priority_weight: usize,
+    cursor: usize,
+}
+
+#[cfg(feature = "aws")]
+impl SqsQueueSchedule {
+    fn new(priority_weight: usize) -> Self {
+        Self {
+            priority_weight: priority_weight.max(1),
+            cursor: 0,
+        }
+    }
+
+    fn next(&mut self) -> SqsQueueClass {
+        let class = if self.cursor < self.priority_weight {
+            SqsQueueClass::Priority
+        } else {
+            SqsQueueClass::Normal
+        };
+        self.cursor = (self.cursor + 1) % (self.priority_weight + 1);
+        class
+    }
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+trait SqsMessageReceiver: Sync {
+    async fn receive_sqs_message(
+        &self,
+        queue_url: &str,
+        visibility_timeout: i32,
+        wait_time_seconds: i32,
+    ) -> Result<Option<aws_sdk_sqs::types::Message>>;
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+impl SqsMessageReceiver for aws_sdk_sqs::Client {
+    async fn receive_sqs_message(
+        &self,
+        queue_url: &str,
+        visibility_timeout: i32,
+        wait_time_seconds: i32,
+    ) -> Result<Option<aws_sdk_sqs::types::Message>> {
+        Ok(self
+            .receive_message()
+            .queue_url(queue_url)
+            .max_number_of_messages(1)
+            .wait_time_seconds(wait_time_seconds)
+            .visibility_timeout(visibility_timeout)
+            .send()
+            .await
+            .context("receiving SQS message")?
+            .messages()
+            .first()
+            .cloned())
+    }
+}
+
+#[cfg(feature = "aws")]
+async fn receive_weighted_sqs_message(
+    sqs: &impl SqsMessageReceiver,
+    normal_queue_url: &str,
+    priority_queue_url: &str,
+    schedule: &mut SqsQueueSchedule,
+    visibility_timeout: i32,
+) -> Result<Option<(SqsQueueClass, aws_sdk_sqs::types::Message)>> {
+    let preferred = schedule.next();
+    let (preferred_class, preferred_url, fallback_class, fallback_url) = match preferred {
+        SqsQueueClass::Priority => (
+            SqsQueueClass::Priority,
+            priority_queue_url,
+            SqsQueueClass::Normal,
+            normal_queue_url,
+        ),
+        SqsQueueClass::Normal => (
+            SqsQueueClass::Normal,
+            normal_queue_url,
+            SqsQueueClass::Priority,
+            priority_queue_url,
+        ),
+    };
+    let preferred_receive_succeeded = match sqs
+        .receive_sqs_message(preferred_url, visibility_timeout, SQS_PRIORITY_POLL_SECONDS)
+        .await
+    {
+        Ok(Some(message)) => return Ok(Some((preferred_class, message))),
+        Ok(None) => true,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                queue_class = ?preferred_class,
+                "SQS queue receive failed; polling the other queue"
+            );
+            false
+        }
+    };
+    match sqs
+        .receive_sqs_message(fallback_url, visibility_timeout, SQS_PRIORITY_POLL_SECONDS)
+        .await
+    {
+        Ok(message) => Ok(message.map(|message| (fallback_class, message))),
+        Err(error) if preferred_receive_succeeded => {
+            tracing::warn!(
+                %error,
+                queue_class = ?fallback_class,
+                "SQS fallback queue receive failed; preferred queue remains available"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error).context("receiving from both SQS queues failed"),
+    }
+}
+
+#[cfg(feature = "aws")]
 async fn run_sqs_worker(
     client: WorkerClient,
     engine: SolverEngine,
     lease_seconds: u64,
+    queue_url: Option<String>,
+    priority_queue_url: Option<String>,
+    priority_weight: usize,
 ) -> Result<()> {
-    let queue_url = env::var("SEIZA_SQS_QUEUE_URL")
-        .context("SEIZA_SQS_QUEUE_URL is required for SQS workers")?;
+    let queue_url = queue_url.context("SEIZA_SQS_QUEUE_URL is required for SQS workers")?;
     let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .load()
         .await;
     let sqs = aws_sdk_sqs::Client::new(&sdk_config);
     let visibility_timeout = sqs_visibility_timeout(lease_seconds);
-    tracing::info!(queue_url, "direct SQS worker started");
+    let mut schedule = SqsQueueSchedule::new(priority_weight);
+    tracing::info!(
+        queue_url,
+        priority_queue_url,
+        priority_weight,
+        "direct SQS worker started"
+    );
     loop {
-        let response = sqs
-            .receive_message()
-            .queue_url(&queue_url)
-            .max_number_of_messages(1)
-            .wait_time_seconds(20)
-            .visibility_timeout(visibility_timeout)
-            .send()
-            .await
-            .context("receiving SQS message")?;
-        for message in response.messages() {
-            let Some(body) = message.body() else { continue };
-            let Some(receipt_handle) = message.receipt_handle() else {
+        let (class, message) = if let Some(priority_queue_url) = &priority_queue_url {
+            let Some(message) = receive_weighted_sqs_message(
+                &sqs,
+                &queue_url,
+                priority_queue_url,
+                &mut schedule,
+                visibility_timeout,
+            )
+            .await?
+            else {
                 continue;
             };
-            let job_id: JobId = match body.parse() {
-                Ok(id) => id,
-                Err(_) => {
-                    tracing::warn!(body, "discarding invalid SQS job message");
-                    sqs.delete_message()
-                        .queue_url(&queue_url)
-                        .receipt_handle(receipt_handle)
-                        .send()
-                        .await?;
-                    continue;
-                }
+            message
+        } else {
+            let Some(message) = sqs
+                .receive_sqs_message(&queue_url, visibility_timeout, SQS_LONG_POLL_SECONDS)
+                .await?
+            else {
+                continue;
             };
-            let handled = match client.claim(Some(job_id)).await? {
-                Some(lease) => {
-                    let heartbeat = SqsHeartbeat {
-                        client: &sqs,
-                        queue_url: &queue_url,
-                        receipt_handle,
-                        visibility_timeout,
-                    };
-                    process_lease(&client, &engine, lease, &heartbeat).await?
-                }
-                // Ack completed/deleted jobs. An actively leased job may be
-                // an early or duplicate delivery, so leave that message for
-                // SQS to expose again after its visibility timeout.
-                None => client.job_is_terminal(job_id).await?,
-            };
-            if handled {
+            (SqsQueueClass::Normal, message)
+        };
+        let active_queue_url = match class {
+            SqsQueueClass::Priority => priority_queue_url.as_deref().unwrap_or(&queue_url),
+            SqsQueueClass::Normal => &queue_url,
+        };
+        let Some(body) = message.body() else { continue };
+        let Some(receipt_handle) = message.receipt_handle() else {
+            continue;
+        };
+        let job_id: JobId = match body.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                tracing::warn!(body, ?class, "discarding invalid SQS job message");
                 sqs.delete_message()
-                    .queue_url(&queue_url)
+                    .queue_url(active_queue_url)
                     .receipt_handle(receipt_handle)
                     .send()
                     .await?;
+                continue;
             }
+        };
+        let handled = match client.claim(Some(job_id)).await? {
+            Some(lease) => {
+                let heartbeat = SqsHeartbeat {
+                    client: &sqs,
+                    queue_url: active_queue_url,
+                    receipt_handle,
+                    visibility_timeout,
+                };
+                process_lease(&client, &engine, lease, &heartbeat).await?
+            }
+            // Ack completed/deleted jobs. An actively leased job may be an
+            // early or duplicate delivery, so leave that message for SQS to
+            // expose again after its visibility timeout.
+            None => client.job_is_terminal(job_id).await?,
+        };
+        if handled {
+            sqs.delete_message()
+                .queue_url(active_queue_url)
+                .receipt_handle(receipt_handle)
+                .send()
+                .await?;
         }
     }
 }
@@ -352,6 +515,9 @@ async fn run_sqs_worker(
     _client: WorkerClient,
     _engine: SolverEngine,
     _lease_seconds: u64,
+    _queue_url: Option<String>,
+    _priority_queue_url: Option<String>,
+    _priority_weight: usize,
 ) -> Result<()> {
     bail!("SQS worker mode requires `cargo run --features aws -- worker --mode sqs`")
 }
@@ -366,10 +532,121 @@ fn sqs_visibility_timeout(lease_seconds: u64) -> i32 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "aws")]
+    use std::{collections::VecDeque, sync::Mutex as StdMutex};
+
+    #[cfg(feature = "aws")]
+    struct FakeSqsReceiver {
+        responses: StdMutex<VecDeque<Result<Option<aws_sdk_sqs::types::Message>>>>,
+        requested_queues: StdMutex<Vec<String>>,
+    }
+
+    #[cfg(feature = "aws")]
+    impl FakeSqsReceiver {
+        fn new(responses: Vec<Result<Option<aws_sdk_sqs::types::Message>>>) -> Self {
+            Self {
+                responses: StdMutex::new(responses.into()),
+                requested_queues: StdMutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[cfg(feature = "aws")]
+    #[async_trait]
+    impl SqsMessageReceiver for FakeSqsReceiver {
+        async fn receive_sqs_message(
+            &self,
+            queue_url: &str,
+            _visibility_timeout: i32,
+            _wait_time_seconds: i32,
+        ) -> Result<Option<aws_sdk_sqs::types::Message>> {
+            self.requested_queues
+                .lock()
+                .unwrap()
+                .push(queue_url.to_owned());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("fake SQS response")
+        }
+    }
+
     #[test]
     fn sqs_visibility_outlasts_the_database_lease() {
         assert_eq!(sqs_visibility_timeout(900), 960);
         assert_eq!(sqs_visibility_timeout(1), 61);
         assert_eq!(sqs_visibility_timeout(u64::MAX), 43_200);
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn priority_schedule_is_weighted_without_starving_normal() {
+        let mut schedule = SqsQueueSchedule::new(2);
+        assert_eq!(schedule.next(), SqsQueueClass::Priority);
+        assert_eq!(schedule.next(), SqsQueueClass::Priority);
+        assert_eq!(schedule.next(), SqsQueueClass::Normal);
+        assert_eq!(schedule.next(), SqsQueueClass::Priority);
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn priority_receive_failure_falls_back_to_normal_queue() {
+        let receiver = FakeSqsReceiver::new(vec![
+            Err(anyhow::anyhow!("priority queue unavailable")),
+            Ok(Some(
+                aws_sdk_sqs::types::Message::builder()
+                    .body("normal-job")
+                    .build(),
+            )),
+        ]);
+        let mut schedule = SqsQueueSchedule::new(2);
+
+        let (class, message) = receive_weighted_sqs_message(
+            &receiver,
+            "normal-queue",
+            "priority-queue",
+            &mut schedule,
+            960,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(class, SqsQueueClass::Normal);
+        assert_eq!(message.body(), Some("normal-job"));
+        assert_eq!(
+            *receiver.requested_queues.lock().unwrap(),
+            ["priority-queue", "normal-queue"]
+        );
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn fallback_receive_failure_does_not_hide_a_healthy_empty_queue() {
+        let receiver = FakeSqsReceiver::new(vec![
+            Ok(None),
+            Err(anyhow::anyhow!("priority queue unavailable")),
+        ]);
+        let mut schedule = SqsQueueSchedule {
+            priority_weight: 2,
+            cursor: 2,
+        };
+
+        let message = receive_weighted_sqs_message(
+            &receiver,
+            "normal-queue",
+            "priority-queue",
+            &mut schedule,
+            960,
+        )
+        .await
+        .unwrap();
+
+        assert!(message.is_none());
+        assert_eq!(
+            *receiver.requested_queues.lock().unwrap(),
+            ["normal-queue", "priority-queue"]
+        );
     }
 }
