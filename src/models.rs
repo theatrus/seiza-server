@@ -374,6 +374,8 @@ pub struct OverlayObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance_au: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_arcsec_per_hour: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction_pa_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction_angle_deg: Option<f64>,

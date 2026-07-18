@@ -54,6 +54,7 @@ export interface OverlayObject {
   discovered?: string
   near_capture?: boolean
   distance_au?: number
+  motion_arcsec_per_hour?: number
   direction_pa_deg?: number
   direction_angle_deg?: number
   outlines?: Array<{

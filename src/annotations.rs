@@ -436,6 +436,7 @@ fn append_object_catalog(
             discovered,
             near_capture,
             distance_au: None,
+            motion_arcsec_per_hour: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines,
@@ -556,6 +557,7 @@ fn append_star_identifier_catalog(
             discovered: None,
             near_capture: None,
             distance_au: None,
+            motion_arcsec_per_hour: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines: Vec::new(),
@@ -616,6 +618,7 @@ fn append_field_stars(
             discovered: None,
             near_capture: None,
             distance_au: None,
+            motion_arcsec_per_hour: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines: Vec::new(),
@@ -662,6 +665,7 @@ fn append_minor_bodies(
             discovered: None,
             near_capture: Some(true),
             distance_au: Some(placed.delta_au),
+            motion_arcsec_per_hour: placed.motion_arcsec_per_hour,
             direction_pa_deg: placed.direction_pa_deg,
             direction_angle_deg: placed
                 .direction_pa_deg
@@ -817,12 +821,52 @@ mod tests {
     use super::*;
     use crate::models::WcsResponse;
     use seiza::{
+        minor_bodies::{MinorBody, MinorBodyCatalog, MinorBodyKind},
         objects::{
             ObjectCatalogData, ObjectContour, ObjectDetails, ObjectGeometry, ObjectMetadata,
             SkyObject,
         },
         star_ids::{StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind},
     };
+
+    #[test]
+    fn minor_body_annotations_preserve_apparent_motion_rate() {
+        let body = MinorBody {
+            kind: MinorBodyKind::Asteroid,
+            name: "(12345) Test".into(),
+            epoch_jd: 2_460_000.5,
+            q_or_a: 2.5,
+            eccentricity: 0.2,
+            inclination_deg: 12.0,
+            node_deg: 45.0,
+            arg_perihelion_deg: 110.0,
+            mean_anomaly_deg: 30.0,
+            h_mag: 10.0,
+            slope: 0.15,
+        };
+        let jd = body.epoch_jd + 100.0;
+        let (ra, dec, _, _) = MinorBodyCatalog::position_at(&body, jd).unwrap();
+        let wcs = Wcs::from_center_scale_rotation((ra, dec), (500.0, 500.0), 2.0, 0.0, false);
+        let capture_time =
+            DateTime::from_timestamp_millis(((jd - 2_440_587.5) * 86_400_000.0).round() as i64)
+                .unwrap();
+        let catalog = MinorBodyCatalog::new(vec![body]);
+        let mut objects = Vec::new();
+
+        append_minor_bodies(&mut objects, &catalog, &wcs, (1000, 1000), capture_time);
+
+        assert_eq!(objects.len(), 1);
+        let object = &objects[0];
+        assert_eq!(object.kind, "asteroid");
+        assert!(
+            object
+                .motion_arcsec_per_hour
+                .is_some_and(|speed| speed > 1.0)
+        );
+        assert!(object.direction_pa_deg.is_some());
+        assert!(object.direction_angle_deg.is_some());
+        assert!(serde_json::to_value(object).unwrap()["motion_arcsec_per_hour"].is_number());
+    }
 
     #[test]
     fn transient_dates_are_scoped_around_capture_time() {

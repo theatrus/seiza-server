@@ -41,6 +41,7 @@ pub fn render_svg(
                 width as f64,
                 height as f64,
                 options.outlines,
+                solution.pixel_scale_arcsec_per_pixel,
             );
         }
     }
@@ -380,6 +381,7 @@ fn render_object(
     width: f64,
     height: f64,
     show_outlines: bool,
+    pixel_scale_arcsec_per_pixel: f64,
 ) {
     let color = match object.kind.as_str() {
         "star" | "double-star" => "#ffe45e",
@@ -447,7 +449,12 @@ fn render_object(
             if matches!(object.kind.as_str(), "comet" | "asteroid")
                 && let Some(angle) = object.direction_angle_deg
             {
-                render_direction_tail(output, object, size, angle, color);
+                let vector_length = moving_body_vector_length(
+                    size,
+                    object.motion_arcsec_per_hour,
+                    pixel_scale_arcsec_per_pixel,
+                );
+                render_direction_tail(output, object, size, angle, vector_length, color);
             }
         }
         _ => {
@@ -562,6 +569,7 @@ fn render_direction_tail(
     object: &OverlayObject,
     size: f64,
     angle_degrees: f64,
+    vector_length_pixels: Option<f64>,
     color: &str,
 ) {
     let radians = angle_degrees.to_radians();
@@ -577,11 +585,19 @@ fn render_direction_tail(
             point.1 + radians.cos() * size * distance,
         )
     };
+    let default_tip_distance = if object.kind == "comet" { 4.0 } else { 4.5 };
+    let tip_distance = vector_length_pixels
+        .filter(|length| length.is_finite())
+        .map(|length| (length.abs() / size.abs().max(f64::EPSILON)).max(1.5))
+        .unwrap_or(default_tip_distance);
     let (path, class_name) = if object.kind == "comet" {
         let root = along(1.15);
-        let tip = along(4.0);
-        let upper = offset(along(3.25), 0.55);
-        let lower = offset(along(3.25), -0.55);
+        let span = tip_distance - 1.15;
+        let shoulder = along(1.15 + span * 0.75);
+        let flare = (span * 0.18).clamp(0.35, 0.85);
+        let tip = along(tip_distance);
+        let upper = offset(shoulder, flare);
+        let lower = offset(shoulder, -flare);
         (
             format!(
                 "M {:.2} {:.2} L {:.2} {:.2} M {:.2} {:.2} L {:.2} {:.2} M {:.2} {:.2} L {:.2} {:.2}",
@@ -602,10 +618,12 @@ fn render_direction_tail(
         )
     } else {
         let root = along(1.2);
-        let tip = along(4.5);
-        let arrow_root = along(3.6);
-        let upper = offset(arrow_root, 0.65);
-        let lower = offset(arrow_root, -0.65);
+        let span = tip_distance - 1.2;
+        let tip = along(tip_distance);
+        let arrow_root = along(1.2 + span * 0.73);
+        let arrow_width = (span * 0.2).clamp(0.45, 0.9);
+        let upper = offset(arrow_root, arrow_width);
+        let lower = offset(arrow_root, -arrow_width);
         (
             format!(
                 "M {:.2} {:.2} L {:.2} {:.2} M {:.2} {:.2} L {:.2} {:.2} L {:.2} {:.2}",
@@ -614,10 +632,32 @@ fn render_direction_tail(
             "asteroid-tail",
         )
     };
+    let motion_attributes = object
+        .motion_arcsec_per_hour
+        .map_or_else(String::new, |speed| {
+            let length = vector_length_pixels
+                .map(|length| format!(r#" data-motion-vector-length="{length:.2}""#))
+                .unwrap_or_default();
+            format!(r#" data-motion-arcsec-per-hour="{speed:.4}"{length}"#)
+        });
     let _ = write!(
         output,
-        r#"<path class="marker direction-tail {class_name}" data-direction-angle="{angle_degrees:.2}" stroke="{color}" d="{path}" />"#,
+        r#"<path class="marker direction-tail {class_name}" data-direction-angle="{angle_degrees:.2}"{motion_attributes} stroke="{color}" d="{path}" />"#,
     );
+}
+
+fn moving_body_vector_length(
+    marker_size: f64,
+    motion_arcsec_per_hour: Option<f64>,
+    pixel_scale_arcsec_per_pixel: f64,
+) -> Option<f64> {
+    let motion = motion_arcsec_per_hour?;
+    if !motion.is_finite() || motion < 0.0 || pixel_scale_arcsec_per_pixel <= 0.0 {
+        return None;
+    }
+    let size = marker_size.abs().max(f64::EPSILON);
+    let three_hour_track = motion * 3.0 / pixel_scale_arcsec_per_pixel;
+    Some(three_hour_track.clamp(size * 3.0, size * 9.0))
 }
 
 fn encompasses_frame(object: &OverlayObject, width: f64, height: f64) -> bool {
@@ -698,6 +738,7 @@ mod tests {
                 discovered: None,
                 near_capture: None,
                 distance_au: None,
+                motion_arcsec_per_hour: None,
                 direction_pa_deg: None,
                 direction_angle_deg: None,
                 outlines: Vec::new(),
@@ -883,11 +924,13 @@ mod tests {
         comet.common_name = "Test comet".into();
         comet.kind = "comet".into();
         comet.direction_angle_deg = Some(18.0);
+        comet.motion_arcsec_per_hour = Some(24.0);
         let mut asteroid = comet.clone();
         asteroid.name = "(12345)".into();
         asteroid.common_name = "Test asteroid".into();
         asteroid.kind = "asteroid".into();
         asteroid.direction_angle_deg = Some(136.0);
+        asteroid.motion_arcsec_per_hour = Some(2.0);
         moving.objects = vec![comet, asteroid];
 
         let svg = render_svg(
@@ -897,7 +940,11 @@ mod tests {
         );
         assert!(svg.contains("direction-tail comet-tail"));
         assert!(svg.contains("data-direction-angle=\"18.00\""));
+        assert!(svg.contains("data-motion-arcsec-per-hour=\"24.0000\""));
+        assert!(svg.contains("data-motion-vector-length=\"60.00\""));
         assert!(svg.contains("direction-tail asteroid-tail"));
         assert!(svg.contains("data-direction-angle=\"136.00\""));
+        assert!(svg.contains("data-motion-arcsec-per-hour=\"2.0000\""));
+        assert!(svg.contains("data-motion-vector-length=\"42.00\""));
     }
 }
