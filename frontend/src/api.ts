@@ -3,7 +3,7 @@ import Tus from '@uppy/tus'
 
 export type JobStatus = 'queued' | 'solving' | 'succeeded' | 'failed'
 
-const uploadChunkBytes = 5 * 1024 * 1024
+const uploadChunkBytes = 32 * 1024 * 1024
 const parallelUploadThresholdBytes = uploadChunkBytes * 2
 const parallelUploadParts = 3
 

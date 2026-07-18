@@ -169,7 +169,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="resumable-uploads" eyebrow="TUS 1.0" title="Upload large images in resumable parallel parts.">
-          <p>The web application uses the same durable TUS flow. It uploads up to three chunk-aligned parts concurrently for files of at least 10 MiB using the TUS concatenation extension; smaller files use a single stream. Session manifests and chunks survive API restarts. Local storage streams final assembly to disk, while S3 uses native multipart copies without routing the completed image back through the API process.</p>
+          <p>The web application uses the same durable TUS flow. It uploads up to three chunk-aligned parts concurrently for files of at least 64 MiB using the TUS concatenation extension; smaller files use a single stream. Session manifests and chunks survive API restarts. Local storage streams final assembly to disk, while S3 uses native multipart copies without routing the completed image back through the API process.</p>
           <div className="endpoint-list compact">
             <Endpoint method="OPTIONS" path="/api/v1/uploads">Discover TUS version, extensions, and maximum upload size.</Endpoint>
             <Endpoint method="POST" path="/api/v1/uploads">Create a normal session, a <code>partial</code> upload, or a <code>final</code> concatenation.</Endpoint>

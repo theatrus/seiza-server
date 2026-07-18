@@ -136,14 +136,14 @@ The health response includes the running `seiza-server` version and the exact
 locked `seiza` crate version under `versions`.
 
 The web client uploads through the TUS 1.0 endpoint at `/api/v1/uploads` using
-5 MiB chunks, automatic retries, and offset-based resume. In-progress manifests
+32 MiB chunks, automatic retries, and offset-based resume. In-progress manifests
 and chunks live in the configured local or S3 object store, so an API-process
 restart does not discard progress. Once the declared length is complete, the
 server assembles the object, creates exactly one queued solve, and exposes the
 job from `GET /api/v1/uploads/:upload_id/result`. Any standard TUS client can
 use the same creation, `HEAD`, `PATCH`, concatenation, and termination flow.
 The browser sends up to three partial uploads concurrently for files of at
-least 10 MiB, aligning partial boundaries to 5 MiB chunk boundaries so S3 can
+least 64 MiB, aligning partial boundaries to 32 MiB chunk boundaries so S3 can
 complete the final object with native multipart copies. Local storage streams
 those chunks into the final file without buffering the whole image in memory.
 
