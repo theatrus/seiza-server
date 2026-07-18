@@ -16,6 +16,14 @@ const SERVER_USAGE: &str = "usage: seiza-server [serve]
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // reqwest is built with the `rustls-tls-webpki-roots-no-provider` variant
+    // (see Cargo.toml), so a process-default rustls CryptoProvider must be
+    // installed before any client is created. The AWS SDK installs one, but the
+    // `worker` subcommand builds its reqwest client (WorkerClient::new) before it
+    // loads aws-config, so without this the worker panics with "No provider set".
+    // Install AWS-LC-RS up front so serve/worker/migrate-store are all safe
+    // regardless of order (idempotent; a later install is a no-op).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
