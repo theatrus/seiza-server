@@ -53,6 +53,7 @@ impl fmt::Debug for PriorityApiKeys {
 pub enum AuthMode {
     Public,
     StubApiKey,
+    Accounts,
 }
 
 impl FromStr for AuthMode {
@@ -62,7 +63,8 @@ impl FromStr for AuthMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "public" => Ok(Self::Public),
             "stub-api-key" | "stub_api_key" => Ok(Self::StubApiKey),
-            _ => bail!("SEIZA_AUTH_MODE must be `public` or `stub-api-key`"),
+            "accounts" => Ok(Self::Accounts),
+            _ => bail!("SEIZA_AUTH_MODE must be `public`, `stub-api-key`, or `accounts`"),
         }
     }
 }
@@ -135,6 +137,9 @@ pub struct Config {
     pub job_backend: JobBackend,
     pub sql_database_url: String,
     pub dynamodb_table: Option<String>,
+    pub identity_backend: JobBackend,
+    pub identity_sql_database_url: String,
+    pub identity_dynamodb_table: Option<String>,
     pub queue_transport: QueueDelivery,
     pub sqs_queue_url: Option<String>,
     pub sqs_priority_queue_url: Option<String>,
@@ -205,6 +210,24 @@ impl Config {
             .unwrap_or_else(|| data_dir.join("jobs.sqlite3"));
         let sql_database_url = env::var("SEIZA_SQL_DATABASE_URL")
             .unwrap_or_else(|_| format!("sqlite://{}?mode=rwc", queue_database.display()));
+        let job_backend: JobBackend = env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?;
+        let identity_backend = env::var("SEIZA_IDENTITY_BACKEND")
+            .map(|value| value.parse())
+            .unwrap_or(Ok(job_backend))?;
+        let identity_sql_database_url = env::var("SEIZA_IDENTITY_SQL_DATABASE_URL")
+            .unwrap_or_else(|_| sql_database_url.clone());
+        let identity_dynamodb_table = env::var("SEIZA_IDENTITY_DYNAMODB_TABLE")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let auth_mode: AuthMode = env_or("SEIZA_AUTH_MODE", "public").parse()?;
+        if auth_mode == AuthMode::Accounts
+            && identity_backend == JobBackend::DynamoDb
+            && identity_dynamodb_table.is_none()
+        {
+            bail!(
+                "SEIZA_IDENTITY_DYNAMODB_TABLE is required when accounts use the DynamoDB identity backend"
+            );
+        }
         let s3_prefix = env_or("SEIZA_S3_PREFIX", "uploads")
             .trim_matches('/')
             .to_owned();
@@ -235,11 +258,14 @@ impl Config {
             star_identifier_catalog_path,
             transient_catalog_path,
             minor_body_catalog_path,
-            job_backend: env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?,
+            job_backend,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")
                 .ok()
                 .filter(|value| !value.is_empty()),
+            identity_backend,
+            identity_sql_database_url,
+            identity_dynamodb_table,
             // SEIZA_QUEUE_BACKEND was the original name. It remains an alias
             // so existing local/SQS deployments do not need a flag day.
             queue_transport: env::var("SEIZA_QUEUE_TRANSPORT")
@@ -265,7 +291,7 @@ impl Config {
             upload_cleanup_interval_seconds,
             rate_limit_per_minute,
             rate_limit_burst,
-            auth_mode: env_or("SEIZA_AUTH_MODE", "public").parse()?,
+            auth_mode,
             storage_backend: env_or("SEIZA_STORAGE_BACKEND", "local").parse()?,
             s3_bucket: env::var("SEIZA_S3_BUCKET")
                 .ok()
@@ -418,5 +444,11 @@ mod tests {
         assert!(validate_sqs_priority_weight(2).is_ok());
         assert!(validate_sqs_priority_weight(100).is_ok());
         assert!(validate_sqs_priority_weight(101).is_err());
+    }
+
+    #[test]
+    fn accounts_auth_mode_is_explicit() {
+        assert_eq!("accounts".parse::<AuthMode>().unwrap(), AuthMode::Accounts);
+        assert!("account".parse::<AuthMode>().is_err());
     }
 }

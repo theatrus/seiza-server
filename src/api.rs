@@ -1,6 +1,7 @@
 use crate::{
     annotations::{AnnotationEngine, AnnotationOptions},
     config::{AuthMode, Config, JobBackend},
+    identity::{IdentityRepository, identity_repository},
     models::{
         AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
         SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
@@ -56,6 +57,7 @@ const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
+    pub identity: Option<Arc<dyn IdentityRepository>>,
     repository: Arc<dyn JobRepository>,
     transport: Arc<dyn QueueTransport>,
     limiter: RateLimiter,
@@ -70,6 +72,7 @@ impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
+        let identity = identity_repository(&config).await?;
         let transport = queue_transport(&config).await?;
         let solver = SolverEngine::from_catalog_paths(
             config.catalog_path.as_deref(),
@@ -86,6 +89,7 @@ impl AppState {
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
             config: Arc::new(config),
+            identity,
             repository,
             transport,
             store,
@@ -702,7 +706,7 @@ async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
         },
         "solver_ready": state.solver.is_ready(),
         "queue_depth": state.repository.queue_depth().await.map_err(ApiError::internal)?,
-        "auth_mode": match state.config.auth_mode { AuthMode::Public => "public", AuthMode::StubApiKey => "stub-api-key" },
+        "auth_mode": match state.config.auth_mode { AuthMode::Public => "public", AuthMode::StubApiKey => "stub-api-key", AuthMode::Accounts => "accounts" },
         "job_backend": match state.config.job_backend { crate::config::JobBackend::Sqlx => "sqlx", crate::config::JobBackend::DynamoDb => "dynamodb" },
         "queue_transport": match state.config.queue_transport { crate::config::QueueDelivery::Local => "local", crate::config::QueueDelivery::Sqs => "sqs" },
         "embedded_workers": state.config.embedded_workers,
@@ -2356,6 +2360,9 @@ fn client_from_headers(
         .or(astrometry_session)
         .filter(|value| !value.trim().is_empty());
     let id = match (state.config.auth_mode, api_key) {
+        (AuthMode::Accounts, _) => {
+            return Err(ApiError::unauthorized("account authentication is required"));
+        }
         (AuthMode::StubApiKey, None) => {
             return Err(ApiError::unauthorized(
                 "provide X-API-Key, Bearer token, or Astrometry session",
@@ -3688,6 +3695,12 @@ mod tests {
             job_backend: JobBackend::Sqlx,
             sql_database_url: format!("sqlite://{}?mode=rwc", root.join("jobs.sqlite3").display()),
             dynamodb_table: None,
+            identity_backend: JobBackend::Sqlx,
+            identity_sql_database_url: format!(
+                "sqlite://{}?mode=rwc",
+                root.join("identity.sqlite3").display()
+            ),
+            identity_dynamodb_table: None,
             queue_transport: QueueDelivery::Local,
             sqs_queue_url: None,
             sqs_priority_queue_url: None,

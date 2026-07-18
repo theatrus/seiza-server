@@ -2,12 +2,16 @@ pub mod annotations;
 pub mod api;
 pub mod config;
 #[cfg(feature = "aws")]
+pub mod dynamodb_identity;
+#[cfg(feature = "aws")]
 pub mod dynamodb_repository;
+pub mod identity;
 pub mod models;
 pub mod overlay;
 pub mod rate_limit;
 pub mod repository;
 pub mod solver;
+pub mod sqlx_identity;
 pub mod star_identifiers;
 pub mod storage;
 #[cfg(feature = "aws")]
