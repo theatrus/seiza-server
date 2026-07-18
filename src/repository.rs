@@ -2,7 +2,7 @@ use crate::{
     config::{Config, JobBackend},
     models::{
         AstrometryId, JobId, JobLease, JobRecord, JobStatus, LegacyJobId, SolutionResponse,
-        SolveOptions, ValidationDonation, astrometry_id_for_job,
+        ValidationDonation, astrometry_id_for_job,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -42,7 +42,6 @@ pub trait JobRepository: Send + Sync {
         solution: Option<SolutionResponse>,
         error: Option<String>,
     ) -> Result<bool>;
-    async fn retry_failed(&self, job_id: JobId, options: SolveOptions) -> Result<bool>;
     async fn donate_validation(&self, job_id: JobId, donation: ValidationDonation) -> Result<bool>;
     async fn pending_notifications(&self, limit: usize) -> Result<Vec<JobId>>;
     async fn mark_notification_delivered(&self, job_id: JobId) -> Result<()>;
@@ -544,26 +543,6 @@ impl JobRepository for SqlxJobRepository {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() == 1)
-    }
-
-    async fn retry_failed(&self, job_id: JobId, options: SolveOptions) -> Result<bool> {
-        let mut transaction = self.pool.begin().await?;
-        let result = sqlx::query("UPDATE jobs_v2 SET options_json = $1, status = 'queued', started_at = NULL, completed_at = NULL, solution_json = NULL, error = NULL, lease_token = NULL, lease_expires_at = NULL WHERE id = $2 AND status = 'failed'")
-            .bind(serde_json::to_string(&options)?)
-            .bind(job_id.to_string())
-            .execute(&mut *transaction)
-            .await?;
-        if result.rows_affected() == 1 {
-            sqlx::query("INSERT INTO queue_outbox_v2 (job_id, delivered_at) VALUES ($1, NULL) ON CONFLICT(job_id) DO UPDATE SET delivered_at = NULL")
-                .bind(job_id.to_string())
-                .execute(&mut *transaction)
-                .await?;
-            transaction.commit().await?;
-            Ok(true)
-        } else {
-            transaction.rollback().await?;
-            Ok(false)
-        }
     }
 
     async fn donate_validation(&self, job_id: JobId, donation: ValidationDonation) -> Result<bool> {

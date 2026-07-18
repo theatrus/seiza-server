@@ -7,8 +7,8 @@ const multipartExample = `curl -X POST https://seiza.fyi/api/v1/solves \\
 const pollExample = `PUBLIC_ID='550e8400-e29b-41d4-a716-446655440000'
 curl "https://seiza.fyi/api/v1/solves/$PUBLIC_ID"`
 
-const retryExample = `# A failed solve can reuse its retained image with better hints.
-curl -X POST "https://seiza.fyi/api/v1/solves/$PUBLIC_ID/retry" \\
+const retryExample = `# A completed solve can create a new solve from its retained image.
+curl -X POST "https://seiza.fyi/api/v1/solves/$PUBLIC_ID/resolve" \\
   -H 'Content-Type: application/json' \\
   -d '{"center_ra_deg":202.47,"center_dec_deg":47.2,"scale_arcsec_per_pixel":1.35,"radius_deg":3}'`
 
@@ -129,14 +129,15 @@ export function ApiDocsPage() {
             <Endpoint method="GET" path="/api/v1/health">Read seiza-server and Seiza versions, solver readiness, queue depth, authentication mode, and configured backends.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves">Submit a multipart image and optional solve settings. Returns <code>202</code>.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}">Poll status and retrieve the completed solution, total solve time, and solver telemetry.</Endpoint>
-            <Endpoint method="POST" path="/api/v1/solves/{public_id}/retry">Requeue a failed solve with new JSON settings while its original image is retained.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/solves/{public_id}/resolve">Create a new queued solve with a new UUID by copying a completed solve’s retained image and applying new JSON settings. The former <code>/retry</code> path remains as a compatible alias.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves/{public_id}/validation-donation">Contribute a completed solve’s image to the long-term validation set. Requires <code>license_agreed: true</code>; <code>comment</code> and <code>solve_is_invalid</code> are optional. The route retains its historical name for API compatibility.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/annotations">Regenerate projected catalog annotations from the stored WCS.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/preview">Return a retained PNG preview. Add <code>?full=true</code> for native dimensions.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/overlay.svg">Return a self-contained composite SVG for API clients.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/wcs">Download a FITS-compatible, 80-column WCS header.</Endpoint>
           </div>
-          <CodeExample label="Retry without another upload" code={retryExample} />
+          <div className="api-note"><strong>HTTP caching and validators</strong><span>Queued and solving job JSON uses <code>no-store</code>. Completed job JSON has a short private cache; annotations cache for five minutes by catalog version; previews and composite overlays use five-minute private caches; WCS downloads are immutable. Cacheable responses include <code>ETag</code> and honor <code>If-None-Match</code>.</span></div>
+          <CodeExample label="Re-solve without another upload" code={retryExample} />
           <CodeExample label="Contribute a validation image" code={contributionExample} />
           <div className="api-note"><strong>SIP WCS records</strong><span>When distortion is fitted, <code>solution.wcs.sip</code> contains the order and explicit <code>[p, q, value]</code> records for forward <code>A/B</code> and inverse <code>AP/BP</code> polynomials. The axes become <code>RA---TAN-SIP</code> / <code>DEC--TAN-SIP</code>, and the downloadable WCS includes the complete FITS SIP keyword set.</span></div>
           <div className="api-note"><strong>Invalid solve reports</strong><span>Set <code>solve_is_invalid: true</code> for an incorrect WCS, a false positive, or a failed solve that should have succeeded. The flag defaults to <code>false</code> and is returned with the contribution metadata.</span></div>

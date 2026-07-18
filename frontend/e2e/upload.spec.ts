@@ -119,6 +119,35 @@ function queuedJob(id: string, filename: string) {
   }
 }
 
+function solvedJob(id: string, filename: string) {
+  return {
+    ...queuedJob(id, filename),
+    status: 'succeeded',
+    completed_at: '2026-07-14T02:01:00Z',
+    solution: {
+      center_ra_deg: 202.47,
+      center_dec_deg: 47.2,
+      pixel_scale_arcsec_per_pixel: 1.35,
+      matched_stars: 42,
+      rms_arcsec: 0.8,
+      image_width: 1200,
+      image_height: 800,
+      wcs: {
+        crval: [202.47, 47.2],
+        crpix: [600, 400],
+        cd: [[-0.000375, 0], [0, 0.000375]],
+        ctype: ['RA---TAN', 'DEC--TAN'],
+        cunit: ['deg', 'deg'],
+        radesys: 'ICRS',
+        equinox: 2000,
+      },
+      footprint: [[202.7, 47.0], [202.2, 47.0], [202.2, 47.4], [202.7, 47.4]],
+      objects: [],
+      catalog_version: 'test',
+    },
+  }
+}
+
 test('places the solve action beside the file selector', async ({ page }) => {
   await page.goto('/solve')
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
@@ -449,9 +478,10 @@ test('changing settings does not resume an interrupted upload with stale metadat
   expect(creations).toBe(2)
 })
 
-test('retries a failed retained image with hints without uploading it again', async ({ page }) => {
+test('re-solves a failed retained image under a new URL without uploading it again', async ({ page }) => {
   let uploadRequests = 0
   let retryRequests = 0
+  const resolvedId = '77777777-7777-4777-8777-777777777777'
   const failed = {
     ...queuedJob(publicId, 'failed-field.jpg'),
     status: 'failed',
@@ -464,16 +494,17 @@ test('retries a failed retained image with hints without uploading it again', as
     },
     error: 'blind solve did not converge',
   }
-  let current = failed
+  const resolved = queuedJob(resolvedId, 'failed-field.jpg')
 
   page.on('request', (request) => {
     if (request.method() === 'POST' && request.url().endsWith('/api/v1/uploads')) {
       uploadRequests += 1
     }
   })
-  await page.route(`**/api/v1/solves/${publicId}**`, async (route) => {
+  await page.route('**/api/v1/solves/**', async (route) => {
     const request = route.request()
-    if (new URL(request.url()).pathname.endsWith('/retry')) {
+    const path = new URL(request.url()).pathname
+    if (path === `/api/v1/solves/${publicId}/resolve`) {
       expect(request.method()).toBe('POST')
       const options = request.postDataJSON()
       expect(options).toMatchObject({
@@ -488,20 +519,19 @@ test('retries a failed retained image with hints without uploading it again', as
         max_stars: 300,
       })
       retryRequests += 1
-      current = {
-        ...queuedJob(publicId, 'failed-field.jpg'),
-        options: { ...defaultSolveOptions(), ...options },
-      }
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
-        body: JSON.stringify(current),
+        body: JSON.stringify({
+          ...resolved,
+          options: { ...defaultSolveOptions(), ...options },
+        }),
       })
       return
     }
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify(current),
+      body: JSON.stringify(path === `/api/v1/solves/${resolvedId}` ? resolved : failed),
     })
   })
 
@@ -517,12 +547,49 @@ test('retries a failed retained image with hints without uploading it again', as
   await page.getByLabel('SIP distortion order').selectOption('3')
   await page.getByLabel('Time zone').selectOption('utc')
   await page.getByLabel('Date and time').fill('2026-07-16T12:30')
-  await page.getByRole('button', { name: 'Retry retained image' }).click()
+  await page.getByRole('button', { name: 'Re-solve retained image' }).click()
 
-  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  await expect(page).toHaveURL(`/solutions/${resolvedId}`)
   await expect(page.getByRole('heading', { name: 'Waiting in the queue.' })).toBeVisible()
   expect(retryRequests).toBe(1)
   expect(uploadRequests).toBe(0)
+
+  await page.goBack()
+  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  await expect(page.getByRole('heading', { name: 'The solve did not converge.' })).toBeVisible()
+})
+
+test('keeps successful retained-image re-solving collapsed at the bottom', async ({ page }) => {
+  const resolvedId = '88888888-8888-4888-8888-888888888888'
+  const solved = solvedJob(publicId, 'solved-field.fits')
+  const resolved = queuedJob(resolvedId, 'solved-field.fits')
+  let retryRequests = 0
+
+  await page.route('**/api/v1/solves/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === `/api/v1/solves/${publicId}/resolve`) {
+      retryRequests += 1
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(resolved) })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(path === `/api/v1/solves/${resolvedId}` ? resolved : solved),
+    })
+  })
+
+  await page.goto(`/solutions/${publicId}`)
+  const reSolveDetails = page.getByText('Re-solve this retained image with different settings')
+  await expect(reSolveDetails).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Re-solve retained image' })).toBeHidden()
+  await reSolveDetails.click()
+  await expect(page.getByRole('button', { name: 'Re-solve retained image' })).toBeVisible()
+  await page.getByRole('button', { name: 'Re-solve retained image' }).click()
+
+  await expect(page).toHaveURL(`/solutions/${resolvedId}`)
+  await expect(page.getByRole('heading', { name: 'Waiting in the queue.' })).toBeVisible()
+  expect(retryRequests).toBe(1)
 })
 
 for (const status of ['succeeded', 'failed'] as const) {

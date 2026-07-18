@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { Annotations, Health, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getHealth, getSolve, retrySolve, submitSolve } from './api'
+import { Annotations, Health, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getHealth, getSolve, resolveSolve, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -340,6 +340,7 @@ function SolutionPage({ jobId }: { jobId: string }) {
     {job && <SolutionContent job={job} onRetried={(retried) => {
       setJob(retried)
       setPollVersion((version) => version + 1)
+      navigate(`/solutions/${retried.id}`)
     }} />}
   </main>
 }
@@ -476,6 +477,10 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
       {solution.statistics && <SolverStatistics job={job} />}
       <WcsDetails job={job} />
       <ValidationDonationReminder job={job} />
+      {job.status === 'succeeded' && job.input_available && <details className="resolve-again-details">
+        <summary>Re-solve this retained image with different settings</summary>
+        <RetrySolveForm job={job} onRetried={onRetried} />
+      </details>}
     </>}
   </>
 }
@@ -605,7 +610,7 @@ function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) =>
     setSubmitting(true)
     setError(null)
     try {
-      onRetried(await retrySolve(job.id, options))
+      onRetried(await resolveSolve(job.id, options))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Retry failed')
       setSubmitting(false)
@@ -617,10 +622,10 @@ function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) =>
       <div><p className="eyebrow">TRY AGAIN</p><h2>Re-solve the retained image</h2></div>
       <span className="no-upload-badge">No re-upload</span>
     </div>
-    <p className="retry-intro">Add a position or scale hint and place this same image back in the queue. Its private solution URL stays unchanged. {job.validation_donation ? 'The contributed validation copy remains available for this retry.' : 'The original image-retention deadline also stays unchanged.'}</p>
+    <p className="retry-intro">Add a position or scale hint and place a retained copy of this image back in the queue. The original result stays unchanged and the new solve receives its own private URL. {job.validation_donation ? 'The contributed validation copy remains available as the source image.' : 'The copied image receives a fresh one-day retention window.'}</p>
     <form onSubmit={onSubmit}>
       <SolveOptionsFields defaults={job.options} />
-      <button className="button" disabled={submitting}>{submitting ? 'Starting retry…' : 'Retry retained image'}</button>
+      <button className="button" disabled={submitting}>{submitting ? 'Starting re-solve…' : 'Re-solve retained image'}</button>
       {error && <p className="error" role="alert">{error}</p>}
     </form>
   </section>

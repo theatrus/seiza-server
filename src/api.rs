@@ -2,9 +2,8 @@ use crate::{
     annotations::{AnnotationEngine, AnnotationOptions},
     config::{AuthMode, Config, JobBackend},
     models::{
-        AnnotationResponse, AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus,
-        SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
-        WorkerCompletion,
+        AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
+        SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
@@ -36,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime},
@@ -565,7 +565,10 @@ pub fn router(state: AppState) -> Router {
             get(get_resumable_upload_result),
         )
         .route("/api/v1/solves/{job_id}", get(get_solve))
-        .route("/api/v1/solves/{job_id}/retry", post(retry_solve))
+        .route("/api/v1/solves/{job_id}/resolve", post(resolve_solve))
+        // Backward-compatible alias for clients using the original failed-job
+        // retry endpoint. Both routes now create a new immutable job UUID.
+        .route("/api/v1/solves/{job_id}/retry", post(resolve_solve))
         .route(
             "/api/v1/solves/{job_id}/validation-donation",
             post(donate_validation_image),
@@ -644,6 +647,7 @@ pub fn router(state: AppState) -> Router {
                 .allow_headers([
                     header::CONTENT_TYPE,
                     header::AUTHORIZATION,
+                    header::IF_NONE_MATCH,
                     http::HeaderName::from_static("x-api-key"),
                     http::HeaderName::from_static("tus-resumable"),
                     http::HeaderName::from_static("upload-length"),
@@ -653,6 +657,8 @@ pub fn router(state: AppState) -> Router {
                 ])
                 .expose_headers([
                     header::LOCATION,
+                    header::CACHE_CONTROL,
+                    header::ETAG,
                     http::HeaderName::from_static("tus-resumable"),
                     http::HeaderName::from_static("upload-length"),
                     http::HeaderName::from_static("upload-offset"),
@@ -1508,15 +1514,20 @@ async fn post_solve(
 async fn get_solve(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
-) -> Result<Json<JobResponse>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let job = state
         .public_job(&public_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(Json(state.job_response(&job)?))
+    cached_json_response(
+        &headers,
+        job_cache_control(job.status),
+        &state.job_response(&job)?,
+    )
 }
 
-async fn retry_solve(
+async fn resolve_solve(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
     headers: HeaderMap,
@@ -1527,9 +1538,9 @@ async fn retry_solve(
         .public_job(&public_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    if job.status != JobStatus::Failed {
+    if !matches!(job.status, JobStatus::Succeeded | JobStatus::Failed) {
         return Err(ApiError::retry_conflict(
-            "only a failed solve can be retried",
+            "only a completed solve can be re-solved",
         ));
     }
     ensure_input_available(&state, &job)?;
@@ -1553,36 +1564,35 @@ async fn retry_solve(
         .check(&client.id)
         .await
         .map_err(ApiError::rate_limited)?;
-    if !state
-        .repository
-        .retry_failed(job.id, options)
+    let object_key = state.new_object_key(&job.original_filename);
+    state
+        .store
+        .copy(
+            job.input_object_key(),
+            &object_key,
+            job.content_type.as_deref(),
+        )
         .await
-        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
+    let resolved = match state
+        .enqueue_stored(
+            client,
+            object_key.clone(),
+            job.original_filename.clone(),
+            job.content_type.clone(),
+            options,
+        )
+        .await
     {
-        return Err(ApiError::retry_conflict(
-            "the solve is no longer in a failed state",
-        ));
-    }
-    state.embedded_worker_wakeup.notify_waiters();
-    if state.transport.uses_external_queue() {
-        match state.transport.publish(job.id).await {
-            Ok(()) => state
-                .repository
-                .mark_notification_delivered(job.id)
-                .await
-                .map_err(ApiError::internal)?,
-            Err(error) => {
-                tracing::warn!(job_id = %job.id, %error, "retry queue publish deferred to durable outbox")
+        Ok(job) => job,
+        Err(error) => {
+            if let Err(cleanup_error) = state.store.delete(&object_key).await {
+                tracing::warn!(%cleanup_error, %object_key, "could not clean up failed re-solve copy");
             }
+            return Err(error);
         }
-    }
-    let retried = state
-        .repository
-        .get(job.id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::internal("retried solve job is missing"))?;
-    Ok((StatusCode::ACCEPTED, Json(state.job_response(&retried)?)))
+    };
+    Ok((StatusCode::ACCEPTED, Json(state.job_response(&resolved)?)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1694,6 +1704,7 @@ async fn get_solve_preview(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
     Query(query): Query<PreviewQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let job = state
         .public_job(&public_id)
@@ -1711,14 +1722,12 @@ async fn get_solve_preview(
         preview_png(content, job.original_filename).await
     }
     .map_err(ApiError::bad_request)?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (header::CACHE_CONTROL, "private, max-age=300"),
-        ],
+    Ok(cached_body_response(
+        &headers,
+        "image/png",
+        "private, max-age=300",
         preview,
-    )
-        .into_response())
+    ))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1731,7 +1740,8 @@ async fn get_solve_annotations(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
     Query(query): Query<AnnotationQuery>,
-) -> Result<Json<AnnotationResponse>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let job = state
         .public_job(&public_id)
         .await?
@@ -1739,18 +1749,24 @@ async fn get_solve_annotations(
     let solution = job.solution.as_ref().ok_or_else(|| {
         ApiError::artifact_not_ready("the solve has not produced annotations yet")
     })?;
-    Ok(Json(state.annotations.annotate(
+    let annotations = state.annotations.annotate(
         &public_id,
         solution,
         job.options.capture_time,
         &query.options(),
-    )))
+    );
+    cached_json_response(
+        &headers,
+        "public, max-age=300, stale-while-revalidate=3600",
+        &annotations,
+    )
 }
 
 async fn get_solve_overlay(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
     Query(query): Query<OverlayQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let job = state
         .public_job(&public_id)
@@ -1790,18 +1806,17 @@ async fn get_solve_overlay(
             outlines: query.outlines,
         },
     );
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
-            (header::CACHE_CONTROL, "private, max-age=300"),
-            (
-                header::CONTENT_DISPOSITION,
-                "inline; filename=seiza-overlay.svg",
-            ),
-        ],
-        svg,
-    )
-        .into_response())
+    let mut response = cached_body_response(
+        &headers,
+        "image/svg+xml; charset=utf-8",
+        "private, max-age=300",
+        Bytes::from(svg),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline; filename=seiza-overlay.svg"),
+    );
+    Ok(response)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1883,6 +1898,7 @@ fn default_true() -> bool {
 async fn get_solve_wcs(
     State(state): State<AppState>,
     Path(public_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let job = state
         .public_job(&public_id)
@@ -1892,18 +1908,17 @@ async fn get_solve_wcs(
         .solution
         .as_ref()
         .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced WCS data yet"))?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=seiza-solution.wcs",
-            ),
-        ],
-        solution.fits_wcs_header(),
-    )
-        .into_response())
+    let mut response = cached_body_response(
+        &headers,
+        "text/plain; charset=utf-8",
+        "public, max-age=31536000, immutable",
+        Bytes::from(solution.fits_wcs_header()),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=seiza-solution.wcs"),
+    );
+    Ok(response)
 }
 
 fn ensure_input_available(state: &AppState, job: &JobRecord) -> Result<(), ApiError> {
@@ -2100,49 +2115,68 @@ async fn astrometry_upload(
 async fn astrometry_submission(
     State(state): State<AppState>,
     Path(job_id): Path<AstrometryId>,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let job = state
         .astrometry_job(job_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(Json(json!({
-        "processing_started": job.started_at,
-        "processing_finished": job.completed_at,
-        "jobs": [job.astrometry_id],
-        "job_calibrations": if job.status == JobStatus::Succeeded { vec![json!([job.astrometry_id, job.astrometry_id])] } else { Vec::new() },
-        "user_images": [job.astrometry_id],
-    })))
+    cached_json_response(
+        &headers,
+        job_cache_control(job.status),
+        &json!({
+            "processing_started": job.started_at,
+            "processing_finished": job.completed_at,
+            "jobs": [job.astrometry_id],
+            "job_calibrations": if job.status == JobStatus::Succeeded { vec![json!([job.astrometry_id, job.astrometry_id])] } else { Vec::new() },
+            "user_images": [job.astrometry_id],
+        }),
+    )
 }
 
 async fn astrometry_job(
     State(state): State<AppState>,
     Path(job_id): Path<AstrometryId>,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let job = state
         .astrometry_job(job_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(Json(json!({ "status": astro_status(job.status) })))
+    cached_json_response(
+        &headers,
+        job_cache_control(job.status),
+        &json!({ "status": astro_status(job.status) }),
+    )
 }
 
 async fn astrometry_calibration(
     State(state): State<AppState>,
     Path(job_id): Path<AstrometryId>,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let job = state
         .astrometry_job(job_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    match job.solution {
-        Some(solution) => Ok(Json(calibration_json(&solution))),
-        None => Ok(Json(json!({ "status": astro_status(job.status) }))),
-    }
+    let (cache_control, response) = match job.solution {
+        Some(solution) => (
+            "public, max-age=31536000, immutable",
+            calibration_json(&solution),
+        ),
+        None => (
+            job_cache_control(job.status),
+            json!({ "status": astro_status(job.status) }),
+        ),
+    };
+    cached_json_response(&headers, cache_control, &response)
 }
 
 async fn astrometry_info(
     State(state): State<AppState>,
     Path(job_id): Path<AstrometryId>,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let job = state
         .astrometry_job(job_id)
         .await?
@@ -2182,7 +2216,15 @@ async fn astrometry_info(
     if let Some(solution) = job.solution {
         result["calibration"] = calibration_json(&solution);
     }
-    Ok(Json(result))
+    cached_json_response(
+        &headers,
+        if matches!(job.status, JobStatus::Queued | JobStatus::Solving) {
+            "no-store"
+        } else {
+            "private, max-age=300, stale-while-revalidate=3600"
+        },
+        &result,
+    )
 }
 
 fn astro_status(status: JobStatus) -> &'static str {
@@ -2451,6 +2493,62 @@ struct ApiError {
     retry_after: Option<u64>,
 }
 
+fn cached_json_response<T: Serialize>(
+    request_headers: &HeaderMap,
+    cache_control: &'static str,
+    value: &T,
+) -> Result<Response, ApiError> {
+    let body = serde_json::to_vec(value).map_err(ApiError::internal)?;
+    Ok(cached_body_response(
+        request_headers,
+        "application/json",
+        cache_control,
+        Bytes::from(body),
+    ))
+}
+
+fn job_cache_control(status: JobStatus) -> &'static str {
+    if matches!(status, JobStatus::Queued | JobStatus::Solving) {
+        "no-store"
+    } else {
+        "private, max-age=30, stale-while-revalidate=120"
+    }
+}
+
+fn cached_body_response(
+    request_headers: &HeaderMap,
+    content_type: &'static str,
+    cache_control: &'static str,
+    body: Bytes,
+) -> Response {
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    let etag = format!("W/\"{:016x}\"", hasher.finish());
+    let not_modified = request_headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|candidate| candidate.trim() == "*" || candidate.trim() == etag);
+    let mut response = if not_modified {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        body.into_response()
+    };
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag).expect("valid ETag"),
+    );
+    response
+}
+
 impl ApiError {
     fn bad_request(error: impl std::fmt::Display) -> Self {
         Self {
@@ -2575,6 +2673,9 @@ impl IntoResponse for ApiError {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
     }
 }
 
@@ -2591,6 +2692,33 @@ mod tests {
         StarIdentifier, StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind,
     };
     use tower::ServiceExt;
+
+    fn solved_fixture() -> SolutionResponse {
+        SolutionResponse {
+            center_ra_deg: 202.47,
+            center_dec_deg: 47.2,
+            pixel_scale_arcsec_per_pixel: 1.35,
+            matched_stars: 42,
+            rms_arcsec: 0.8,
+            image_width: 1200,
+            image_height: 800,
+            wcs: crate::models::WcsResponse {
+                crval: [202.47, 47.2],
+                crpix: [600.0, 400.0],
+                cd: [[-0.000375, 0.0], [0.0, 0.000375]],
+                ctype: ["RA---TAN".into(), "DEC--TAN".into()],
+                cunit: ["deg".into(), "deg".into()],
+                radesys: "ICRS".into(),
+                equinox: 2000.0,
+                sip: None,
+            },
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
+            statistics: None,
+        }
+    }
 
     #[tokio::test]
     async fn frontend_routes_are_successful_on_refresh_and_unknown_paths_remain_not_found() {
@@ -2636,6 +2764,83 @@ mod tests {
         );
 
         drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn solve_cache_policy_tracks_job_mutability_and_etags_revalidate() {
+        let root = std::env::temp_dir().join(format!("seiza-api-cache-{}", Uuid::now_v7()));
+        let state = AppState::new(test_config(&root)).await.unwrap();
+        let object_key = state.new_object_key("cache.fits");
+        state
+            .store
+            .put(&object_key, Bytes::from_static(b"cache image"), None)
+            .await
+            .unwrap();
+        let job = state
+            .enqueue_stored(
+                Client {
+                    id: "cache-test".into(),
+                    queue_weight: 1.0,
+                },
+                object_key,
+                "cache.fits".into(),
+                None,
+                SolveOptions::default(),
+            )
+            .await
+            .unwrap();
+        let public_id = public_job_id(&job);
+
+        let queued = get_solve(
+            State(state.clone()),
+            Path(public_id.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued.headers()[header::CACHE_CONTROL], "no-store");
+
+        let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        assert!(
+            state
+                .repository
+                .complete(
+                    lease.job_id,
+                    lease.lease_token,
+                    Some(solved_fixture()),
+                    None,
+                )
+                .await
+                .unwrap()
+        );
+        let settled = get_solve(
+            State(state.clone()),
+            Path(public_id.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            settled.headers()[header::CACHE_CONTROL],
+            "private, max-age=30, stale-while-revalidate=120"
+        );
+        let etag = settled.headers()[header::ETAG].clone();
+        let mut conditional_headers = HeaderMap::new();
+        conditional_headers.insert(header::IF_NONE_MATCH, etag.clone());
+        let revalidated = get_solve(State(state.clone()), Path(public_id), conditional_headers)
+            .await
+            .unwrap();
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(revalidated.headers()[header::ETAG], etag);
+        assert!(
+            to_bytes(revalidated.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2974,7 +3179,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_solve_retries_with_hints_without_a_new_upload() {
+    async fn failed_solve_creates_a_new_job_with_hints_without_a_new_upload() {
         let root = std::env::temp_dir().join(format!("seiza-api-retry-{}", Uuid::now_v7()));
         let state = AppState::new(test_config(&root)).await.unwrap();
         let capture_time = "2026-07-14T02:30:00Z";
@@ -3049,7 +3254,7 @@ mod tests {
             let wakeup = wakeup_signal.notified();
             tokio::pin!(wakeup);
             wakeup.as_mut().enable();
-            let response = retry_solve(
+            let response = resolve_solve(
                 State(state.clone()),
                 Path(job.id.clone()),
                 HeaderMap::new(),
@@ -3063,7 +3268,7 @@ mod tests {
             response
         };
         assert_eq!(status, StatusCode::ACCEPTED);
-        assert_eq!(retried.id, job.id);
+        assert_ne!(retried.id, job.id);
         assert_eq!(retried.status, JobStatus::Queued);
         assert_eq!(retried.options.center_ra_deg, Some(210.802));
         assert_eq!(
@@ -3073,15 +3278,19 @@ mod tests {
                 .with_timezone(&Utc)
         );
         assert_eq!(state.repository.queue_depth().await.unwrap(), 1);
+        let original = state.repository.get(lease.job_id).await.unwrap().unwrap();
+        assert_eq!(original.status, JobStatus::Failed);
+        assert_eq!(original.object_key, object_key);
+        let copied = state
+            .repository
+            .get(Uuid::parse_str(&retried.id).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(copied.object_key, object_key);
         assert_eq!(
-            state
-                .repository
-                .get(lease.job_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .object_key,
-            object_key
+            state.store.get(&copied.object_key).await.unwrap(),
+            b"data"[..]
         );
 
         drop(state);
@@ -3122,8 +3331,8 @@ mod tests {
                 .complete(
                     lease.job_id,
                     lease.lease_token,
+                    Some(solved_fixture()),
                     None,
-                    Some("no match".into()),
                 )
                 .await
                 .unwrap()
@@ -3187,13 +3396,16 @@ mod tests {
         assert!(!state.store.exists(&object_key).await.unwrap());
         assert!(state.store.exists(&durable_key).await.unwrap());
 
-        let Json(refreshed) = get_solve(State(state.clone()), Path(public_id))
+        let response = get_solve(State(state.clone()), Path(public_id), HeaderMap::new())
             .await
             .unwrap();
+        let refreshed: JobResponse =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
         assert!(refreshed.input_available);
         assert!(refreshed.preview_url.is_some());
 
-        let (status, Json(retried)) = retry_solve(
+        let (status, Json(retried)) = resolve_solve(
             State(state.clone()),
             Path(refreshed.id),
             HeaderMap::new(),
@@ -3202,16 +3414,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(status, StatusCode::ACCEPTED);
+        assert_ne!(retried.id, job.id.to_string());
         assert_eq!(retried.status, JobStatus::Queued);
         let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        let copied_key = state
+            .repository
+            .input_key(lease.job_id, lease.lease_token)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(copied_key, durable_key);
         assert_eq!(
-            state
-                .repository
-                .input_key(lease.job_id, lease.lease_token)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some(durable_key.as_str())
+            state.store.get(&copied_key).await.unwrap(),
+            b"validation image"[..]
         );
 
         drop(state);

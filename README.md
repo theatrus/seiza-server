@@ -199,11 +199,13 @@ Seiza plate solver, including training and evaluating solver-related models.
 Seiza will not make the validation set public, sell the image, or use it for
 unrelated purposes.
 
-While the input is retained, a failed job can be requeued at the same opaque
-URL with new solve hints and no second upload:
+While the input is retained, either a successful or failed job can create a
+new solve with different hints and no second upload. The object store copies
+the retained image into a fresh one-day scope, the new solve receives a new
+opaque UUID, and the original result remains unchanged:
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/retry" \
+curl -X POST "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/resolve" \
   -H 'Content-Type: application/json' \
   -d '{"center_ra_deg":202.47,"center_dec_deg":47.2,"scale_arcsec_per_pixel":1.35,"radius_deg":3}'
 ```
@@ -215,6 +217,12 @@ retained, plus persistent annotations and a FITS-compatible WCS header:
 curl "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/annotations?field_stars=true&historical_transients=true"
 curl -OJ "http://127.0.0.1:8080/api/v1/solves/$PUBLIC_ID/wcs"
 ```
+
+Solve responses use status-aware HTTP caching. Queue polling is explicitly
+`no-store`; completed job JSON has a short private cache; catalog annotations
+cache for five minutes; previews and composite overlays use private five-minute
+caches; and WCS downloads are public immutable artifacts. Cacheable responses
+include `ETag` and honor `If-None-Match`.
 
 The grid is projected through the solved TAN WCS rather than drawn in image
 coordinates, so its meridians and parallels reflect field curvature, rotation,

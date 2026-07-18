@@ -280,8 +280,8 @@ export async function getSolve(jobId: string): Promise<Job> {
   return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}`))
 }
 
-export async function retrySolve(jobId: string, options: SolveOptions): Promise<Job> {
-  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}/retry`, {
+export async function resolveSolve(jobId: string, options: SolveOptions): Promise<Job> {
+  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
