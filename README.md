@@ -142,8 +142,8 @@ restart does not discard progress. Once the declared length is complete, the
 server assembles the object, creates exactly one queued solve, and exposes the
 job from `GET /api/v1/uploads/:upload_id/result`. Any standard TUS client can
 use the same creation, `HEAD`, `PATCH`, concatenation, and termination flow.
-The browser sends up to three partial uploads concurrently for files larger
-than 32 MiB, aligning partial boundaries to 32 MiB chunk boundaries so S3 can
+The browser sends up to three partial uploads concurrently for files of at
+least 64 MiB, aligning partial boundaries to 32 MiB chunk boundaries so S3 can
 complete the final object with native multipart copies. Local storage streams
 those chunks into the final file without buffering the whole image in memory.
 

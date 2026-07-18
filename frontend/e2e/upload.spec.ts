@@ -3,7 +3,10 @@ import { mockHealth } from './health'
 
 const publicId = '550e8400-e29b-41d4-a716-446655440000'
 const uploadId = '8c741b20-3c42-4e75-95d4-fbc87cc68730'
-const chunkSize = 5 * 1024 * 1024
+const oneMiB = 1024 * 1024
+const chunkSize = 32 * oneMiB
+const resumableFileSize = chunkSize + oneMiB
+const parallelFileSize = (chunkSize * 2) + oneMiB
 
 interface UploadConcurrencyState {
   active: number
@@ -172,7 +175,7 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
       headers: {
         Location: `/api/v1/uploads/${finalId}`,
         'Tus-Resumable': '1.0.0',
-        'Upload-Offset': String(12 * 1024 * 1024),
+        'Upload-Offset': String(parallelFileSize),
       },
     })
   })
@@ -214,11 +217,7 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   }))
 
   await page.goto('/solve')
-  await page.getByLabel('FITS or image file').setInputFiles({
-    name: 'parallel-field.fits',
-    mimeType: 'application/fits',
-    buffer: Buffer.alloc(12 * 1024 * 1024, 42),
-  })
+  await setStableFile(page, 'parallel-field.fits', parallelFileSize)
   await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
   await expect(page).toHaveURL(`/solutions/${publicId}`)
@@ -229,9 +228,9 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   )
   expect(uploadConcurrency).toBeGreaterThan(1)
   expect([...partLengths.values()]).toEqual([
-    5 * 1024 * 1024,
-    5 * 1024 * 1024,
-    2 * 1024 * 1024,
+    chunkSize,
+    chunkSize,
+    oneMiB,
   ])
 })
 
@@ -304,11 +303,7 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
   }))
 
   await page.goto('/solve')
-  await page.getByLabel('FITS or image file').setInputFiles({
-    name: 'large-field.fits',
-    mimeType: 'application/fits',
-    buffer: Buffer.alloc(6 * 1024 * 1024, 42),
-  })
+  await setStableFile(page, 'large-field.fits', resumableFileSize)
   await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
   await expect(page).toHaveURL(`/solutions/${publicId}`)
@@ -317,7 +312,7 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
   expect(usedLegacyMultipart).toBe(false)
   expect(chunks).toEqual([
     { offset: 0, size: chunkSize },
-    { offset: chunkSize, size: 1024 * 1024 },
+    { offset: chunkSize, size: oneMiB },
   ])
 })
 
