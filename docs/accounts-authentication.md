@@ -207,7 +207,7 @@ atomic invariants:
 - email challenge consumption and account/session creation are atomic;
 - WebAuthn credential IDs and user handles are globally unique;
 - API-key and session lookup returns no revoked or expired credential;
-- passkey/API-key creation and its account-listing record commit together; and
+- passkey creation and its credential lookup record commit together; and
 - challenge attempt counting and single-use consumption are conditional writes.
 
 The service layer owns normalization, WebAuthn verification, token generation,
@@ -272,6 +272,11 @@ RFC 3339 UTC text timestamps as the existing repository does.
 - `created_at`, `expires_at`, `last_used_at`, `revoked_at`
 - index on `account_id`
 
+SQLx authentication parses the account and credential IDs from the presented
+token, selects the session or API key through its primary-key index, and
+verifies that its `account_id` matches. Authentication must never load all
+credentials for an account and search them in application code.
+
 Foreign keys should be enabled where both supported dialects can enforce them.
 Repository logic must still behave correctly without relying solely on cascade
 deletion because DynamoDB has no equivalent.
@@ -279,8 +284,10 @@ deletion because DynamoDB has no equivalent.
 ### DynamoDB schema
 
 Create a dedicated on-demand table with string `pk` and `sk`, point-in-time
-recovery, encryption, and TTL on `expires_at_epoch`. No GSI is required for the
-first release. Use direct lookup items plus the account item collection:
+recovery, encryption, and TTL on `ttl_epoch`. This one identity table stores
+accounts, sessions, and API keys; it does not require separate session or
+API-key tables. Only records that need automatic cleanup populate `ttl_epoch`.
+No GSI is required for the first release.
 
 | `pk` | `sk` | Purpose |
 | --- | --- | --- |
@@ -290,18 +297,31 @@ first release. Use direct lookup items plus the account item collection:
 | `USER#<user-handle>` | `ACCOUNT` | Discoverable-passkey account lookup |
 | `ACCOUNT#<uuid>` | `PASSKEY#<passkey-id>` | Passkey metadata and credential JSON |
 | `CREDENTIAL#<credential-hash>` | `ACCOUNT` | Credential-to-account/passkey lookup |
-| `ACCOUNT#<uuid>` | `APIKEY#<key-id>` | Key listing and metadata |
-| `APIKEY#<key-id>` | `CREDENTIAL` | Direct API-key authentication lookup |
-| `SESSION#<session-id>` | `SESSION` | Browser or Astrometry session |
+| `ACCOUNT#<uuid>` | `APIKEY#<key-id>` | API-key authentication and management record |
+| `ACCOUNT#<uuid>` | `SESSION#<session-id>` | Browser or Astrometry session record |
 | `CHALLENGE#<challenge-id>` | `CHALLENGE` | Email or WebAuthn ceremony state |
 
+The public portion of every session and API key contains its account UUID and
+record ID. Authentication parses those locators and performs an exact
+`GetItem` for `ACCOUNT#<uuid>` plus `SESSION#<session-id>` or
+`APIKEY#<key-id>`. Account status is an additional exact profile read, which
+may be combined with the credential read through `TransactGetItems` when a
+consistent snapshot matters. Account management lists credentials with a
+partition `Query` and an `sk` prefix. Authentication and validation paths must
+never use `Scan` or search a queried item collection for a presented token.
+
 Use `TransactWriteItems` for account plus email/user-handle aliases, passkey
-plus credential lookup, API-key listing plus authentication lookup, and email
-challenge-set updates. Successful email completion consumes the chosen
-challenge, invalidates the other live IDs, and creates the account/session in
-one transaction. Conditional expressions enforce uniqueness, attempt limits,
-unconsumed challenges, and revocation. TTL is storage cleanup only; every read
-rejects an expired record before using it.
+plus credential lookup, and email challenge-set updates. Successful email
+completion consumes the chosen challenge, invalidates the other live IDs, and
+creates the account/session in one transaction. Conditional expressions
+enforce uniqueness, attempt limits, unconsumed challenges, and revocation.
+
+TTL is asynchronous storage cleanup only, never the source of authorization
+truth. Sessions set `ttl_epoch` to the earlier of their current idle and
+absolute expiration and refresh it with the coalesced `last_seen_at` write.
+Challenges and optionally expiring API keys set it from their retention
+deadline. Permanent account and passkey records omit it. Every read rejects an
+expired or revoked record even if DynamoDB has not deleted it yet.
 
 Email and user-handle lookup values are SHA-256/base64url digests so raw email
 and user handles do not appear in DynamoDB partition-key metrics or IAM logs.
@@ -316,12 +336,18 @@ verify a logical snapshot before cutover. Expired challenges are not migrated.
 
 ## Credential and token formats
 
-Use a public lookup ID plus a random secret so authentication needs one indexed
-read and one constant-time digest comparison:
+Use public composite locators plus a random secret so credential lookup is a
+point read followed by a constant-time digest comparison:
 
-- API key: `seiza_key_<key-id>_<32-byte-base64url-secret>`
-- browser/Astrometry session: opaque equivalent, never shown in logs
+- API key:
+  `seiza_key_<account-id>_<key-id>_<32-byte-base64url-secret>`
+- browser/Astrometry session:
+  `seiza_session_<account-id>_<session-id>_<32-byte-base64url-secret>`
 - email link token: `seiza_login_<challenge-id>_<32-byte-base64url-secret>`
+
+Account, key, and session IDs are random, non-secret lookup components. Changing
+one only selects a missing record or one whose secret digest does not match.
+The complete bearer value remains sensitive and must never be logged.
 
 Store SHA-256 digests for high-entropy random secrets. The eight-digit email
 code has low entropy, so store `HMAC-SHA-256(code-pepper, challenge-id || code)`
@@ -638,6 +664,11 @@ The feature is ready to enable only when all of these hold:
   verification;
 - API-key secrets are shown once, hashed at rest, scope-checked, immediately
   revocable, and all keys share account-level fairness;
+- DynamoDB session and API-key authentication uses exact item reads from token
+  locators, account management uses bounded partition queries, and no
+  authentication path uses a table scan or GSI;
+- DynamoDB TTL eventually removes expired session and challenge records while
+  application reads reject them immediately after expiration;
 - browser cookies are secure/HttpOnly/SameSite, CSRF is enforced, and accounts
   mode rejects wildcard credentialed CORS;
 - `/api/login` rejects unknown keys in accounts mode and returns a persisted
