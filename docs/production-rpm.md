@@ -27,7 +27,7 @@ The package combines everything needed to run the service:
 The Seiza star and optional object catalogs are not packaged. They are larger
 and change on a different cadence than the server; install them on durable
 storage such as `/srv/seiza/catalog/` and make them readable by the systemd
-service. Seiza 0.7.3's shared library resolver reads the packaged
+service. Seiza 0.8.0's shared library resolver reads the packaged
 `SEIZA_CATALOG_DIR`, prefers `stars-deep-gaia17.bin`, and
 discovers its matching `blind-gaia16.idx`, with `stars-gaia.bin` and the lite
 catalog as fallbacks. It also discovers `objects.bin`,
@@ -92,7 +92,7 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Download the prebuilt datasets with Seiza CLI 0.7.3 or newer before starting the
+Download the prebuilt datasets with Seiza CLI 0.8.0 or newer before starting the
 service:
 
 ```bash
