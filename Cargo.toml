@@ -32,7 +32,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # `default-https-client` feature also selects its AWS-LC provider directly.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 sqlx = { version = "0.9", default-features = false, features = ["any", "chrono", "postgres", "runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs"] }
-seiza = "0.7.0"
+# crates.io's 0.7.3 package was published from the release branch before the
+# data-path resolver landed. Pin the immutable release commit until 0.7.4 is
+# available with the complete 0.7.3 API.
+seiza = { version = "0.7.3", git = "https://github.com/theatrus/seiza.git", rev = "184aef6a65e826d7e62c864c7f8de222fec1d3e4" }
 seiza-fits = "0.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

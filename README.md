@@ -26,10 +26,11 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.7.0. Optional SIP orders 2–5 fit forward and inverse
-  optical-distortion polynomials after the accepted linear solution. The
-  maintained G<=16 index is memory-mapped once per
-  worker and reused across jobs, including fine-scale fields down to 0.1"/px.
+  solving with Seiza 0.7.3, including catalog-seeded matching for source lists
+  whose brightness ranking is unreliable. Optional SIP orders 2–5 fit forward
+  and inverse optical-distortion polynomials after the accepted linear
+  solution. The maintained G<=16 index is memory-mapped once per worker and
+  reused across jobs, including fine-scale fields down to 0.1"/px.
   Seiza automatically uses compact detection for 8-bit uploads and its
   optimized hinted and blind solve paths.
 - Per-client token-bucket admission limiting plus a durable weighted-LRU
@@ -52,9 +53,9 @@ disappears on a process restart.
 
 ## Quick start
 
-Install Seiza CLI 0.7.0 or newer, then get the prebuilt catalogs and maintained
+Install Seiza CLI 0.7.3 or newer, then get the prebuilt catalogs and maintained
 blind index. The server automatically prefers the deep Gaia G<=17 catalog and
-its matching G<=16 index when both are present. Seiza 0.7.0's prebuilt object
+its matching G<=16 index when both are present. Seiza 0.7.3's prebuilt object
 catalog is memory-mapped, includes the expanded LBN and Cederblad datasets, and
 provides embedded spatial and designation indices. The prebuilt bundle also
 includes `stars-lite-tycho2.ids.bin`; the server turns its proper,
@@ -329,7 +330,7 @@ are currently supported:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SEIZA_BIND_ADDR` | `127.0.0.1:8080` | Axum listen address |
-| `SEIZA_CATALOG_DIR` | automatic | Directory searched for canonically named prebuilt Seiza datasets; defaults to `SEIZA_DATA_DIR/catalog` and its sibling `catalog` directory |
+| `SEIZA_CATALOG_DIR` | Seiza platform default | Directory searched for canonically named prebuilt Seiza datasets; uses the same platform-specific default as `seiza setup` |
 | `SEIZA_STAR_DATA` | unset | Seiza tile catalog path; automatic discovery prefers `stars-deep-gaia17.bin` |
 | `SEIZA_BLIND_INDEX` | unset | Seiza persisted blind-index path; automatic discovery uses `blind-gaia16.idx` |
 | `SEIZA_OBJECT_DATA` | unset | Optional Seiza object catalog for named overlay annotations |
@@ -364,6 +365,13 @@ are currently supported:
 
 `X-Forwarded-For`/`X-Real-IP` are used for anonymous fairness and rate limits.
 Only accept those headers from a trusted reverse proxy in production.
+
+Catalog paths are resolved by `seiza::data_paths`. Each explicit per-catalog
+variable may name either a file or a directory and fails startup when it does
+not resolve. Without an explicit path, the server checks `SEIZA_CATALOG_DIR`,
+files beside the executable, and the platform data directories used by
+`seiza setup`. Missing automatically discovered annotation catalogs remain
+optional; `SEIZA_DATA_DIR` is only server state and object storage.
 
 ## Deployment paths
 

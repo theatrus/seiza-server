@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use seiza::data_paths::{self, DataPathError};
 use std::{
     env, fmt,
     net::SocketAddr,
@@ -187,9 +188,18 @@ impl Config {
             bail!("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS must be at least 1");
         }
         let data_dir = PathBuf::from(env_or("SEIZA_DATA_DIR", "data"));
-        let catalog_dirs = env::var_os("SEIZA_CATALOG_DIR")
-            .map(|path| vec![PathBuf::from(path)])
-            .unwrap_or_else(|| default_catalog_dirs(&data_dir));
+        let catalog_path = optional_data_path(data_paths::star_data(None))
+            .context("resolving Seiza star catalog")?;
+        let blind_index_path =
+            data_paths::blind_index(None).context("resolving Seiza blind index")?;
+        let object_catalog_path =
+            optional_catalog_from_env("SEIZA_OBJECT_DATA", data_paths::objects)?;
+        let star_identifier_catalog_path =
+            optional_catalog_from_env("SEIZA_STAR_IDENTIFIER_DATA", data_paths::star_identifiers)?;
+        let transient_catalog_path =
+            optional_catalog_from_env("SEIZA_TRANSIENT_DATA", data_paths::transients)?;
+        let minor_body_catalog_path =
+            optional_catalog_from_env("SEIZA_MINOR_BODY_DATA", data_paths::minor_bodies)?;
         let queue_database = env::var_os("SEIZA_QUEUE_DATABASE")
             .map(PathBuf::from)
             .unwrap_or_else(|| data_dir.join("jobs.sqlite3"));
@@ -219,41 +229,12 @@ impl Config {
             bind_addr,
             frontend_dir: PathBuf::from(env_or("SEIZA_FRONTEND_DIR", "frontend/dist")),
             data_dir,
-            catalog_path: resolve_catalog_path(
-                env::var_os("SEIZA_STAR_DATA").map(PathBuf::from),
-                &catalog_dirs,
-                &[
-                    "stars-deep-gaia17.bin",
-                    "stars-gaia.bin",
-                    "stars-lite-tycho2.bin",
-                    "stars.bin",
-                ],
-            ),
-            blind_index_path: resolve_catalog_path(
-                env::var_os("SEIZA_BLIND_INDEX").map(PathBuf::from),
-                &catalog_dirs,
-                &["blind-gaia16.idx"],
-            ),
-            object_catalog_path: resolve_catalog_path(
-                env::var_os("SEIZA_OBJECT_DATA").map(PathBuf::from),
-                &catalog_dirs,
-                &["objects.bin", "objects-openngc.bin"],
-            ),
-            star_identifier_catalog_path: resolve_catalog_path(
-                env::var_os("SEIZA_STAR_IDENTIFIER_DATA").map(PathBuf::from),
-                &catalog_dirs,
-                &["stars-lite-tycho2.ids.bin", "stars.ids.bin"],
-            ),
-            transient_catalog_path: resolve_catalog_path(
-                env::var_os("SEIZA_TRANSIENT_DATA").map(PathBuf::from),
-                &catalog_dirs,
-                &["transients.bin"],
-            ),
-            minor_body_catalog_path: resolve_catalog_path(
-                env::var_os("SEIZA_MINOR_BODY_DATA").map(PathBuf::from),
-                &catalog_dirs,
-                &["minor-bodies.bin"],
-            ),
+            catalog_path,
+            blind_index_path,
+            object_catalog_path,
+            star_identifier_catalog_path,
+            transient_catalog_path,
+            minor_body_catalog_path,
             job_backend: env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")
@@ -300,32 +281,25 @@ impl Config {
     }
 }
 
-fn resolve_catalog_path(
-    explicit: Option<PathBuf>,
-    catalog_dirs: &[PathBuf],
-    candidates: &[&str],
-) -> Option<PathBuf> {
-    explicit.or_else(|| {
-        candidates
-            .iter()
-            .flat_map(|name| {
-                catalog_dirs
-                    .iter()
-                    .map(move |directory| directory.join(name))
-            })
-            .find(|path| path.is_file())
-    })
+fn optional_catalog_from_env(
+    variable: &str,
+    resolver: fn(Option<&Path>) -> std::result::Result<PathBuf, DataPathError>,
+) -> Result<Option<PathBuf>> {
+    let explicit = env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    optional_data_path(resolver(explicit.as_deref()))
+        .with_context(|| format!("resolving {variable}"))
 }
 
-fn default_catalog_dirs(data_dir: &Path) -> Vec<PathBuf> {
-    let mut directories = vec![data_dir.join("catalog")];
-    if let Some(parent) = data_dir.parent() {
-        let sibling = parent.join("catalog");
-        if !directories.contains(&sibling) {
-            directories.push(sibling);
-        }
+fn optional_data_path(
+    result: std::result::Result<PathBuf, DataPathError>,
+) -> Result<Option<PathBuf>> {
+    match result {
+        Ok(path) => Ok(Some(path)),
+        Err(DataPathError::NoDefault { .. }) => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    directories
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -357,7 +331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovers_canonical_catalog_names() {
+    fn seiza_library_discovers_canonical_catalog_names() {
         let directory = std::env::temp_dir().join(format!(
             "seiza-server-catalog-discovery-{}",
             uuid::Uuid::now_v7()
@@ -369,23 +343,19 @@ mod tests {
         std::fs::write(&identifiers, b"identifiers").unwrap();
 
         assert_eq!(
-            resolve_catalog_path(None, std::slice::from_ref(&directory), &["objects.bin"]),
-            Some(catalog)
+            optional_data_path(data_paths::objects(Some(&directory))).unwrap(),
+            Some(catalog),
         );
         assert_eq!(
-            resolve_catalog_path(
-                None,
-                std::slice::from_ref(&directory),
-                &["stars-lite-tycho2.ids.bin", "stars.ids.bin"]
-            ),
-            Some(identifiers)
+            optional_data_path(data_paths::star_identifiers(Some(&directory))).unwrap(),
+            Some(identifiers),
         );
 
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn prefers_deep_catalog_and_discovers_blind_index() {
+    fn seiza_library_prefers_deep_catalog_and_discovers_blind_index() {
         let directory = std::env::temp_dir().join(format!(
             "seiza-server-solver-data-discovery-{}",
             uuid::Uuid::now_v7()
@@ -399,19 +369,11 @@ mod tests {
         std::fs::write(&index, b"index").unwrap();
 
         assert_eq!(
-            resolve_catalog_path(
-                None,
-                std::slice::from_ref(&directory),
-                &["stars-deep-gaia17.bin", "stars-gaia.bin"]
-            ),
+            optional_data_path(data_paths::star_data(Some(&directory))).unwrap(),
             Some(deep)
         );
         assert_eq!(
-            resolve_catalog_path(
-                None,
-                std::slice::from_ref(&directory),
-                &["blind-gaia16.idx"]
-            ),
+            data_paths::blind_index(Some(&directory)).unwrap(),
             Some(index)
         );
 
@@ -419,27 +381,23 @@ mod tests {
     }
 
     #[test]
-    fn discovers_the_production_sibling_catalog_directory() {
+    fn absent_default_catalog_remains_optional() {
         assert_eq!(
-            default_catalog_dirs(&PathBuf::from("/var/lib/seiza-server/data")),
-            vec![
-                PathBuf::from("/var/lib/seiza-server/data/catalog"),
-                PathBuf::from("/var/lib/seiza-server/catalog"),
-            ]
+            optional_data_path(Err(DataPathError::NoDefault {
+                kind: "object catalog"
+            }))
+            .unwrap(),
+            None,
         );
     }
 
     #[test]
-    fn explicit_catalog_path_wins_even_before_it_exists() {
-        let explicit = PathBuf::from("/mounted/catalog/objects.bin");
-        assert_eq!(
-            resolve_catalog_path(
-                Some(explicit.clone()),
-                &[PathBuf::from("unused")],
-                &["objects.bin"]
-            ),
-            Some(explicit)
-        );
+    fn explicit_missing_catalog_is_rejected() {
+        let missing = std::env::temp_dir().join(format!(
+            "seiza-server-missing-object-catalog-{}",
+            uuid::Uuid::now_v7()
+        ));
+        assert!(data_paths::objects(Some(&missing)).is_err());
     }
 
     #[test]
