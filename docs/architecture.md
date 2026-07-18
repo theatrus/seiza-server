@@ -120,10 +120,12 @@ versioned image grant. The object-store abstraction copies the original into
 `SEIZA_VALIDATION_PREFIX`; local and S3 cleanup both exclude that namespace.
 SQLx records the durable object key, comment, invalid-solve flag, grant
 version, and acceptance time in `validation_donations`; DynamoDB stores the
-same fields on the job item. Subsequent preview and retry reads prefer the
+same fields on the job item. Subsequent preview and re-solve reads prefer the
 durable copy, while the temporary original remains eligible for normal
-cleanup. S3 deployments should keep the validation prefix outside the
-temporary-upload lifecycle rule.
+cleanup. Re-solving copies the retained source through the object-store
+adapter, creates a new durable job UUID, and leaves the prior result unchanged.
+S3 deployments should keep the validation prefix outside the temporary-upload
+lifecycle rule.
 
 The browser uses Uppy’s TUS client with 32 MiB chunks and retry delays. Files of
 at least 64 MiB are split into up to three concurrent TUS partial uploads. The
