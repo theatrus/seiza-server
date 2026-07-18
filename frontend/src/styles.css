@@ -47,6 +47,28 @@ button:disabled { cursor: wait; opacity: .65; }
 .about-copy strong { color: #e4eef0; }
 .about-copy code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: #10252d; font-size: .9em; }
 .narrow-page { width: min(880px, calc(100% - 2rem)); }
+.auth-page { padding-top: 4rem; }
+.auth-page .page-heading { max-width: 780px; }
+.auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.auth-panel h2 { margin-bottom: .8rem; font-size: clamp(1.7rem, 3.5vw, 2.5rem); }
+.auth-panel > p:not(.eyebrow, .error, .success-note) { color: #8fa9b1; line-height: 1.65; }
+.auth-panel.passkey-first { border-color: #826e3d; background: linear-gradient(145deg, rgb(32 38 34 / 94%), rgb(9 27 34 / 88%)); }
+.auth-panel .code-form { margin-top: 1.4rem; padding-top: 1.4rem; border-top: 1px solid #294851; }
+.success-note { margin: 1rem 0 0; padding: .85rem 1rem; border: 1px solid #376853; border-radius: 5px; color: #c7ebd9; background: rgb(10 39 31 / 78%); font-size: .82rem; line-height: 1.55; }
+.account-page { width: min(980px, calc(100% - 2rem)); }
+.account-page .page-heading h1 { font-size: clamp(2.3rem, 5vw, 4rem); overflow-wrap: anywhere; }
+.account-callout { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2rem; margin-bottom: 1rem; padding: clamp(1.25rem, 4vw, 2rem); border: 1px solid #826e3d; border-radius: 8px; background: linear-gradient(135deg, rgb(39 38 26 / 92%), rgb(10 28 34 / 82%)); }
+.account-callout h2 { margin-bottom: .5rem; font-size: clamp(1.7rem, 3vw, 2.4rem); }
+.account-callout p:last-child { margin: 0; color: #a7a78e; line-height: 1.6; }
+.account-section { margin-top: 1rem; }
+.account-section .section-heading { align-items: center; }
+.session-list { margin-top: 1.4rem; border-top: 1px solid #294851; }
+.session-list > div { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #294851; }
+.session-list > div > div { display: grid; gap: .35rem; }
+.session-list strong { color: #dcebed; font-size: .88rem; }
+.session-list span { color: #829da5; font-size: .76rem; line-height: 1.5; }
+.text-button { padding: .35rem 0; border: 0; color: #8fdae7; background: transparent; font: inherit; font-size: .76rem; font-weight: 800; cursor: pointer; }
+.text-button:hover { color: #d5f6f9; }
 .solve-page { width: min(1040px, calc(100% - 2rem)); padding-top: 2.2rem; }
 .page-heading { max-width: 760px; margin-bottom: 2.4rem; }
 .solve-page .page-heading { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(380px, 1.2fr); gap: .6rem clamp(2.5rem, 6vw, 5rem); align-items: end; max-width: none; margin-bottom: 1.4rem; }
@@ -325,6 +347,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
 .footer-links a:hover { color: #d5f6f9; }
 @media (max-width: 800px) {
   .hero, .story-grid, .about-card { grid-template-columns: 1fr; }
+  .auth-grid { grid-template-columns: 1fr; }
   .api-hero { grid-template-columns: 1fr; }
   .source-grid.three-up { grid-template-columns: 1fr; }
   .source-provenance { grid-template-columns: 1fr; gap: 1rem; }
@@ -366,6 +389,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .hero-mark { display: none; }
   .form-grid, .capture-time-grid, .wcs-grid, .footprint-wrap ol, .object-list ul, .metric-grid, .sip-record-grid { grid-template-columns: 1fr; }
   .file-submit-row { grid-template-columns: 1fr; }
+  .account-callout { grid-template-columns: 1fr; }
   .file-submit-row .button { width: 100%; }
   .api-docs-page { padding-top: 3.5rem; }
   .sources-page { padding-top: 3.5rem; }

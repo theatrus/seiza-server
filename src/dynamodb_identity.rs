@@ -2,15 +2,15 @@ use crate::{
     config::Config,
     identity::{
         Account, AccountId, AccountStatus, ApiKey, ApiKeyId, AuthChallenge, AuthSession,
-        ChallengeId, ChallengePurpose, IdentityRepository, PasskeyCredential, SessionId,
-        SessionKind,
+        ChallengeId, ChallengePurpose, CompletedEmailSignIn, IdentityRepository, PasskeyCredential,
+        SessionId, SessionKind,
     },
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{
     Client,
-    types::{AttributeValue, ConditionCheck, Put, TransactWriteItem},
+    types::{AttributeValue, ConditionCheck, Put, ReturnValue, TransactWriteItem, Update},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
@@ -170,6 +170,312 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .transpose()
     }
 
+    async fn create_email_challenge(
+        &self,
+        challenge: AuthChallenge,
+        max_live: usize,
+    ) -> Result<()> {
+        if challenge.purpose != ChallengePurpose::EmailLogin {
+            anyhow::bail!("email challenge storage requires purpose=email-login");
+        }
+        if max_live == 0 {
+            anyhow::bail!("email challenge live limit must be at least one");
+        }
+        let email_lookup = challenge
+            .email_lookup
+            .as_deref()
+            .context("email challenge is missing email_lookup")?;
+        let tracker_pk = email_key(email_lookup);
+        for _ in 0..5 {
+            let tracker = self
+                .get_item(tracker_pk.clone(), "CHALLENGES".into())
+                .await?;
+            let version = tracker
+                .as_ref()
+                .map(|item| required_string(item, "version"))
+                .transpose()?
+                .map(|value| value.parse::<u64>())
+                .transpose()?
+                .unwrap_or(0);
+            let mut challenge_ids = tracker
+                .as_ref()
+                .map(tracker_challenge_ids)
+                .transpose()?
+                .unwrap_or_default();
+            challenge_ids.retain(|id| *id != challenge.id);
+            challenge_ids.insert(0, challenge.id);
+            let evicted = challenge_ids.split_off(challenge_ids.len().min(max_live));
+
+            let challenge_put = Put::builder()
+                .table_name(&self.table)
+                .set_item(Some(challenge_item(&challenge)))
+                .condition_expression("attribute_not_exists(pk)")
+                .build()?;
+            let mut tracker_put =
+                Put::builder()
+                    .table_name(&self.table)
+                    .set_item(Some(challenge_tracker_item(
+                        tracker_pk.clone(),
+                        version + 1,
+                        &challenge_ids,
+                    )));
+            tracker_put = if tracker.is_some() {
+                tracker_put
+                    .condition_expression("#version = :version")
+                    .expression_attribute_names("#version", "version")
+                    .expression_attribute_values(":version", number(version))
+            } else {
+                tracker_put.condition_expression("attribute_not_exists(pk)")
+            };
+            let mut transaction = self
+                .client
+                .transact_write_items()
+                .transact_items(TransactWriteItem::builder().put(challenge_put).build())
+                .transact_items(
+                    TransactWriteItem::builder()
+                        .put(tracker_put.build()?)
+                        .build(),
+                );
+            for challenge_id in evicted {
+                let update = Update::builder()
+                    .table_name(&self.table)
+                    .key("pk", string(challenge_key(challenge_id)))
+                    .key("sk", string("CHALLENGE"))
+                    .update_expression("SET consumed_at = :now")
+                    .expression_attribute_values(":now", string(encode_time(challenge.created_at)))
+                    .build()?;
+                transaction =
+                    transaction.transact_items(TransactWriteItem::builder().update(update).build());
+            }
+            match transaction.send().await {
+                Ok(_) => return Ok(()),
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .is_some_and(|error| error.is_transaction_canceled_exception()) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        anyhow::bail!("email challenge tracker changed too frequently; retry the request")
+    }
+
+    async fn record_challenge_failure(
+        &self,
+        challenge_id: ChallengeId,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+    ) -> Result<Option<AuthChallenge>> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(challenge_key(challenge_id)))
+            .key("sk", string("CHALLENGE"))
+            .condition_expression("attribute_not_exists(consumed_at) AND expires_at > :now AND attempts < :max_attempts")
+            .update_expression("SET attempts = attempts + :one")
+            .expression_attribute_values(":now", string(encode_time(now)))
+            .expression_attribute_values(":max_attempts", number(max_attempts))
+            .expression_attribute_values(":one", number(1))
+            .return_values(ReturnValue::AllNew)
+            .send()
+            .await;
+        match result {
+            Ok(output) => output
+                .attributes
+                .as_ref()
+                .map(challenge_from_item)
+                .transpose(),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn complete_email_challenge(
+        &self,
+        challenge_id: ChallengeId,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+        new_account: Account,
+        mut new_session: AuthSession,
+    ) -> Result<Option<CompletedEmailSignIn>> {
+        for _ in 0..5 {
+            let Some(challenge) = self.challenge_by_id(challenge_id).await? else {
+                return Ok(None);
+            };
+            let Some(email_lookup) = challenge.email_lookup.as_deref() else {
+                return Ok(None);
+            };
+            if challenge.purpose != ChallengePurpose::EmailLogin
+                || challenge.consumed_at.is_some()
+                || challenge.expires_at <= now
+                || challenge.attempts >= max_attempts
+                || new_account.email_lookup != email_lookup
+            {
+                return Ok(None);
+            }
+
+            let tracker_pk = email_key(email_lookup);
+            let tracker = self
+                .get_item(tracker_pk.clone(), "CHALLENGES".into())
+                .await?;
+            let tracker_version = tracker
+                .as_ref()
+                .map(|item| required_string(item, "version"))
+                .transpose()?
+                .map(|value| value.parse::<u64>())
+                .transpose()?
+                .unwrap_or(0);
+            let live_ids = tracker
+                .as_ref()
+                .map(tracker_challenge_ids)
+                .transpose()?
+                .unwrap_or_else(|| vec![challenge_id]);
+            let existing_account = self.account_by_email_lookup(email_lookup).await?;
+            if existing_account
+                .as_ref()
+                .is_some_and(|account| account.status != AccountStatus::Active)
+            {
+                return Ok(None);
+            }
+            let account = existing_account
+                .clone()
+                .unwrap_or_else(|| new_account.clone());
+            let account_created = existing_account.is_none();
+            new_session.account_id = account.id;
+
+            let consume = Update::builder()
+                .table_name(&self.table)
+                .key("pk", string(challenge_key(challenge_id)))
+                .key("sk", string("CHALLENGE"))
+                .condition_expression("purpose = :purpose AND attribute_not_exists(consumed_at) AND expires_at > :now AND attempts < :max_attempts")
+                .update_expression("SET consumed_at = :now")
+                .expression_attribute_values(":purpose", string(ChallengePurpose::EmailLogin.as_str()))
+                .expression_attribute_values(":now", string(encode_time(now)))
+                .expression_attribute_values(":max_attempts", number(max_attempts))
+                .build()?;
+            let mut transaction = self
+                .client
+                .transact_write_items()
+                .transact_items(TransactWriteItem::builder().update(consume).build());
+            for other_id in live_ids.into_iter().filter(|id| *id != challenge_id) {
+                let invalidate = Update::builder()
+                    .table_name(&self.table)
+                    .key("pk", string(challenge_key(other_id)))
+                    .key("sk", string("CHALLENGE"))
+                    .update_expression("SET consumed_at = :now")
+                    .expression_attribute_values(":now", string(encode_time(now)))
+                    .build()?;
+                transaction = transaction
+                    .transact_items(TransactWriteItem::builder().update(invalidate).build());
+            }
+
+            let mut tracker_put =
+                Put::builder()
+                    .table_name(&self.table)
+                    .set_item(Some(challenge_tracker_item(
+                        tracker_pk,
+                        tracker_version + 1,
+                        &[],
+                    )));
+            tracker_put = if tracker.is_some() {
+                tracker_put
+                    .condition_expression("#version = :version")
+                    .expression_attribute_names("#version", "version")
+                    .expression_attribute_values(":version", number(tracker_version))
+            } else {
+                tracker_put.condition_expression("attribute_not_exists(pk)")
+            };
+            transaction = transaction.transact_items(
+                TransactWriteItem::builder()
+                    .put(tracker_put.build()?)
+                    .build(),
+            );
+
+            if account_created {
+                let profile = Put::builder()
+                    .table_name(&self.table)
+                    .set_item(Some(account_item(&account)))
+                    .condition_expression("attribute_not_exists(pk)")
+                    .build()?;
+                let email_alias = Put::builder()
+                    .table_name(&self.table)
+                    .set_item(Some(alias_item(email_key(email_lookup), account.id)))
+                    .condition_expression("attribute_not_exists(pk)")
+                    .build()?;
+                let user_alias = Put::builder()
+                    .table_name(&self.table)
+                    .set_item(Some(alias_item(
+                        user_key(&account.webauthn_user_handle),
+                        account.id,
+                    )))
+                    .condition_expression("attribute_not_exists(pk)")
+                    .build()?;
+                transaction = transaction
+                    .transact_items(TransactWriteItem::builder().put(profile).build())
+                    .transact_items(TransactWriteItem::builder().put(email_alias).build())
+                    .transact_items(TransactWriteItem::builder().put(user_alias).build());
+            } else {
+                let update_account = Update::builder()
+                    .table_name(&self.table)
+                    .key("pk", string(account_key(account.id)))
+                    .key("sk", string("PROFILE"))
+                    .condition_expression("#status = :active")
+                    .update_expression("SET updated_at = :now, last_authenticated_at = :now")
+                    .expression_attribute_names("#status", "status")
+                    .expression_attribute_values(":active", string(AccountStatus::Active.as_str()))
+                    .expression_attribute_values(":now", string(encode_time(now)))
+                    .build()?;
+                transaction = transaction
+                    .transact_items(TransactWriteItem::builder().update(update_account).build());
+            }
+            let session_put = Put::builder()
+                .table_name(&self.table)
+                .set_item(Some(session_item(&new_session)))
+                .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
+                .build()?;
+            transaction =
+                transaction.transact_items(TransactWriteItem::builder().put(session_put).build());
+
+            match transaction.send().await {
+                Ok(_) => {
+                    let mut account = account;
+                    account.updated_at = now;
+                    account.last_authenticated_at = now;
+                    return Ok(Some(CompletedEmailSignIn {
+                        account,
+                        session: new_session,
+                        account_created,
+                    }));
+                }
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+                {
+                    let still_live =
+                        self.challenge_by_id(challenge_id)
+                            .await?
+                            .is_some_and(|challenge| {
+                                challenge.consumed_at.is_none()
+                                    && challenge.expires_at > now
+                                    && challenge.attempts < max_attempts
+                            });
+                    if !still_live {
+                        return Ok(None);
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        anyhow::bail!("email sign-in state changed too frequently; retry the request")
+    }
+
     async fn create_session(&self, session: AuthSession) -> Result<()> {
         let put = Put::builder()
             .table_name(&self.table)
@@ -207,6 +513,91 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .iter()
             .map(session_from_item)
             .collect()
+    }
+
+    async fn touch_session(
+        &self,
+        account_id: AccountId,
+        session_id: SessionId,
+        last_seen_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(account_key(account_id)))
+            .key("sk", string(session_key(session_id)))
+            .condition_expression("attribute_not_exists(revoked_at) AND absolute_expires_at > :last_seen_at")
+            .update_expression("SET last_seen_at = :last_seen_at, expires_at = :expires_at, ttl_epoch = :ttl_epoch")
+            .expression_attribute_values(":last_seen_at", string(encode_time(last_seen_at)))
+            .expression_attribute_values(":expires_at", string(encode_time(expires_at)))
+            .expression_attribute_values(":ttl_epoch", number(expires_at.timestamp()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn revoke_session(
+        &self,
+        account_id: AccountId,
+        session_id: SessionId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(account_key(account_id)))
+            .key("sk", string(session_key(session_id)))
+            .condition_expression("attribute_not_exists(revoked_at)")
+            .update_expression("SET revoked_at = :revoked_at, ttl_epoch = :ttl_epoch")
+            .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
+            .expression_attribute_values(
+                ":ttl_epoch",
+                number((revoked_at + Duration::days(30)).timestamp()),
+            )
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn revoke_all_sessions(
+        &self,
+        account_id: AccountId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64> {
+        let sessions = self.list_sessions(account_id).await?;
+        let mut revoked = 0;
+        for session in sessions {
+            if self
+                .revoke_session(account_id, session.id, revoked_at)
+                .await?
+            {
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
     }
 
     async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()> {
@@ -345,6 +736,33 @@ fn alias_item(pk: String, account_id: AccountId) -> Item {
         ("entity".into(), string("account_lookup")),
         ("account_id".into(), string(account_id)),
     ])
+}
+
+fn challenge_tracker_item(pk: String, version: u64, challenge_ids: &[ChallengeId]) -> Item {
+    HashMap::from([
+        ("pk".into(), string(pk)),
+        ("sk".into(), string("CHALLENGES")),
+        ("entity".into(), string("email_challenge_tracker")),
+        ("version".into(), number(version)),
+        (
+            "challenge_ids".into(),
+            AttributeValue::L(challenge_ids.iter().copied().map(string).collect()),
+        ),
+    ])
+}
+
+fn tracker_challenge_ids(item: &Item) -> Result<Vec<ChallengeId>> {
+    let Some(AttributeValue::L(values)) = item.get("challenge_ids") else {
+        anyhow::bail!("DynamoDB email challenge tracker is missing challenge_ids");
+    };
+    values
+        .iter()
+        .map(|value| match value {
+            AttributeValue::S(value) => Uuid::parse_str(value)
+                .context("DynamoDB email challenge tracker contains a non-UUID ID"),
+            _ => anyhow::bail!("DynamoDB email challenge tracker contains a non-string ID"),
+        })
+        .collect()
 }
 
 fn challenge_item(challenge: &AuthChallenge) -> Item {

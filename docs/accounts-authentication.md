@@ -528,33 +528,30 @@ inconsistent.
 | `SEIZA_IDENTITY_SQL_DATABASE_URL` | Identity SQL URL; defaults to job SQL URL |
 | `SEIZA_IDENTITY_DYNAMODB_TABLE` | Dedicated identity table name |
 | `SEIZA_PUBLIC_BASE_URL` | Canonical HTTPS origin used in links and cookies |
-| `SEIZA_WEBAUTHN_RP_ID` | Domain-only RP ID |
-| `SEIZA_WEBAUTHN_RP_NAME` | User-visible relying-party name |
-| `SEIZA_WEBAUTHN_ORIGIN` | Exact expected HTTPS origin |
 | `SEIZA_AUTH_CODE_PEPPER_FILE` | Shared secret for short-code HMACs |
-| `SEIZA_AUTH_ALLOWED_ORIGINS` | Exact additional browser origins, normally empty |
-| `SEIZA_EMAIL_TRANSPORT` | `ses` or `smtp` |
+| `SEIZA_EMAIL_PROVIDER` | `ses` or `smtp` |
 | `SEIZA_EMAIL_FROM` | Verified/enabled sender mailbox |
-| `SEIZA_SES_REGION` | SES region |
-| `SEIZA_SES_IDENTITY_ARN` | Optional delegated sending identity ARN |
+| `SEIZA_SES_FROM_IDENTITY_ARN` | Optional delegated sending identity ARN |
 | `SEIZA_SES_ROLE_ARN` | Optional cross-account mail role |
-| `SEIZA_SES_EXTERNAL_ID_FILE` | Optional assume-role external ID |
-| `SEIZA_SES_CONFIGURATION_SET` | Delivery/bounce/complaint event routing |
+| `SEIZA_SES_ROLE_EXTERNAL_ID_FILE` | Optional assume-role external ID |
 | `SEIZA_SMTP_HOST`, `SEIZA_SMTP_PORT` | Authenticated relay endpoint |
 | `SEIZA_SMTP_USERNAME` | Relay login |
 | `SEIZA_SMTP_PASSWORD_FILE` | Mounted relay secret |
 | `SEIZA_SMTP_TLS` | `starttls` or `implicit`; no plaintext value |
+| `SEIZA_SMTP_TIMEOUT_SECONDS` | SMTP connection and request timeout |
 
-The SES and SMTP settings are mutually exclusive. Debug output redacts every
+SES uses the standard AWS region and credential configuration. The SES and
+SMTP settings are mutually exclusive. Debug output redacts every
 secret and credential. ECS/Kubernetes deployments should mount secret files or
 use a secrets-injection mechanism rather than place credentials directly in a
 checked-in environment file.
 
 ## Frontend plan
 
-Add `/signin` and `/account` routes plus a small auth provider in the React app.
-The provider loads `GET /api/v1/account`, retains the CSRF token only in memory,
-and never stores browser session or API-key secrets in local storage.
+The React app provides `/signin` and `/account` routes and loads
+`GET /api/v1/account` on startup. The browser session remains in an HttpOnly
+cookie. A separate session-bound, readable same-site cookie supplies the CSRF
+header after a reload; neither value is written to local storage.
 
 The sign-in page presents:
 
@@ -603,7 +600,7 @@ cookies.
 
 ## Delivery phases
 
-### Phase 1: identity repository and configuration
+### Phase 1: identity repository and configuration (implemented in this PR)
 
 - Add logical account/session/challenge/passkey/API-key models and repository
   contract tests.
@@ -611,7 +608,7 @@ cookies.
 - Add configuration validation, secret redaction, and fake email sender.
 - Keep production behavior on `public`/`stub-api-key`.
 
-### Phase 2: verified email sessions
+### Phase 2: verified email sessions (implemented in this PR)
 
 - Implement email start/complete, session cookies, CSRF, logout, rate limits,
   and generic anti-enumeration responses.
@@ -619,7 +616,7 @@ cookies.
 - Add sign-in/code UI and test delivery templates in plain text and HTML.
 - Enable `accounts` only in a nonproduction environment.
 
-### Phase 3: passkeys
+### Phase 3: passkeys (next validation boundary)
 
 - Integrate `webauthn-rs`, ceremony persistence, registration, discoverable
   authentication, recent-auth enforcement, and credential management.

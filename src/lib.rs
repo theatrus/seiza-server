@@ -1,10 +1,12 @@
 pub mod annotations;
 pub mod api;
+pub mod auth;
 pub mod config;
 #[cfg(feature = "aws")]
 pub mod dynamodb_identity;
 #[cfg(feature = "aws")]
 pub mod dynamodb_repository;
+pub mod email;
 pub mod identity;
 pub mod models;
 pub mod overlay;

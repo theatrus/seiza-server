@@ -1,6 +1,7 @@
 use crate::identity::{
     Account, AccountId, AccountStatus, ApiKey, ApiKeyId, AuthChallenge, AuthSession, ChallengeId,
-    ChallengePurpose, IdentityRepository, PasskeyCredential, SessionId, SessionKind,
+    ChallengePurpose, CompletedEmailSignIn, IdentityRepository, PasskeyCredential, SessionId,
+    SessionKind,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -137,6 +138,176 @@ impl IdentityRepository for SqlxIdentityRepository {
             .transpose()
     }
 
+    async fn create_email_challenge(
+        &self,
+        challenge: AuthChallenge,
+        max_live: usize,
+    ) -> Result<()> {
+        if challenge.purpose != ChallengePurpose::EmailLogin {
+            bail!("email challenge storage requires purpose=email-login");
+        }
+        if max_live == 0 {
+            bail!("email challenge live limit must be at least one");
+        }
+        let email_lookup = challenge
+            .email_lookup
+            .clone()
+            .context("email challenge is missing email_lookup")?;
+        let created_at = challenge.created_at;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("INSERT INTO auth_challenges (id, purpose, account_id, email_lookup, link_token_digest, code_digest, webauthn_state_json, attempts, created_at, expires_at, consumed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+            .bind(challenge.id.to_string())
+            .bind(challenge.purpose.as_str())
+            .bind(challenge.account_id.map(|id| id.to_string()))
+            .bind(challenge.email_lookup)
+            .bind(challenge.link_token_digest)
+            .bind(challenge.code_digest)
+            .bind(challenge.webauthn_state_json)
+            .bind(i64::from(challenge.attempts))
+            .bind(encode_time(challenge.created_at))
+            .bind(encode_time(challenge.expires_at))
+            .bind(challenge.consumed_at.map(encode_time))
+            .execute(&mut *transaction)
+            .await?;
+        let live = sqlx::query("SELECT id FROM auth_challenges WHERE email_lookup = $1 AND purpose = 'email-login' AND consumed_at IS NULL AND expires_at > $2 ORDER BY created_at DESC")
+            .bind(email_lookup)
+            .bind(encode_time(created_at))
+            .fetch_all(&mut *transaction)
+            .await?;
+        for row in live.into_iter().skip(max_live) {
+            sqlx::query(
+                "UPDATE auth_challenges SET consumed_at = $1 WHERE id = $2 AND consumed_at IS NULL",
+            )
+            .bind(encode_time(created_at))
+            .bind(row.try_get::<String, _>("id")?)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn record_challenge_failure(
+        &self,
+        challenge_id: ChallengeId,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+    ) -> Result<Option<AuthChallenge>> {
+        let result = sqlx::query("UPDATE auth_challenges SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2 AND attempts < $3")
+            .bind(challenge_id.to_string())
+            .bind(encode_time(now))
+            .bind(i64::from(max_attempts))
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.challenge_by_id(challenge_id).await
+    }
+
+    async fn complete_email_challenge(
+        &self,
+        challenge_id: ChallengeId,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+        new_account: Account,
+        mut new_session: AuthSession,
+    ) -> Result<Option<CompletedEmailSignIn>> {
+        let mut transaction = self.pool.begin().await?;
+        let challenge = sqlx::query("SELECT * FROM auth_challenges WHERE id = $1")
+            .bind(challenge_id.to_string())
+            .fetch_optional(&mut *transaction)
+            .await?
+            .map(challenge_from_row)
+            .transpose()?;
+        let Some(challenge) = challenge else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        let Some(email_lookup) = challenge.email_lookup else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        if challenge.purpose != ChallengePurpose::EmailLogin {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        let consumed = sqlx::query("UPDATE auth_challenges SET consumed_at = $1 WHERE id = $2 AND purpose = 'email-login' AND consumed_at IS NULL AND expires_at > $1 AND attempts < $3")
+            .bind(encode_time(now))
+            .bind(challenge_id.to_string())
+            .bind(i64::from(max_attempts))
+            .execute(&mut *transaction)
+            .await?;
+        if consumed.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+
+        let existing = sqlx::query("SELECT * FROM accounts WHERE email_lookup = $1")
+            .bind(&email_lookup)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .map(account_from_row)
+            .transpose()?;
+        let (mut account, account_created) = if let Some(account) = existing {
+            (account, false)
+        } else {
+            let inserted = sqlx::query("INSERT INTO accounts (id, email, email_lookup, email_verified_at, webauthn_user_handle, status, created_at, updated_at, last_authenticated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(email_lookup) DO NOTHING")
+                .bind(new_account.id.to_string())
+                .bind(&new_account.email)
+                .bind(&new_account.email_lookup)
+                .bind(encode_time(new_account.email_verified_at))
+                .bind(&new_account.webauthn_user_handle)
+                .bind(new_account.status.as_str())
+                .bind(encode_time(new_account.created_at))
+                .bind(encode_time(new_account.updated_at))
+                .bind(encode_time(new_account.last_authenticated_at))
+                .execute(&mut *transaction)
+                .await?;
+            let account = sqlx::query("SELECT * FROM accounts WHERE email_lookup = $1")
+                .bind(&email_lookup)
+                .fetch_one(&mut *transaction)
+                .await
+                .map(account_from_row)??;
+            (account, inserted.rows_affected() == 1)
+        };
+
+        new_session.account_id = account.id;
+        sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+            .bind(new_session.id.to_string())
+            .bind(&new_session.token_digest)
+            .bind(new_session.account_id.to_string())
+            .bind(new_session.kind.as_str())
+            .bind(&new_session.csrf_digest)
+            .bind(encode_time(new_session.created_at))
+            .bind(encode_time(new_session.last_seen_at))
+            .bind(encode_time(new_session.expires_at))
+            .bind(encode_time(new_session.absolute_expires_at))
+            .bind(new_session.revoked_at.map(encode_time))
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("UPDATE auth_challenges SET consumed_at = $1 WHERE email_lookup = $2 AND purpose = 'email-login' AND consumed_at IS NULL")
+            .bind(encode_time(now))
+            .bind(&email_lookup)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "UPDATE accounts SET updated_at = $1, last_authenticated_at = $1 WHERE id = $2",
+        )
+        .bind(encode_time(now))
+        .bind(account.id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        account.updated_at = now;
+        account.last_authenticated_at = now;
+        Ok(Some(CompletedEmailSignIn {
+            account,
+            session: new_session,
+            account_created,
+        }))
+    }
+
     async fn create_session(&self, session: AuthSession) -> Result<()> {
         sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
             .bind(session.id.to_string())
@@ -176,6 +347,53 @@ impl IdentityRepository for SqlxIdentityRepository {
             .into_iter()
             .map(session_from_row)
             .collect()
+    }
+
+    async fn touch_session(
+        &self,
+        account_id: AccountId,
+        session_id: SessionId,
+        last_seen_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query("UPDATE auth_sessions SET last_seen_at = $1, expires_at = $2 WHERE id = $3 AND account_id = $4 AND revoked_at IS NULL AND absolute_expires_at > $1")
+            .bind(encode_time(last_seen_at))
+            .bind(encode_time(expires_at))
+            .bind(session_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn revoke_session(
+        &self,
+        account_id: AccountId,
+        session_id: SessionId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query("UPDATE auth_sessions SET revoked_at = $1 WHERE id = $2 AND account_id = $3 AND revoked_at IS NULL")
+            .bind(encode_time(revoked_at))
+            .bind(session_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn revoke_all_sessions(
+        &self,
+        account_id: AccountId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64> {
+        Ok(sqlx::query(
+            "UPDATE auth_sessions SET revoked_at = $1 WHERE account_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(encode_time(revoked_at))
+        .bind(account_id.to_string())
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
     }
 
     async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()> {

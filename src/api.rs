@@ -1,5 +1,6 @@
 use crate::{
     annotations::{AnnotationEngine, AnnotationOptions},
+    auth::{AuthError, AuthService, AuthenticatedBrowserSession, EmailCredential},
     config::{AuthMode, Config, JobBackend},
     identity::{IdentityRepository, identity_repository},
     models::{
@@ -28,6 +29,7 @@ use axum::{
 use base64::Engine;
 use bytes::Bytes;
 use chrono::{Duration as ChronoDuration, Utc};
+use cookie::{Cookie, SameSite, time::Duration as CookieDuration};
 use seiza::objects::{
     ObjectCatalogCapabilities, ObjectCatalogProvenance, ObjectDetails, ObjectHit, ObjectKind,
     ObjectNameMatch, ObjectQuery, ObjectQueryError, ObjectSort, SkyObject, SkyRegion,
@@ -58,6 +60,7 @@ const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
 pub struct AppState {
     config: Arc<Config>,
     pub identity: Option<Arc<dyn IdentityRepository>>,
+    pub auth: Option<Arc<AuthService>>,
     repository: Arc<dyn JobRepository>,
     transport: Arc<dyn QueueTransport>,
     limiter: RateLimiter,
@@ -73,6 +76,10 @@ impl AppState {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
         let identity = identity_repository(&config).await?;
+        let auth = match identity.clone() {
+            Some(identity) => Some(Arc::new(AuthService::from_config(&config, identity).await?)),
+            None => None,
+        };
         let transport = queue_transport(&config).await?;
         let solver = SolverEngine::from_catalog_paths(
             config.catalog_path.as_deref(),
@@ -90,6 +97,7 @@ impl AppState {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
             config: Arc::new(config),
             identity,
+            auth,
             repository,
             transport,
             store,
@@ -561,8 +569,14 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let frontend_dir = state.config.frontend_dir.clone();
     let frontend_index = frontend_dir.join("index.html");
+    let cors = cors_layer(&state);
     Router::new()
         .route("/api/v1/health", get(get_health))
+        .route("/api/v1/auth/email/start", post(start_email_sign_in))
+        .route("/api/v1/auth/email/complete", post(complete_email_sign_in))
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/logout-all", post(logout_all))
+        .route("/api/v1/account", get(get_account))
         .route("/api/v1/catalog/objects", get(get_catalog_objects))
         .route(
             "/api/v1/catalog/objects/search",
@@ -647,6 +661,8 @@ pub fn router(state: AppState) -> Router {
         .route_service("/solve", ServeFile::new(frontend_index.clone()))
         .route_service("/docs/api", ServeFile::new(frontend_index.clone()))
         .route_service("/data-sources", ServeFile::new(frontend_index.clone()))
+        .route_service("/signin", ServeFile::new(frontend_index.clone()))
+        .route_service("/account", ServeFile::new(frontend_index.clone()))
         .route_service(
             "/solutions/{job_id}",
             ServeFile::new(frontend_index.clone()),
@@ -657,39 +673,374 @@ pub fn router(state: AppState) -> Router {
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .layer(RequestBodyLimitLayer::new(state.config.max_upload_bytes))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([
-                    http::Method::GET,
-                    http::Method::POST,
-                    http::Method::PATCH,
-                    http::Method::DELETE,
-                    http::Method::HEAD,
-                    http::Method::OPTIONS,
-                ])
-                .allow_headers([
-                    header::CONTENT_TYPE,
-                    header::AUTHORIZATION,
-                    header::IF_NONE_MATCH,
-                    http::HeaderName::from_static("x-api-key"),
-                    http::HeaderName::from_static("tus-resumable"),
-                    http::HeaderName::from_static("upload-length"),
-                    http::HeaderName::from_static("upload-offset"),
-                    http::HeaderName::from_static("upload-metadata"),
-                    http::HeaderName::from_static("upload-concat"),
-                ])
-                .expose_headers([
-                    header::LOCATION,
-                    header::CACHE_CONTROL,
-                    header::ETAG,
-                    http::HeaderName::from_static("tus-resumable"),
-                    http::HeaderName::from_static("upload-length"),
-                    http::HeaderName::from_static("upload-offset"),
-                    http::HeaderName::from_static("upload-concat"),
-                ]),
-        )
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+fn cors_layer(state: &AppState) -> CorsLayer {
+    let layer = CorsLayer::new()
+        .allow_methods([
+            http::Method::GET,
+            http::Method::POST,
+            http::Method::PATCH,
+            http::Method::DELETE,
+            http::Method::HEAD,
+            http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::IF_NONE_MATCH,
+            http::HeaderName::from_static("x-api-key"),
+            http::HeaderName::from_static("x-csrf-token"),
+            http::HeaderName::from_static("tus-resumable"),
+            http::HeaderName::from_static("upload-length"),
+            http::HeaderName::from_static("upload-offset"),
+            http::HeaderName::from_static("upload-metadata"),
+            http::HeaderName::from_static("upload-concat"),
+        ])
+        .expose_headers([
+            header::LOCATION,
+            header::CACHE_CONTROL,
+            header::ETAG,
+            http::HeaderName::from_static("tus-resumable"),
+            http::HeaderName::from_static("upload-length"),
+            http::HeaderName::from_static("upload-offset"),
+            http::HeaderName::from_static("upload-metadata"),
+            http::HeaderName::from_static("upload-concat"),
+        ]);
+    if let Some(auth) = state.auth.as_ref() {
+        let origin = HeaderValue::from_str(auth.public_origin())
+            .expect("validated public base URL produces a header-safe origin");
+        layer.allow_origin(origin).allow_credentials(true)
+    } else {
+        layer.allow_origin(Any)
+    }
+}
+
+#[derive(Deserialize)]
+struct EmailStartRequest {
+    email: String,
+}
+
+async fn start_email_sign_in(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<EmailStartRequest>,
+) -> Result<Response, ApiError> {
+    let auth = auth_service(&state)?;
+    let source = request_source(&headers);
+    let started = auth
+        .start_email(&request.email, source)
+        .await
+        .map_err(auth_api_error)?;
+    let mut response = (StatusCode::ACCEPTED, Json(started)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct EmailCompleteRequest {
+    #[serde(alias = "token")]
+    link_token: Option<String>,
+    email: Option<String>,
+    challenge_id: Option<Uuid>,
+    code: Option<String>,
+}
+
+async fn complete_email_sign_in(
+    State(state): State<AppState>,
+    Json(request): Json<EmailCompleteRequest>,
+) -> Result<Response, ApiError> {
+    let auth = auth_service(&state)?;
+    let credential = match (
+        request.link_token,
+        request.email,
+        request.challenge_id,
+        request.code,
+    ) {
+        (Some(token), None, None, None) => EmailCredential::LinkToken(token),
+        (None, Some(email), Some(challenge_id), Some(code)) => EmailCredential::Code {
+            email,
+            challenge_id,
+            code,
+        },
+        _ => {
+            return Err(ApiError::bad_request(
+                "provide either link_token or email, challenge_id, and code",
+            ));
+        }
+    };
+    let signed_in = auth
+        .complete_email(credential)
+        .await
+        .map_err(auth_api_error)?;
+    let passkey_count = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository")
+        .list_passkeys(signed_in.completion.account.id)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .filter(|passkey| passkey.revoked_at.is_none())
+        .count();
+    let mut response = Json(json!({
+        "status": "success",
+        "account": account_json(&signed_in.completion.account),
+        "account_created": signed_in.completion.account_created,
+        "passkey_setup_required": passkey_count == 0,
+        "csrf_token": signed_in.csrf_token,
+    }))
+    .into_response();
+    append_auth_cookies(
+        &mut response,
+        &state,
+        &signed_in.session_token,
+        &signed_in.csrf_token,
+    )?;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    Ok(response)
+}
+
+async fn get_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser(&state, &headers).await?;
+    let identity = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository");
+    let sessions = identity
+        .list_sessions(authenticated.account.id)
+        .await
+        .map_err(ApiError::internal)?;
+    let passkeys = identity
+        .list_passkeys(authenticated.account.id)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut response = Json(json!({
+        "account": account_json(&authenticated.account),
+        "csrf_token": authenticated.csrf_token,
+        "passkey_setup_required": !passkeys.iter().any(|passkey| passkey.revoked_at.is_none()),
+        "sessions": sessions.into_iter().map(|session| json!({
+            "id": session.id,
+            "kind": session.kind,
+            "created_at": session.created_at,
+            "last_seen_at": session.last_seen_at,
+            "expires_at": session.expires_at,
+            "revoked_at": session.revoked_at,
+            "current": session.id == authenticated.session.id,
+        })).collect::<Vec<_>>(),
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    auth_service(&state)?
+        .logout(&authenticated)
+        .await
+        .map_err(auth_api_error)?;
+    cleared_auth_response(&state, json!({ "status": "success" }))
+}
+
+async fn logout_all(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    let revoked = auth_service(&state)?
+        .logout_all(&authenticated)
+        .await
+        .map_err(auth_api_error)?;
+    cleared_auth_response(
+        &state,
+        json!({ "status": "success", "revoked_sessions": revoked }),
+    )
+}
+
+fn auth_service(state: &AppState) -> Result<&AuthService, ApiError> {
+    state
+        .auth
+        .as_deref()
+        .ok_or_else(|| ApiError::not_found_message("account authentication is disabled"))
+}
+
+async fn authenticated_browser(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<AuthenticatedBrowserSession, ApiError> {
+    let auth = auth_service(state)?;
+    let token = request_cookie(headers, session_cookie_name(state))
+        .ok_or_else(|| ApiError::unauthorized("sign in to continue"))?;
+    let csrf = request_cookie(headers, csrf_cookie_name(state));
+    auth.authenticate_browser_session(&token, csrf.as_deref())
+        .await
+        .map_err(auth_api_error)
+}
+
+async fn authenticated_browser_for_mutation(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<AuthenticatedBrowserSession, ApiError> {
+    let auth = auth_service(state)?;
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ApiError::unauthorized("request origin is required"))?;
+    if origin != auth.public_origin() {
+        return Err(ApiError::unauthorized("request origin is not allowed"));
+    }
+    let authenticated = authenticated_browser(state, headers).await?;
+    let csrf = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok());
+    auth.require_csrf(&authenticated, csrf)
+        .map_err(auth_api_error)?;
+    Ok(authenticated)
+}
+
+fn account_json(account: &crate::identity::Account) -> Value {
+    json!({
+        "id": account.id,
+        "email": account.email,
+        "email_verified_at": account.email_verified_at,
+        "created_at": account.created_at,
+        "last_authenticated_at": account.last_authenticated_at,
+    })
+}
+
+fn session_cookie_name(state: &AppState) -> &'static str {
+    if state.config.secure_auth_cookies() {
+        "__Host-seiza_session"
+    } else {
+        "seiza_session"
+    }
+}
+
+fn csrf_cookie_name(state: &AppState) -> &'static str {
+    if state.config.secure_auth_cookies() {
+        "__Host-seiza_csrf"
+    } else {
+        "seiza_csrf"
+    }
+}
+
+fn request_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(Cookie::split_parse)
+        .filter_map(Result::ok)
+        .find(|cookie| cookie.name() == name)
+        .map(|cookie| cookie.value().to_owned())
+}
+
+fn append_auth_cookies(
+    response: &mut Response,
+    state: &AppState,
+    session_token: &str,
+    csrf_token: &str,
+) -> Result<(), ApiError> {
+    let secure = state.config.secure_auth_cookies();
+    let max_age = CookieDuration::days(90);
+    let session = Cookie::build((session_cookie_name(state), session_token.to_owned()))
+        .path("/")
+        .secure(secure)
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .max_age(max_age)
+        .build();
+    let csrf = Cookie::build((csrf_cookie_name(state), csrf_token.to_owned()))
+        .path("/")
+        .secure(secure)
+        .http_only(false)
+        .same_site(SameSite::Lax)
+        .max_age(max_age)
+        .build();
+    append_set_cookie(response, session)?;
+    append_set_cookie(response, csrf)
+}
+
+fn cleared_auth_response(state: &AppState, body: Value) -> Result<Response, ApiError> {
+    let secure = state.config.secure_auth_cookies();
+    let mut response = Json(body).into_response();
+    for (name, http_only) in [
+        (session_cookie_name(state), true),
+        (csrf_cookie_name(state), false),
+    ] {
+        let cookie = Cookie::build((name, ""))
+            .path("/")
+            .secure(secure)
+            .http_only(http_only)
+            .same_site(SameSite::Lax)
+            .max_age(CookieDuration::ZERO)
+            .build();
+        append_set_cookie(&mut response, cookie)?;
+    }
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+fn append_set_cookie(response: &mut Response, cookie: Cookie<'_>) -> Result<(), ApiError> {
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&cookie.to_string()).map_err(ApiError::internal)?,
+    );
+    Ok(())
+}
+
+fn request_source(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("anonymous")
+}
+
+fn auth_api_error(error: AuthError) -> ApiError {
+    match error {
+        AuthError::InvalidEmail => ApiError::bad_request("enter a valid email address"),
+        AuthError::InvalidCredential => {
+            ApiError::unauthorized("the sign-in link, code, or session is invalid or expired")
+        }
+        AuthError::RateLimited(retry_after) => ApiError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "auth_rate_limited",
+            message: "too many sign-in requests".into(),
+            retry_after: Some(retry_after),
+        },
+        AuthError::Delivery(source) => {
+            tracing::error!(error = %source, "sign-in email delivery failed");
+            ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "email_unavailable",
+                message: "email delivery is temporarily unavailable".into(),
+                retry_after: Some(30),
+            }
+        }
+        AuthError::Internal(source) => ApiError::internal(source),
+    }
 }
 
 async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -1114,7 +1465,7 @@ async fn create_resumable_upload(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let upload_concat = headers
         .get("upload-concat")
         .and_then(|value| value.to_str().ok());
@@ -1299,7 +1650,7 @@ async fn head_resumable_upload(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, false).await?;
     let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
         .await
         .map_err(resumable_api_error)?;
@@ -1347,7 +1698,7 @@ async fn patch_resumable_upload(
             "chunk Content-Type must be application/offset+octet-stream",
         ));
     }
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let offset = required_u64_header(&headers, "upload-offset")?;
     let lock = state.upload_lock(&upload_id).await;
     let _guard = lock.lock().await;
@@ -1373,7 +1724,7 @@ async fn delete_resumable_upload(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let lock = state.upload_lock(&upload_id).await;
     let _guard = lock.lock().await;
     let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
@@ -1396,7 +1747,7 @@ async fn get_resumable_upload_result(
     Path(upload_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<JobResponse>, ApiError> {
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, false).await?;
     let lock = state.upload_lock(&upload_id).await;
     let _guard = lock.lock().await;
     let mut upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
@@ -1521,7 +1872,7 @@ async fn post_solve(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let (upload, options_json, _) =
         read_multipart(multipart, state.config.max_upload_bytes).await?;
     let options = options_json
@@ -1557,7 +1908,7 @@ async fn resolve_solve(
     headers: HeaderMap,
     Json(mut options): Json<SolveOptions>,
 ) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let job = state
         .public_job(&public_id)
         .await?
@@ -1648,7 +1999,7 @@ async fn donate_validation_image(
     headers: HeaderMap,
     Json(request): Json<ValidationDonationRequest>,
 ) -> Result<Json<JobResponse>, ApiError> {
-    let _client = client_from_headers(&state, &headers, None)?;
+    let _client = client_from_headers(&state, &headers, None, true).await?;
     if !request.license_agreed {
         return Err(ApiError::bad_request(
             "license_agreed must be true to contribute an image",
@@ -2134,7 +2485,7 @@ async fn astrometry_upload(
         request_json.ok_or_else(|| ApiError::bad_request("missing request-json field"))?;
     let request: AstroUploadRequest = serde_json::from_str(&request_json)
         .map_err(|error| ApiError::bad_request(format!("invalid request-json: {error}")))?;
-    let client = client_from_headers(&state, &headers, request.session.as_deref())?;
+    let client = client_from_headers(&state, &headers, request.session.as_deref(), true).await?;
     let dimensions =
         dimensions_from_bytes(&upload.data, &upload.filename).map_err(ApiError::bad_request)?;
     let options = request.into_options(dimensions)?;
@@ -2337,17 +2688,38 @@ async fn read_multipart(
         .ok_or_else(|| ApiError::bad_request("missing file field"))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Client {
     id: String,
     queue_weight: f64,
 }
 
-fn client_from_headers(
+async fn client_from_headers(
     state: &AppState,
     headers: &HeaderMap,
     astrometry_session: Option<&str>,
+    mutation: bool,
 ) -> Result<Client, ApiError> {
+    if state.config.auth_mode == AuthMode::Accounts {
+        if astrometry_session.is_some()
+            || headers.contains_key("x-api-key")
+            || headers.contains_key(header::AUTHORIZATION)
+        {
+            return Err(ApiError::unauthorized(
+                "account API keys and Astrometry sessions are not valid for this request",
+            ));
+        }
+        let authenticated = if mutation {
+            authenticated_browser_for_mutation(state, headers).await?
+        } else {
+            authenticated_browser(state, headers).await?
+        };
+        return Ok(Client {
+            id: format!("account:{}", authenticated.account.id),
+            queue_weight: 1.0,
+        });
+    }
+
     let api_key = headers
         .get("x-api-key")
         .and_then(|value| value.to_str().ok())
@@ -2360,9 +2732,7 @@ fn client_from_headers(
         .or(astrometry_session)
         .filter(|value| !value.trim().is_empty());
     let id = match (state.config.auth_mode, api_key) {
-        (AuthMode::Accounts, _) => {
-            return Err(ApiError::unauthorized("account authentication is required"));
-        }
+        (AuthMode::Accounts, _) => unreachable!("accounts mode is handled above"),
         (AuthMode::StubApiKey, None) => {
             return Err(ApiError::unauthorized(
                 "provide X-API-Key, Bearer token, or Astrometry session",
@@ -2734,6 +3104,10 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
+    use crate::{
+        email::{EmailSender, SignInEmail},
+        sqlx_identity::SqlxIdentityRepository,
+    };
     use axum::{
         body::{Body, to_bytes},
         http::Request,
@@ -2743,6 +3117,18 @@ mod tests {
         StarIdentifier, StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind,
     };
     use tower::ServiceExt;
+    use url::Url;
+
+    #[derive(Default)]
+    struct CapturingEmailSender(Mutex<Vec<SignInEmail>>);
+
+    #[async_trait::async_trait]
+    impl EmailSender for CapturingEmailSender {
+        async fn send_sign_in(&self, email: SignInEmail) -> anyhow::Result<()> {
+            self.0.lock().await.push(email);
+            Ok(())
+        }
+    }
 
     fn solved_fixture() -> SolutionResponse {
         SolutionResponse {
@@ -3649,6 +4035,147 @@ mod tests {
         headers
     }
 
+    #[tokio::test]
+    async fn email_sign_in_issues_a_csrf_bound_multi_session_cookie() {
+        let root = std::env::temp_dir().join(format!("seiza-account-api-{}", Uuid::now_v7()));
+        let mut accounts_config = test_config(&root);
+        accounts_config.auth_mode = AuthMode::Accounts;
+        accounts_config.public_base_url = Some(Url::parse("https://solve.example.com").unwrap());
+
+        let mut state = AppState::new(test_config(&root)).await.unwrap();
+        let identity = Arc::new(
+            SqlxIdentityRepository::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let sender = Arc::new(CapturingEmailSender::default());
+        state.config = Arc::new(accounts_config);
+        state.identity = Some(identity.clone());
+        state.auth = Some(Arc::new(AuthService::new(
+            identity,
+            sender.clone(),
+            Url::parse("https://solve.example.com").unwrap(),
+            vec![42; 32],
+        )));
+
+        let start_response = start_email_sign_in(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(EmailStartRequest {
+                email: "Astronomer@Example.com".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(start_response.status(), StatusCode::ACCEPTED);
+        let message = sender.0.lock().await[0].clone();
+        let token = Url::parse(&message.link)
+            .unwrap()
+            .query_pairs()
+            .find_map(|(key, value)| (key == "token").then(|| value.into_owned()))
+            .unwrap();
+
+        let response = complete_email_sign_in(
+            State(state.clone()),
+            Json(EmailCompleteRequest {
+                link_token: Some(token),
+                email: None,
+                challenge_id: None,
+                code: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| Cookie::parse(value.to_str().unwrap()).unwrap().into_owned())
+            .collect::<Vec<_>>();
+        let session = cookies
+            .iter()
+            .find(|cookie| cookie.name() == "__Host-seiza_session")
+            .unwrap();
+        assert!(session.http_only().unwrap_or(false));
+        assert!(session.secure().unwrap_or(false));
+        let csrf = cookies
+            .iter()
+            .find(|cookie| cookie.name() == "__Host-seiza_csrf")
+            .unwrap();
+        assert!(!csrf.http_only().unwrap_or(false));
+        let cookie_header = cookies
+            .iter()
+            .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        let mut read_headers = HeaderMap::new();
+        read_headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&cookie_header).unwrap(),
+        );
+        assert_eq!(
+            get_account(State(state.clone()), read_headers.clone())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            client_from_headers(&state, &read_headers, None, false)
+                .await
+                .unwrap()
+                .id,
+            format!(
+                "account:{}",
+                state
+                    .identity
+                    .as_ref()
+                    .unwrap()
+                    .account_by_email_lookup("astronomer@example.com")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .id
+            )
+        );
+
+        let missing_origin = client_from_headers(&state, &read_headers, None, true)
+            .await
+            .unwrap_err();
+        assert_eq!(missing_origin.status, StatusCode::UNAUTHORIZED);
+
+        let mut mutation_headers = read_headers;
+        mutation_headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://solve.example.com"),
+        );
+        mutation_headers.insert("x-csrf-token", HeaderValue::from_str(csrf.value()).unwrap());
+        assert!(
+            client_from_headers(&state, &mutation_headers, None, true)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            logout(State(state.clone()), mutation_headers)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_account(State(state.clone()), HeaderMap::new())
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn public_client_ids_normalize_ip_addresses_for_queue_fairness() {
         assert_eq!(public_client_id("192.0.2.42"), "public:192.0.2.42");
@@ -3669,12 +4196,16 @@ mod tests {
 
         let mut priority_headers = HeaderMap::new();
         priority_headers.insert("x-api-key", HeaderValue::from_static("operator-secret"));
-        let priority = client_from_headers(&state, &priority_headers, None).unwrap();
+        let priority = client_from_headers(&state, &priority_headers, None, false)
+            .await
+            .unwrap();
         assert_eq!(priority.queue_weight, 2.0);
 
         let mut ordinary_headers = HeaderMap::new();
         ordinary_headers.insert("x-api-key", HeaderValue::from_static("unconfigured-key"));
-        let ordinary = client_from_headers(&state, &ordinary_headers, None).unwrap();
+        let ordinary = client_from_headers(&state, &ordinary_headers, None, false)
+            .await
+            .unwrap();
         assert_eq!(ordinary.queue_weight, 1.0);
 
         drop(state);
@@ -3716,6 +4247,19 @@ mod tests {
             rate_limit_per_minute: 60.0,
             rate_limit_burst: 10.0,
             auth_mode: AuthMode::Public,
+            public_base_url: None,
+            auth_code_pepper_file: None,
+            email_provider: None,
+            email_from: None,
+            ses_from_identity_arn: None,
+            ses_role_arn: None,
+            ses_role_external_id_file: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_username: None,
+            smtp_password_file: None,
+            smtp_tls: crate::config::SmtpTls::StartTls,
+            smtp_timeout_seconds: 30,
             storage_backend: StorageBackend::Local,
             s3_bucket: None,
             s3_prefix: "uploads".into(),

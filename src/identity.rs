@@ -157,6 +157,13 @@ pub struct ApiKey {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletedEmailSignIn {
+    pub account: Account,
+    pub session: AuthSession,
+    pub account_created: bool,
+}
+
 /// Persistent identity boundary shared by SQLx and DynamoDB deployments.
 ///
 /// Session and API-key authentication always supplies both the account ID and
@@ -172,6 +179,22 @@ pub trait IdentityRepository: Send + Sync {
 
     async fn create_challenge(&self, challenge: AuthChallenge) -> Result<()>;
     async fn challenge_by_id(&self, challenge_id: ChallengeId) -> Result<Option<AuthChallenge>>;
+    async fn create_email_challenge(&self, challenge: AuthChallenge, max_live: usize)
+    -> Result<()>;
+    async fn record_challenge_failure(
+        &self,
+        challenge_id: ChallengeId,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+    ) -> Result<Option<AuthChallenge>>;
+    async fn complete_email_challenge(
+        &self,
+        challenge_id: ChallengeId,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+        new_account: Account,
+        new_session: AuthSession,
+    ) -> Result<Option<CompletedEmailSignIn>>;
 
     async fn create_session(&self, session: AuthSession) -> Result<()>;
     async fn session(
@@ -180,6 +203,24 @@ pub trait IdentityRepository: Send + Sync {
         session_id: SessionId,
     ) -> Result<Option<AuthSession>>;
     async fn list_sessions(&self, account_id: AccountId) -> Result<Vec<AuthSession>>;
+    async fn touch_session(
+        &self,
+        account_id: AccountId,
+        session_id: SessionId,
+        last_seen_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    async fn revoke_session(
+        &self,
+        account_id: AccountId,
+        session_id: SessionId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    async fn revoke_all_sessions(
+        &self,
+        account_id: AccountId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64>;
 
     async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()>;
     async fn passkey_by_credential_id(

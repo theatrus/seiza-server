@@ -149,13 +149,50 @@ export interface Health {
   }
   solver_ready: boolean
   queue_depth: number
-  auth_mode: 'public' | 'stub-api-key'
+  auth_mode: 'public' | 'stub-api-key' | 'accounts'
   job_backend: 'sqlx' | 'dynamodb'
   queue_transport: 'local' | 'sqs'
   embedded_workers: number
 }
 
 interface ApiFailure { error?: { message?: string } }
+
+export interface Account {
+  id: string
+  email: string
+  email_verified_at: string
+  created_at: string
+}
+
+export interface AccountSession {
+  id: string
+  kind: 'browser' | 'astrometry'
+  created_at: string
+  last_seen_at: string
+  expires_at: string
+  revoked_at: string | null
+  current: boolean
+}
+
+export interface AccountDetails {
+  account: Account
+  csrf_token: string | null
+  passkey_setup_required: boolean
+  sessions: AccountSession[]
+}
+
+export interface EmailSignInStart {
+  challenge_id: string
+  resend_at: string
+}
+
+export interface CompletedSignIn {
+  status: 'success'
+  account: Account
+  account_created: boolean
+  passkey_setup_required: boolean
+  csrf_token: string
+}
 
 async function expectJson<T>(response: Response): Promise<T> {
   const payload = await response.json() as T & ApiFailure
@@ -164,7 +201,40 @@ async function expectJson<T>(response: Response): Promise<T> {
 }
 
 export async function getHealth(): Promise<Health> {
-  return expectJson<Health>(await fetch('/api/v1/health'))
+  return expectJson<Health>(await sessionFetch('/api/v1/health'))
+}
+
+export async function startEmailSignIn(email: string): Promise<EmailSignInStart> {
+  return expectJson<EmailSignInStart>(await sessionFetch('/api/v1/auth/email/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  }))
+}
+
+export async function completeEmailSignIn(request: {
+  link_token?: string
+  email?: string
+  challenge_id?: string
+  code?: string
+}): Promise<CompletedSignIn> {
+  return expectJson<CompletedSignIn>(await sessionFetch('/api/v1/auth/email/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  }))
+}
+
+export async function getAccount(): Promise<AccountDetails | null> {
+  const response = await sessionFetch('/api/v1/account')
+  if (response.status === 401 || response.status === 404) return null
+  return expectJson<AccountDetails>(response)
+}
+
+export async function logout(all = false): Promise<void> {
+  await expectJson(await sessionFetch(all ? '/api/v1/auth/logout-all' : '/api/v1/auth/logout', {
+    method: 'POST',
+  }, true))
 }
 
 export async function submitSolve(
@@ -190,6 +260,8 @@ export async function submitSolve(
     removeFingerprintOnSuccess: true,
     allowedMetaFields: false,
     onBeforeRequest: (request, uploadedFile) => {
+      const csrf = csrfToken()
+      if (csrf) request.setHeader('X-CSRF-Token', csrf)
       request.setHeader('Upload-Metadata', [
         ['filename', uploadedFile.name],
         ['filetype', uploadedFile.type || 'application/octet-stream'],
@@ -222,7 +294,7 @@ export async function submitSolve(
     const uploaded = result?.successful?.[0]
     const uploadUrl = uploaded?.uploadURL ?? uploaded?.response?.uploadURL
     if (!uploadUrl) throw new Error('Upload completed without a result URL')
-    return expectJson<Job>(await fetch(`${uploadUrl}/result`))
+    return expectJson<Job>(await sessionFetch(`${uploadUrl}/result`))
   } finally {
     const tus = uppy.getPlugin('Tus')
     for (const uploadedFile of uppy.getFiles()) {
@@ -277,15 +349,15 @@ function base64Metadata(value: string): string {
 }
 
 export async function getSolve(jobId: string): Promise<Job> {
-  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}`))
+  return expectJson<Job>(await sessionFetch(`/api/v1/solves/${jobId}`))
 }
 
 export async function resolveSolve(jobId: string, options: SolveOptions): Promise<Job> {
-  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}/resolve`, {
+  return expectJson<Job>(await sessionFetch(`/api/v1/solves/${jobId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
-  }))
+  }, true))
 }
 
 export async function donateValidationImage(
@@ -294,16 +366,39 @@ export async function donateValidationImage(
   solveIsInvalid: boolean,
   licenseAgreed: boolean,
 ): Promise<Job> {
-  return expectJson<Job>(await fetch(`/api/v1/solves/${jobId}/validation-donation`, {
+  return expectJson<Job>(await sessionFetch(`/api/v1/solves/${jobId}/validation-donation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ comment, solve_is_invalid: solveIsInvalid, license_agreed: licenseAgreed }),
-  }))
+  }, true))
 }
 
 export async function getAnnotations(url: string): Promise<Annotations> {
   const separator = url.includes('?') ? '&' : '?'
-  return expectJson<Annotations>(await fetch(
+  return expectJson<Annotations>(await sessionFetch(
     `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150`,
   ))
+}
+
+function csrfToken(): string | null {
+  for (const cookie of document.cookie.split(';')) {
+    const separator = cookie.indexOf('=')
+    if (separator < 0) continue
+    const name = cookie.slice(0, separator).trim()
+    if (name === '__Host-seiza_csrf' || name === 'seiza_csrf') {
+      return decodeURIComponent(cookie.slice(separator + 1))
+    }
+  }
+  return null
+}
+
+async function sessionFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  mutation = false,
+): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const csrf = mutation ? csrfToken() : null
+  if (csrf) headers.set('X-CSRF-Token', csrf)
+  return fetch(input, { ...init, headers, credentials: 'same-origin' })
 }
