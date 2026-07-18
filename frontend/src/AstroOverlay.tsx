@@ -1,20 +1,18 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { AstroOverlay as ReusableAstroOverlay } from '@seiza/astro-overlay/react'
 import {
-  defaultLayerForObject,
   defaultOverlayDensity,
   defaultOverlayTheme,
-  type OverlayLayerResolver,
+  suggestedDeepSkyCatalogColors as deepSkyCatalogColors,
+  suggestedDeepSkyCatalogForObject as deepSkyCatalogForObject,
+  suggestedDeepSkyCatalogLayer as deepSkyCatalogLayer,
+  suggestedDeepSkyCatalogs as deepSkyCatalogs,
+  suggestedDeepSkyColorForObject,
+  suggestedDeepSkyLayerForObject,
   type OverlayLayerVisibility,
+  type SuggestedDeepSkyCatalogId as DeepSkyCatalogId,
 } from '@seiza/astro-overlay'
 import type { OverlayObject, Solution } from './api'
-import {
-  deepSkyCatalogColors,
-  deepSkyCatalogForObject,
-  deepSkyCatalogLayer,
-  deepSkyCatalogs,
-} from './catalogs'
-import type { DeepSkyCatalogId } from './catalogs'
 
 export interface OverlayLayers {
   deepSky: boolean
@@ -167,7 +165,6 @@ export function AstroOverlay({
   hiddenCatalogs: DeepSkyCatalogId[]
   showCatalogOutlines: boolean
 }) {
-  const overlayRef = useRef<SVGSVGElement>(null)
   const visibleObjects = objects
     .filter((object) => {
       const catalog = deepSkyCatalogForObject(object)
@@ -177,34 +174,16 @@ export function AstroOverlay({
       ? object
       : { ...object, outlines: [] })
 
-  // Inline variables survive SVG serialization, so browser and PNG exports use
-  // the same catalog colors without expanding the reusable package theme API.
-  useLayoutEffect(() => {
-    const overlay = overlayRef.current
-    if (!overlay) return
-    for (const [catalog] of deepSkyCatalogs) {
-      const layer = deepSkyCatalogLayer(catalog)
-      for (const group of overlay.querySelectorAll<SVGGElement>(`[data-layer="${layer}"]`)) {
-        group.style.setProperty('--seiza-overlay-deep-sky-color', deepSkyCatalogColors[catalog])
-      }
-    }
-  }, [visibleObjects])
-
   return <ReusableAstroOverlay
-    ref={overlayRef}
     className="sky-overlay"
     solution={solution}
     objects={visibleObjects}
     layers={toPackageLayers(layers)}
-    layerForObject={catalogLayerForObject}
+    layerForObject={suggestedDeepSkyLayerForObject}
+    colorForObject={suggestedDeepSkyColorForObject}
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}
   />
-}
-
-const catalogLayerForObject: OverlayLayerResolver = (object) => {
-  const catalog = deepSkyCatalogForObject(object)
-  return catalog ? deepSkyCatalogLayer(catalog) : defaultLayerForObject(object)
 }
 
 function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {

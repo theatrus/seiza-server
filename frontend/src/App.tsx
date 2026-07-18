@@ -5,7 +5,7 @@ import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
 import type { OverlayLayers } from './AstroOverlay'
-import type { DeepSkyCatalogId } from './catalogs'
+import type { SuggestedDeepSkyCatalogId as DeepSkyCatalogId } from '@seiza/astro-overlay'
 
 const pending = new Set(['queued', 'solving'])
 const defaultOverlayLayers: OverlayLayers = {
