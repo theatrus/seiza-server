@@ -187,6 +187,7 @@ fn solve_bytes(
                     radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
                     scale_arcsec_px: scale,
                     scale_tolerance: options.scale_tolerance,
+                    sip_order: options.sip_order,
                 },
                 dimensions,
             )
@@ -213,6 +214,7 @@ fn solve_bytes(
                 max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
                 index_mag_limit: index.index_mag_limit(),
                 max_pattern_deg: index.max_pattern_deg(),
+                sip_order: options.sip_order,
                 ..Default::default()
             };
             (
@@ -262,15 +264,7 @@ fn solve_bytes(
         rms_arcsec: solution.rms_arcsec,
         image_width: dimensions.0,
         image_height: dimensions.1,
-        wcs: WcsResponse {
-            crval: [solution.wcs.crval.0, solution.wcs.crval.1],
-            crpix: [solution.wcs.crpix.0, solution.wcs.crpix.1],
-            cd: solution.wcs.cd,
-            ctype: ["RA---TAN".into(), "DEC--TAN".into()],
-            cunit: ["deg".into(), "deg".into()],
-            radesys: "ICRS".into(),
-            equinox: 2000.0,
-        },
+        wcs: WcsResponse::from_seiza(&solution.wcs),
         footprint,
         objects: Vec::new(),
         catalog_version: None,

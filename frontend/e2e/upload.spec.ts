@@ -77,6 +77,7 @@ function defaultSolveOptions() {
     sigma: 4,
     ignore_border: 0,
     max_stars: 500,
+    sip_order: 0,
     capture_time: null,
   }
 }
@@ -481,6 +482,7 @@ test('retries a failed retained image with hints without uploading it again', as
         scale_arcsec_per_pixel: 1.35,
         radius_deg: 3,
         capture_time: '2026-07-16T12:30:00.000Z',
+        sip_order: 3,
         sigma: 5.5,
         ignore_border: 12,
         max_stars: 300,
@@ -511,6 +513,8 @@ test('retries a failed retained image with hints without uploading it again', as
   await page.getByLabel('Dec (degrees)').fill('47.2')
   await page.getByLabel('Pixel scale (arcsec/px)').fill('1.35')
   await page.getByLabel('Search radius (degrees)').fill('3')
+  await page.getByText('Advanced solve controls').click()
+  await page.getByLabel('SIP distortion order').selectOption('3')
   await page.getByLabel('Time zone').selectOption('utc')
   await page.getByLabel('Date and time').fill('2026-07-16T12:30')
   await page.getByRole('button', { name: 'Retry retained image' }).click()

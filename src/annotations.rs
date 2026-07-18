@@ -131,11 +131,7 @@ impl AnnotationEngine {
         capture_time: Option<DateTime<Utc>>,
         options: &AnnotationOptions,
     ) -> AnnotationResponse {
-        let wcs = Wcs {
-            crval: (solution.wcs.crval[0], solution.wcs.crval[1]),
-            crpix: (solution.wcs.crpix[0], solution.wcs.crpix[1]),
-            cd: solution.wcs.cd,
-        };
+        let wcs = solution.wcs.to_seiza();
         let dimensions = (solution.image_width, solution.image_height);
         let mut objects = if self.is_configured() {
             Vec::new()
@@ -884,6 +880,7 @@ mod tests {
                 cunit: ["deg".into(), "deg".into()],
                 radesys: "ICRS".into(),
                 equinox: 2000.0,
+                sip: None,
             },
             footprint: [[0.0; 2]; 4],
             objects: Vec::new(),
@@ -967,6 +964,7 @@ mod tests {
                 cunit: ["deg".into(), "deg".into()],
                 radesys: "ICRS".into(),
                 equinox: 2000.0,
+                sip: None,
             },
             footprint: [[0.0; 2]; 4],
             objects: Vec::new(),
@@ -1036,6 +1034,7 @@ mod tests {
                 cunit: ["deg".into(), "deg".into()],
                 radesys: "ICRS".into(),
                 equinox: 2000.0,
+                sip: None,
             },
             footprint: [[0.0; 2]; 4],
             objects: Vec::new(),

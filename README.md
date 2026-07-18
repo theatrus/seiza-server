@@ -26,9 +26,11 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.6.0. The maintained G<=16 index is memory-mapped once per
+  solving with Seiza 0.7.0. Optional SIP orders 2–5 fit forward and inverse
+  optical-distortion polynomials after the accepted linear solution. The
+  maintained G<=16 index is memory-mapped once per
   worker and reused across jobs, including fine-scale fields down to 0.1"/px.
-  Seiza 0.6 automatically uses compact detection for 8-bit uploads and its
+  Seiza automatically uses compact detection for 8-bit uploads and its
   optimized hinted and blind solve paths.
 - Per-client token-bucket admission limiting plus a durable weighted-LRU
   priority queue. An unseen/least-recently served client goes first; higher
@@ -50,9 +52,9 @@ disappears on a process restart.
 
 ## Quick start
 
-Install Seiza CLI 0.6.0 or newer, then get the prebuilt catalogs and maintained
+Install Seiza CLI 0.7.0 or newer, then get the prebuilt catalogs and maintained
 blind index. The server automatically prefers the deep Gaia G<=17 catalog and
-its matching G<=16 index when both are present. Seiza 0.6.0's prebuilt object
+its matching G<=16 index when both are present. Seiza 0.7.0's prebuilt object
 catalog is memory-mapped, includes the expanded LBN and Cederblad datasets, and
 provides embedded spatial and designation indices. The prebuilt bundle also
 includes `stars-lite-tycho2.ids.bin`; the server turns its proper,
@@ -231,11 +233,15 @@ image output for API clients. Its query supports `objects`, `grid`,
 `max_star_identifiers`, `field_star_mag_limit`, and `max_field_stars`.
 
 The JSON solution includes the full TAN/ICRS WCS (`CTYPE`, `CUNIT`, `CRVAL`,
-zero-indexed internal `CRPIX`, CD matrix, `RADESYS`, and `EQUINOX`), the four
+zero-indexed internal `CRPIX`, CD matrix, `RADESYS`, and `EQUINOX`). When
+`sip_order` 2–5 is requested and improves the fit, `wcs.sip` stores the order
+and explicit `[p, q, value]` coefficient records for forward `A/B` and inverse
+`AP/BP` polynomials. The solution also includes the four
 ICRS footprint corners, and current projected catalog objects when annotation
 catalogs are configured. Static catalog changes are detected and reprojected
 through the stored WCS without rerunning the solver. The downloadable `.wcs`
-converts `CRPIX` to FITS' one-indexed convention.
+converts `CRPIX` to FITS' one-indexed convention and emits the full SIP keyword
+set for distorted solutions.
 
 The native catalog API can query the configured deep-sky catalog without
 submitting an image. Cone queries support kind, magnitude, angular-size,
@@ -271,7 +277,8 @@ A position hint avoids the whole-sky path:
   "center_dec_deg": 41.2690,
   "radius_deg": 2,
   "scale_arcsec_per_pixel": 1.24,
-  "scale_tolerance": 0.2
+  "scale_tolerance": 0.2,
+  "sip_order": 3
 }
 ```
 

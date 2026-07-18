@@ -18,7 +18,18 @@ export interface SolveOptions {
   sigma?: number | null
   ignore_border?: number | null
   max_stars?: number | null
+  sip_order?: number | null
   capture_time?: string | null
+}
+
+export type SipCoefficient = [p: number, q: number, value: number]
+
+export interface SipDistortion {
+  order: number
+  a: SipCoefficient[]
+  b: SipCoefficient[]
+  ap: SipCoefficient[]
+  bp: SipCoefficient[]
 }
 
 export interface OverlayObject {
@@ -74,6 +85,7 @@ export interface Solution {
     cunit: [string, string]
     radesys: string
     equinox: number
+    sip?: SipDistortion
   }
   footprint: [[number, number], [number, number], [number, number], [number, number]]
   objects: OverlayObject[]

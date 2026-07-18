@@ -111,7 +111,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="N.I.N.A., ASTAP, and persistent clients.">
-          <p><code>seiza-cli</code> 0.6 implements the ASTAP command-line contract that N.I.N.A. already understands. The pre-built Windows binary is the shortest path: no Rust toolchain, installer, or N.I.N.A. plugin is required.</p>
+          <p><code>seiza-cli</code> 0.7 implements the ASTAP command-line contract that N.I.N.A. already understands. The pre-built Windows binary is the shortest path: no Rust toolchain, installer, or N.I.N.A. plugin is required.</p>
           <ol className="integration-steps">
             <li><strong>Download the binary.</strong><span>Open the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.zip</code>, and extract it to a stable directory such as <code>C:\Seiza</code>.</span></li>
             <li><strong>Download the solving data.</strong><span>Run the command below once in PowerShell. Keeping the deep Gaia catalog and maintained blind index beside <code>seiza.exe</code> lets Seiza discover them automatically.</span></li>
@@ -124,7 +124,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="native-api" eyebrow="NATIVE JSON API" title="Jobs and durable result artifacts.">
-          <p>Job status is one of <code>queued</code>, <code>solving</code>, <code>succeeded</code>, or <code>failed</code>. Completed responses report end-to-end <code>solve_time_ms</code>. Successful solutions also include full TAN/ICRS WCS, image dimensions, matched-star quality, sky footprint, artifact URLs, and durable solver <code>statistics</code> with decode, detection, and search timings.</p>
+          <p>Job status is one of <code>queued</code>, <code>solving</code>, <code>succeeded</code>, or <code>failed</code>. Completed responses report end-to-end <code>solve_time_ms</code>. Successful solutions also include full TAN/ICRS WCS, optional SIP distortion, image dimensions, matched-star quality, sky footprint, artifact URLs, and durable solver <code>statistics</code> with decode, detection, and search timings.</p>
           <div className="endpoint-list">
             <Endpoint method="GET" path="/api/v1/health">Read seiza-server and Seiza versions, solver readiness, queue depth, authentication mode, and configured backends.</Endpoint>
             <Endpoint method="POST" path="/api/v1/solves">Submit a multipart image and optional solve settings. Returns <code>202</code>.</Endpoint>
@@ -138,6 +138,7 @@ export function ApiDocsPage() {
           </div>
           <CodeExample label="Retry without another upload" code={retryExample} />
           <CodeExample label="Contribute a validation image" code={contributionExample} />
+          <div className="api-note"><strong>SIP WCS records</strong><span>When distortion is fitted, <code>solution.wcs.sip</code> contains the order and explicit <code>[p, q, value]</code> records for forward <code>A/B</code> and inverse <code>AP/BP</code> polynomials. The axes become <code>RA---TAN-SIP</code> / <code>DEC--TAN-SIP</code>, and the downloadable WCS includes the complete FITS SIP keyword set.</span></div>
           <div className="api-note"><strong>Invalid solve reports</strong><span>Set <code>solve_is_invalid: true</code> for an incorrect WCS, a false positive, or a failed solve that should have succeeded. The flag defaults to <code>false</code> and is returned with the contribution metadata.</span></div>
           <div className="api-note"><strong>Validation image permission</strong><span>By setting <code>license_agreed</code>, the contributor attests that they own the image or have authority to contribute it. They retain ownership and give Seiza and its maintainers permission to retain, copy, and process the image as part of Seiza’s validation set, only to test, validate, debug, and improve the Seiza plate solver, including training and evaluating solver-related models. Seiza will not make the validation set public, sell the image, or use it for unrelated purposes. The recorded permission version is <code>seiza-validation-image-grant-v2</code>.</span></div>
           <h3>Annotation and overlay query parameters</h3>
@@ -164,6 +165,7 @@ export function ApiDocsPage() {
             <OptionRow name="sigma" defaultValue="4.0">Positive source-detection threshold.</OptionRow>
             <OptionRow name="ignore_border" defaultValue="0">Pixels ignored around every image edge.</OptionRow>
             <OptionRow name="max_stars" defaultValue="500">Bright detections retained for matching.</OptionRow>
+            <OptionRow name="sip_order" defaultValue="0">SIP distortion order 2–5; 0 or 1 keeps a linear TAN solution. A fitted polynomial is accepted only when it materially improves the residual.</OptionRow>
             <OptionRow name="capture_time" defaultValue="FITS DATE-OBS">RFC 3339 acquisition time for transients, comets, and asteroids.</OptionRow>
           </div>
         </DocSection>

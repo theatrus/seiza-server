@@ -66,6 +66,9 @@ pub struct SolveOptions {
     pub sigma: f32,
     pub ignore_border: u32,
     pub max_stars: usize,
+    /// SIP distortion polynomial order. Zero or one keeps a linear TAN
+    /// solution; orders 2 through 5 fit SIP when the result improves enough.
+    pub sip_order: u8,
     /// Acquisition time used to scope transients and propagate minor bodies.
     /// FITS uploads populate this automatically from DATE-OBS when omitted.
     pub capture_time: Option<DateTime<Utc>>,
@@ -91,6 +94,7 @@ impl Default for SolveOptions {
             sigma: 4.0,
             ignore_border: 0,
             max_stars: 500,
+            sip_order: 0,
             capture_time: None,
             hint_source: None,
             hint_keywords: Vec::new(),
@@ -139,7 +143,101 @@ impl SolveOptions {
         {
             return Err("scale_arcsec_per_pixel must be positive".into());
         }
+        if self.sip_order > 5 {
+            return Err("sip_order must be between 0 and 5".into());
+        }
         Ok(())
+    }
+}
+
+/// One explicit SIP coefficient record: polynomial exponents `(p, q)` and
+/// the associated value. Keeping exponents on the wire avoids coupling the
+/// durable API to Seiza's internal vector ordering.
+pub type SipCoefficient = (u8, u8, f64);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SipResponse {
+    pub order: u8,
+    pub a: Vec<SipCoefficient>,
+    pub b: Vec<SipCoefficient>,
+    pub ap: Vec<SipCoefficient>,
+    pub bp: Vec<SipCoefficient>,
+}
+
+impl SipResponse {
+    pub fn from_seiza(sip: &seiza::Sip) -> Self {
+        let coefficients = |terms: Vec<(u8, u8)>, values: &[f64]| {
+            terms
+                .into_iter()
+                .zip(values)
+                .map(|((p, q), &value)| (p, q, value))
+                .collect()
+        };
+        Self {
+            order: sip.order,
+            a: coefficients(seiza::Sip::forward_terms(sip.order), &sip.a),
+            b: coefficients(seiza::Sip::forward_terms(sip.order), &sip.b),
+            ap: coefficients(seiza::Sip::inverse_terms(sip.order), &sip.ap),
+            bp: coefficients(seiza::Sip::inverse_terms(sip.order), &sip.bp),
+        }
+    }
+
+    fn to_seiza(&self) -> seiza::Sip {
+        let values = |terms: Vec<(u8, u8)>, coefficients: &[SipCoefficient]| {
+            terms
+                .into_iter()
+                .map(|term| {
+                    coefficients
+                        .iter()
+                        .find_map(|&(p, q, value)| ((p, q) == term).then_some(value))
+                        .unwrap_or(0.0)
+                })
+                .collect()
+        };
+        seiza::Sip {
+            order: self.order,
+            a: values(seiza::Sip::forward_terms(self.order), &self.a),
+            b: values(seiza::Sip::forward_terms(self.order), &self.b),
+            ap: values(seiza::Sip::inverse_terms(self.order), &self.ap),
+            bp: values(seiza::Sip::inverse_terms(self.order), &self.bp),
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !(2..=5).contains(&self.order) {
+            return Err("SIP order must be between 2 and 5".into());
+        }
+        let validate_coefficients =
+            |name: &str, expected: Vec<(u8, u8)>, values: &[SipCoefficient]| {
+                if values.len() != expected.len() {
+                    return Err(format!(
+                        "SIP {name} requires {} coefficients for order {}",
+                        expected.len(),
+                        self.order
+                    ));
+                }
+                for &(p, q) in &expected {
+                    let matches = values
+                        .iter()
+                        .filter(|&&(actual_p, actual_q, _)| (actual_p, actual_q) == (p, q))
+                        .collect::<Vec<_>>();
+                    if matches.len() != 1 {
+                        return Err(format!(
+                            "SIP {name} must contain coefficient {name}_{p}_{q} exactly once"
+                        ));
+                    }
+                    if !matches[0].2.is_finite() {
+                        return Err(format!("SIP {name}_{p}_{q} must be finite"));
+                    }
+                }
+                Ok(())
+            };
+        let forward = seiza::Sip::forward_terms(self.order);
+        let inverse = seiza::Sip::inverse_terms(self.order);
+        validate_coefficients("A", forward.clone(), &self.a)?;
+        validate_coefficients("B", forward, &self.b)?;
+        validate_coefficients("AP", inverse.clone(), &self.ap)?;
+        validate_coefficients("BP", inverse, &self.bp)
     }
 }
 
@@ -156,6 +254,56 @@ pub struct WcsResponse {
     pub radesys: String,
     #[serde(default = "default_equinox")]
     pub equinox: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sip: Option<SipResponse>,
+}
+
+impl WcsResponse {
+    pub fn from_seiza(wcs: &seiza::Wcs) -> Self {
+        let has_sip = wcs.sip.is_some();
+        Self {
+            crval: [wcs.crval.0, wcs.crval.1],
+            crpix: [wcs.crpix.0, wcs.crpix.1],
+            cd: wcs.cd,
+            ctype: if has_sip {
+                ["RA---TAN-SIP".into(), "DEC--TAN-SIP".into()]
+            } else {
+                default_ctype()
+            },
+            cunit: default_cunit(),
+            radesys: default_radesys(),
+            equinox: default_equinox(),
+            sip: wcs.sip.as_ref().map(SipResponse::from_seiza),
+        }
+    }
+
+    pub fn to_seiza(&self) -> seiza::Wcs {
+        seiza::Wcs {
+            crval: (self.crval[0], self.crval[1]),
+            crpix: (self.crpix[0], self.crpix[1]),
+            cd: self.cd,
+            sip: self.sip.as_ref().map(SipResponse::to_seiza),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self
+            .crval
+            .iter()
+            .chain(&self.crpix)
+            .chain(self.cd.iter().flatten())
+            .any(|value| !value.is_finite())
+        {
+            return Err("WCS coordinates and CD matrix must be finite".into());
+        }
+        if let Some(sip) = &self.sip {
+            sip.validate()?;
+            if self.ctype != ["RA---TAN-SIP", "DEC--TAN-SIP"] {
+                return Err("a SIP solution requires RA---TAN-SIP / DEC--TAN-SIP axes".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_ctype() -> [String; 2] {
@@ -292,9 +440,13 @@ pub struct AnnotationResponse {
 }
 
 impl SolutionResponse {
+    pub fn validate(&self) -> Result<(), String> {
+        self.wcs.validate()
+    }
+
     pub fn fits_wcs_header(&self) -> String {
         let wcs = &self.wcs;
-        let cards = [
+        let mut cards = vec![
             "WCSAXES =                    2 / Number of WCS axes".into(),
             "NAXIS    =                    2 / Number of image axes".into(),
             format!("NAXIS1   = {:>20} / Image width", self.image_width),
@@ -322,13 +474,49 @@ impl SolutionResponse {
             format!("CD1_2    = {:>20.12E} / Degrees per pixel", wcs.cd[0][1]),
             format!("CD2_1    = {:>20.12E} / Degrees per pixel", wcs.cd[1][0]),
             format!("CD2_2    = {:>20.12E} / Degrees per pixel", wcs.cd[1][1]),
+        ];
+        if let Some(sip) = &wcs.sip {
+            cards.extend([
+                format!(
+                    "{:<8}= {:>20} / SIP forward polynomial order",
+                    "A_ORDER", sip.order
+                ),
+                format!(
+                    "{:<8}= {:>20} / SIP forward polynomial order",
+                    "B_ORDER", sip.order
+                ),
+            ]);
+            for (name, coefficients) in [("A", &sip.a), ("B", &sip.b)] {
+                cards.extend(coefficients.iter().map(|&(p, q, value)| {
+                    let keyword = format!("{name}_{p}_{q}");
+                    format!("{keyword:<8}= {value:>20.12E} / SIP coefficient")
+                }));
+            }
+            cards.extend([
+                format!(
+                    "{:<8}= {:>20} / SIP inverse polynomial order",
+                    "AP_ORDER", sip.order
+                ),
+                format!(
+                    "{:<8}= {:>20} / SIP inverse polynomial order",
+                    "BP_ORDER", sip.order
+                ),
+            ]);
+            for (name, coefficients) in [("AP", &sip.ap), ("BP", &sip.bp)] {
+                cards.extend(coefficients.iter().map(|&(p, q, value)| {
+                    let keyword = format!("{name}_{p}_{q}");
+                    format!("{keyword:<8}= {value:>20.12E} / SIP inverse coefficient")
+                }));
+            }
+        }
+        cards.extend([
             format!(
                 "RADESYS  = '{:<18}' / Celestial reference frame",
                 wcs.radesys
             ),
             format!("EQUINOX  = {:>20.8} / Equinox of coordinates", wcs.equinox),
             "END".into(),
-        ];
+        ]);
         cards
             .into_iter()
             .map(|mut card| {
@@ -444,6 +632,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_options_and_wcs_records_default_to_linear_solves() {
+        let options: SolveOptions = serde_json::from_str("{}").unwrap();
+        let wcs: WcsResponse = serde_json::from_str(
+            r#"{
+                "crval":[10.0,20.0],
+                "crpix":[49.0,39.0],
+                "cd":[[0.001,0.0],[0.0,0.001]]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(options.sip_order, 0);
+        assert!(wcs.sip.is_none());
+        assert_eq!(wcs.ctype, default_ctype());
+    }
+
+    #[test]
+    fn sip_records_round_trip_with_explicit_exponents() {
+        let sip = seiza::Sip {
+            order: 2,
+            a: vec![1.0e-7, 2.0e-7, 3.0e-7],
+            b: vec![-1.0e-7, -2.0e-7, -3.0e-7],
+            ap: vec![0.0; 6],
+            bp: vec![0.0; 6],
+        };
+        let mut source =
+            seiza::Wcs::from_center_scale_rotation((10.0, 20.0), (49.0, 39.0), 1.0, 0.0, false);
+        source.sip = Some(sip);
+        let encoded = serde_json::to_string(&WcsResponse::from_seiza(&source)).unwrap();
+        let decoded: WcsResponse = serde_json::from_str(&encoded).unwrap();
+
+        decoded.validate().unwrap();
+        assert_eq!(decoded.sip.as_ref().unwrap().a[0], (0, 2, 1.0e-7));
+        assert_eq!(decoded.sip.as_ref().unwrap().a[2], (2, 0, 3.0e-7));
+        assert_eq!(
+            decoded.to_seiza().sip.unwrap().a,
+            vec![1.0e-7, 2.0e-7, 3.0e-7]
+        );
+    }
+
+    #[test]
     fn wcs_download_uses_fits_pixel_convention_and_eighty_column_cards() {
         let solution = SolutionResponse {
             center_ra_deg: 10.0,
@@ -461,6 +690,7 @@ mod tests {
                 cunit: default_cunit(),
                 radesys: default_radesys(),
                 equinox: default_equinox(),
+                sip: None,
             },
             footprint: [[0.0; 2]; 4],
             objects: Vec::new(),
@@ -473,6 +703,44 @@ mod tests {
 
         assert!(header.contains("CRPIX1   =      50.000000000000"));
         assert!(header.contains("CRPIX2   =      40.000000000000"));
+        assert!(header.lines().all(|line| line.len() == 80));
+    }
+
+    #[test]
+    fn wcs_download_includes_explicit_sip_keywords() {
+        let sip = seiza::Sip {
+            order: 2,
+            a: vec![1.0e-7, 2.0e-7, 3.0e-7],
+            b: vec![-1.0e-7, -2.0e-7, -3.0e-7],
+            ap: vec![0.0; 6],
+            bp: vec![0.0; 6],
+        };
+        let mut wcs =
+            seiza::Wcs::from_center_scale_rotation((10.0, 20.0), (49.0, 39.0), 1.0, 0.0, false);
+        wcs.sip = Some(sip);
+        let solution = SolutionResponse {
+            center_ra_deg: 10.0,
+            center_dec_deg: 20.0,
+            pixel_scale_arcsec_per_pixel: 1.0,
+            matched_stars: 12,
+            rms_arcsec: 0.2,
+            image_width: 100,
+            image_height: 80,
+            wcs: WcsResponse::from_seiza(&wcs),
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
+            statistics: None,
+        };
+
+        solution.validate().unwrap();
+        let header = solution.fits_wcs_header();
+
+        assert!(header.contains("CTYPE1   = 'RA---TAN-SIP"));
+        assert!(header.contains("A_ORDER =                    2"));
+        assert!(header.contains("A_0_2"));
+        assert!(header.contains("AP_ORDER=                    2"));
         assert!(header.lines().all(|line| line.len() == 80));
     }
 }

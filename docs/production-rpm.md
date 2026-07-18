@@ -91,7 +91,7 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Download the prebuilt datasets with Seiza CLI 0.6.0 or newer before starting the
+Download the prebuilt datasets with Seiza CLI 0.7.0 or newer before starting the
 service:
 
 ```bash
