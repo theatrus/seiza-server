@@ -2005,6 +2005,9 @@ async fn worker_complete(
     Json(completion): Json<WorkerCompletion>,
 ) -> Result<Json<Value>, ApiError> {
     authenticate_worker(&state, &headers)?;
+    if let Some(solution) = &completion.solution {
+        solution.validate().map_err(ApiError::bad_request)?;
+    }
     let accepted = state
         .repository
         .complete(

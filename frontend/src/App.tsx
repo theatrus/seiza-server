@@ -50,6 +50,7 @@ function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOpt
     sigma: defaults?.sigma,
     ignore_border: defaults?.ignore_border,
     max_stars: defaults?.max_stars,
+    sip_order: numberOrUndefined(form.get('sip_order')),
   }
   const captureTime = form.get('capture_time')
   if (typeof captureTime === 'string' && captureTime !== '') {
@@ -119,12 +120,20 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
         : <><strong>UTC entry:</strong> the value will be interpreted as Coordinated Universal Time, with no local offset.</>} Seiza submits and stores the instant in UTC.</p>
     </fieldset>
     <details>
-      <summary>Advanced blind-solve limits <span className="optional-badge">Optional</span></summary>
+      <summary>Advanced solve controls <span className="optional-badge">Optional</span></summary>
       <div className="form-grid">
         <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="0.1" defaultValue={defaults?.min_scale_arcsec_per_pixel ?? ''} /></label>
         <label>Maximum scale (arcsec/px)<input name="max_scale" type="number" min="0.01" step="any" placeholder="20" defaultValue={defaults?.max_scale_arcsec_per_pixel ?? ''} /></label>
         <label>Hint scale tolerance<input name="scale_tolerance" type="number" min="0.01" max="1" step="0.01" placeholder="0.2" defaultValue={defaults?.scale_tolerance ?? ''} /></label>
+        <label>SIP distortion order<select name="sip_order" defaultValue={String(defaults?.sip_order ?? 0)}>
+          <option value="0">Linear TAN only</option>
+          <option value="2">Order 2</option>
+          <option value="3">Order 3</option>
+          <option value="4">Order 4</option>
+          <option value="5">Order 5</option>
+        </select></label>
       </div>
+      <p className="solve-control-note">SIP orders 2–5 fit optical distortion after the linear solve. Seiza keeps the linear result unless the polynomial materially improves the residual.</p>
     </details>
   </>
 }
@@ -720,6 +729,9 @@ function countObjects(objects: OverlayObject[]) {
 function WcsDetails({ job }: { job: Job }) {
   const solution = job.solution!
   const wcs = solution.wcs
+  const sip = wcs.sip
+  const forwardTerms = sip ? sip.a.length + sip.b.length : 0
+  const inverseTerms = sip ? sip.ap.length + sip.bp.length : 0
   return <section className="wcs-card">
     <div className="section-heading"><div><p className="eyebrow">WORLD COORDINATE SYSTEM</p><h2>Complete WCS calibration</h2></div>{job.wcs_url && <a className="button small" href={job.wcs_url}>Download .wcs</a>}</div>
     <div className="wcs-grid">
@@ -729,6 +741,7 @@ function WcsDetails({ job }: { job: Job }) {
       <DataPair label="CRPIX (zero-indexed)" value={`${format(wcs.crpix[0])}, ${format(wcs.crpix[1])} px`} />
       <DataPair label="Image dimensions" value={`${solution.image_width} × ${solution.image_height} px`} />
       <DataPair label="Units" value={`${wcs.cunit[0]} / ${wcs.cunit[1]}`} />
+      <DataPair label="Distortion model" value={sip ? `SIP order ${sip.order} · ${forwardTerms} forward + ${inverseTerms} inverse coefficients` : 'Linear TAN · no SIP distortion'} />
       <DataPair label="Capture time" value={solution.capture_time ? new Date(solution.capture_time).toLocaleString() : 'Not recorded'} />
       <DataPair label="Annotation catalog" value={solution.catalog_version ?? 'Not configured'} />
     </div>
@@ -736,12 +749,26 @@ function WcsDetails({ job }: { job: Job }) {
       <h3>CD matrix <small>degrees per pixel</small></h3>
       <code>{formatScientific(wcs.cd[0][0])} &nbsp; {formatScientific(wcs.cd[0][1])}<br />{formatScientific(wcs.cd[1][0])} &nbsp; {formatScientific(wcs.cd[1][1])}</code>
     </div>
+    {sip && <details className="sip-records">
+      <summary>SIP coefficient records <span>{sip.a.length + sip.b.length + sip.ap.length + sip.bp.length} values</span></summary>
+      <p>Forward <code>A/B</code> terms correct pixel offsets before the CD matrix. Inverse <code>AP/BP</code> terms map tangent-plane offsets back to pixels.</p>
+      <div className="sip-record-grid">
+        <SipCoefficientSet name="A" values={sip.a} />
+        <SipCoefficientSet name="B" values={sip.b} />
+        <SipCoefficientSet name="AP" values={sip.ap} />
+        <SipCoefficientSet name="BP" values={sip.bp} />
+      </div>
+    </details>}
     <div className="footprint-wrap">
       <h3>ICRS footprint <small>RA, Dec in degrees</small></h3>
       <ol>{solution.footprint.map(([ra, dec], index) => <li key={index}><span>Corner {index + 1}</span><code>{format(ra)}, {format(dec)}</code></li>)}</ol>
     </div>
     {solution.objects.length > 0 && <details className="object-list"><summary>{solution.objects.length} catalog objects in field</summary><ul>{solution.objects.map((object, index) => <li key={`${object.name}-${index}`}><strong>{object.common_name || object.name}</strong><span>{object.name} · {object.kind}{object.mag == null ? '' : ` · mag ${object.mag.toFixed(1)}`}</span></li>)}</ul></details>}
   </section>
+}
+
+function SipCoefficientSet({ name, values }: { name: string; values: Array<[number, number, number]> }) {
+  return <section><h4>{name}</h4><code>{values.map(([p, q, value]) => `${name}_${p}_${q} = ${formatScientific(value)}`).join('\n')}</code></section>
 }
 
 function format(value: number) { return value.toFixed(10) }

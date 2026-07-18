@@ -116,10 +116,17 @@ const solution = {
     crval: [10.6847, 41.269],
     crpix: [512, 512],
     cd: [[-0.001, 0], [0, -0.001]],
-    ctype: ['RA---TAN', 'DEC--TAN'],
+    ctype: ['RA---TAN-SIP', 'DEC--TAN-SIP'],
     cunit: ['deg', 'deg'],
     radesys: 'ICRS',
     equinox: 2000,
+    sip: {
+      order: 2,
+      a: [[0, 2, 1.2e-7], [1, 1, -2.1e-7], [2, 0, 8.4e-8]],
+      b: [[0, 2, -7.5e-8], [1, 1, 1.8e-7], [2, 0, -1.1e-7]],
+      ap: [[0, 0, 0], [0, 1, 0], [0, 2, -1.2e-7], [1, 0, 0], [1, 1, 2.1e-7], [2, 0, -8.4e-8]],
+      bp: [[0, 0, 0], [0, 1, 0], [0, 2, 7.5e-8], [1, 0, 0], [1, 1, -1.8e-7], [2, 0, 1.1e-7]],
+    },
   },
   footprint: [[11.36, 41.78], [10.01, 41.78], [10.02, 40.75], [11.35, 40.75]],
   objects: baseObjects.filter((object) => object.kind !== 'field-star' && object.near_capture !== false),
@@ -194,6 +201,16 @@ test('reports total solve time and durable solver nerd stats', async ({ page }) 
   await expect(nerdStats).toContainText('264')
   await expect(nerdStats).toContainText('42/264 · 15.9%')
   await expect(nerdStats).toContainText('4,215,772 blind-index patterns')
+})
+
+test('reports durable SIP distortion and coefficient records', async ({ page }) => {
+  await mockSolution(page)
+  await page.goto(`/solutions/${publicId}`)
+
+  await expect(page.getByText(/SIP order 2/)).toContainText('6 forward + 12 inverse coefficients')
+  await page.getByText('SIP coefficient records').click()
+  await expect(page.getByText(/A_0_2 = 1\.200000000000e-7/)).toBeVisible()
+  await expect(page.getByText(/AP_0_2 = -1\.200000000000e-7/)).toBeVisible()
 })
 
 test('keeps the interactive SVG aligned and filters annotation layers', async ({ page }) => {

@@ -159,8 +159,11 @@ standards-facing WCS download remain available.
 
 ## Calibration and annotation boundary
 
-Workers persist only solve calibration: dimensions, WCS, footprint, matched
-stars, and RMS. They do not need object, transient, or minor-body catalogs.
+Workers persist only solve calibration: dimensions, linear or TAN-SIP WCS,
+footprint, matched stars, and RMS. SIP coefficient records carry explicit
+exponents so persisted SQLx and DynamoDB JSON does not depend on Seiza's
+internal coefficient ordering. They do not need object, transient, or
+minor-body catalogs.
 The API-side annotation engine projects those catalogs through the durable WCS
 when a solution or `/annotations` endpoint is read. Deep-sky and transient
 catalog files are checked for replacement and reloaded without a server
@@ -173,7 +176,7 @@ designation per stable stellar ID and builds a small sky-bin index. Annotation
 requests project only the matching bins through the WCS, while
 `/api/v1/catalog/stars/search` retains exact TYC/HIP and indexed textual lookup.
 
-Seiza 0.6.0 object catalogs are read-only memory maps with embedded spatial and
+Seiza 0.7.0 object catalogs are read-only memory maps with embedded spatial and
 designation indices. Overlay projection and `/api/v1/catalog/objects` cone
 queries therefore materialize only matching records, while
 `/api/v1/catalog/objects/search` uses the exact/prefix name index. Legacy v1

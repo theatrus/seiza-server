@@ -56,6 +56,11 @@ pub fn render_svg(
     let grid_label_stroke = grid_font_size * 0.12;
     let center_x = width as f64 / 2.0;
     let center_y = height as f64 / 2.0;
+    let projection = if solution.wcs.sip.is_some() {
+        "TAN-SIP"
+    } else {
+        "TAN"
+    };
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Annotated Seiza plate solution">
 <style>
@@ -76,7 +81,7 @@ pub fn render_svg(
   <path d="M {left} {center_y} H {right} M {center_x} {top} V {bottom}" />
 </g>
 <text class="detail" x="18" y="26">RA {ra:.8}°  Dec {dec:.8}°  Scale {scale:.5} arcsec/px</text>
-<text class="detail" x="18" y="47">ICRS / TAN · {stars} matched stars · RMS {rms:.4} arcsec</text>
+<text class="detail" x="18" y="47">ICRS / {projection} · {stars} matched stars · RMS {rms:.4} arcsec</text>
 </svg>"##,
         left = center_x - 30.0,
         right = center_x + 30.0,
@@ -87,6 +92,7 @@ pub fn render_svg(
         scale = solution.pixel_scale_arcsec_per_pixel,
         stars = solution.matched_stars,
         rms = solution.rms_arcsec,
+        projection = projection,
     )
 }
 
@@ -99,11 +105,7 @@ struct GridMarkup {
 fn render_grid(solution: &SolutionResponse) -> GridMarkup {
     let width = solution.image_width as f64;
     let height = solution.image_height as f64;
-    let wcs = Wcs {
-        crval: (solution.wcs.crval[0], solution.wcs.crval[1]),
-        crpix: (solution.wcs.crpix[0], solution.wcs.crpix[1]),
-        cd: solution.wcs.cd,
-    };
+    let wcs = solution.wcs.to_seiza();
     let (ra_min, ra_max, dec_min, dec_max) = sky_bounds(&wcs, width, height);
     let center_dec_cos = solution.center_dec_deg.to_radians().cos().abs().max(0.05);
     let angular_span = (dec_max - dec_min)
@@ -671,6 +673,7 @@ mod tests {
                 cunit: ["deg".into(), "deg".into()],
                 radesys: "ICRS".into(),
                 equinox: 2000.0,
+                sip: None,
             },
             footprint: [[0.0; 2]; 4],
             objects: vec![OverlayObject {

@@ -331,6 +331,7 @@ mod tests {
             crval: (10.0, 20.0),
             crpix: (100.0, 100.0),
             cd: [[-0.001, 0.0], [0.0, -0.001]],
+            sip: None,
         };
         let labels = layer.labels_in_footprint(&wcs, (200, 200), 10.0, 10);
         assert_eq!(labels.len(), 1);
