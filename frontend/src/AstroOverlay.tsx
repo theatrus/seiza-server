@@ -45,8 +45,10 @@ export function OverlayControls({
   disabledReasons,
   objects,
   hiddenCatalogs,
+  showCatalogOutlines,
   onChange,
   onHiddenCatalogsChange,
+  onShowCatalogOutlinesChange,
 }: {
   layers: OverlayLayers
   counts: Record<string, number>
@@ -54,8 +56,10 @@ export function OverlayControls({
   disabledReasons?: Record<string, string>
   objects: OverlayObject[]
   hiddenCatalogs: DeepSkyCatalogId[]
+  showCatalogOutlines: boolean
   onChange: (layers: OverlayLayers) => void
   onHiddenCatalogsChange: (catalogs: DeepSkyCatalogId[]) => void
+  onShowCatalogOutlinesChange: (show: boolean) => void
 }) {
   return <div className="overlay-control-row">
     <div className="overlay-options" role="group" aria-label="Overlay layers">
@@ -75,7 +79,9 @@ export function OverlayControls({
       objects={objects}
       disabled={available?.deep_sky === false || !layers.deepSky}
       hiddenCatalogs={hiddenCatalogs}
+      showCatalogOutlines={showCatalogOutlines}
       onChange={onHiddenCatalogsChange}
+      onShowCatalogOutlinesChange={onShowCatalogOutlinesChange}
     />
   </div>
 }
@@ -84,12 +90,16 @@ function DeepSkyCatalogMenu({
   objects,
   disabled,
   hiddenCatalogs,
+  showCatalogOutlines,
   onChange,
+  onShowCatalogOutlinesChange,
 }: {
   objects: OverlayObject[]
   disabled: boolean
   hiddenCatalogs: DeepSkyCatalogId[]
+  showCatalogOutlines: boolean
   onChange: (catalogs: DeepSkyCatalogId[]) => void
+  onShowCatalogOutlinesChange: (show: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
   const counts = new Map<DeepSkyCatalogId, number>()
@@ -98,7 +108,8 @@ function DeepSkyCatalogMenu({
     if (catalog) counts.set(catalog, (counts.get(catalog) ?? 0) + 1)
   }
   const availableCatalogs = deepSkyCatalogs.filter(([id]) => counts.has(id))
-  if (availableCatalogs.length < 2) return null
+  const hasCatalogOutlines = objects.some((object) => (object.outlines?.length ?? 0) > 0)
+  if (availableCatalogs.length < 2 && !hasCatalogOutlines) return null
   const activeCatalogs = availableCatalogs.filter(([id]) => !hiddenCatalogs.includes(id)).length
   const toggleCatalog = (id: DeepSkyCatalogId) => onChange(
     hiddenCatalogs.includes(id)
@@ -124,8 +135,21 @@ function DeepSkyCatalogMenu({
           checked={!hiddenCatalogs.includes(id)}
           onChange={() => toggleCatalog(id)}
         />
+        <span
+          className="catalog-color-swatch"
+          style={{ backgroundColor: deepSkyCatalogColors[id] }}
+          aria-hidden="true"
+        />
         <span>{label} · {counts.get(id)}</span>
       </label>)}
+      {hasCatalogOutlines && <label className="catalog-outline-option">
+        <input
+          type="checkbox"
+          checked={showCatalogOutlines}
+          onChange={(event) => onShowCatalogOutlinesChange(event.currentTarget.checked)}
+        />
+        <span>Detailed OpenNGC outlines</span>
+      </label>}
     </span>}
   </span>
 }
@@ -135,17 +159,23 @@ export function AstroOverlay({
   objects,
   layers,
   hiddenCatalogs,
+  showCatalogOutlines,
 }: {
   solution: Solution
   objects: OverlayObject[]
   layers: OverlayLayers
   hiddenCatalogs: DeepSkyCatalogId[]
+  showCatalogOutlines: boolean
 }) {
   const overlayRef = useRef<SVGSVGElement>(null)
-  const visibleObjects = objects.filter((object) => {
-    const catalog = deepSkyCatalogForObject(object)
-    return catalog == null || !hiddenCatalogs.includes(catalog)
-  })
+  const visibleObjects = objects
+    .filter((object) => {
+      const catalog = deepSkyCatalogForObject(object)
+      return catalog == null || !hiddenCatalogs.includes(catalog)
+    })
+    .map((object) => showCatalogOutlines || (object.outlines?.length ?? 0) === 0
+      ? object
+      : { ...object, outlines: [] })
 
   // Inline variables survive SVG serialization, so browser and PNG exports use
   // the same catalog colors without expanding the reusable package theme API.

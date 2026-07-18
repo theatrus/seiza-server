@@ -40,6 +40,18 @@ const baseObjects = [
     source: 'deep_sky', ra_deg: 10.68, dec_deg: 41.27,
   },
   {
+    stable_id: 'openngc:NGC7000', catalog_source: 'OpenNGC',
+    name: 'NGC 7000', common_name: 'North America Nebula', kind: 'hii-region', mag: null,
+    x: 390, y: 760, semi_major_px: 54, semi_minor_px: 32, angle_deg: 12,
+    source: 'deep_sky', ra_deg: 10.76, dec_deg: 41.04,
+  },
+  {
+    stable_id: 'openngc:IC5070', catalog_source: 'OpenNGC',
+    name: 'IC 5070', common_name: 'Pelican Nebula', kind: 'hii-region', mag: null,
+    x: 690, y: 760, semi_major_px: 48, semi_minor_px: 28, angle_deg: -16,
+    source: 'deep_sky', ra_deg: 10.52, dec_deg: 41.02,
+  },
+  {
     stable_id: 'openngc:Sh2-101', catalog_source: 'OpenNGC',
     name: 'Sh2-101', common_name: 'Tulip Nebula', kind: 'hii-region', mag: null,
     x: 220, y: 690, semi_major_px: 48, semi_minor_px: 36, angle_deg: 8,
@@ -133,7 +145,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       catalog_version: 'objects:test;stars:test',
       capture_time: '2026-07-13T04:05:06Z',
       available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
-      counts: { deep_sky: 4, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
+      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
       objects: baseObjects,
     }),
   }))
@@ -269,18 +281,22 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
     expect(box.fontSize).toBeGreaterThanOrEqual(18)
   }
 
-  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(3)
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(5)
   await expect(page.locator('.seiza-overlay__marker--outline')).toHaveCount(1)
   const catalogMarkers = {
-    ngc: page.locator('[data-layer="deep-sky:ngc-ic-messier"] .seiza-overlay__marker'),
+    messier: page.locator('[data-layer="deep-sky:messier"] .seiza-overlay__marker'),
+    ngc: page.locator('[data-layer="deep-sky:ngc"] .seiza-overlay__marker'),
+    ic: page.locator('[data-layer="deep-sky:ic"] .seiza-overlay__marker'),
     sharpless: page.locator('[data-layer="deep-sky:sharpless-vdb"] .seiza-overlay__marker'),
     darkNebula: page.locator('[data-layer="deep-sky:dark-nebulae"] .seiza-overlay__marker'),
     pgc: page.locator('[data-layer="deep-sky:pgc"] .seiza-overlay__marker'),
   }
-  await expect(catalogMarkers.ngc).toHaveCSS('stroke', 'rgb(95, 211, 255)')
-  await expect(catalogMarkers.sharpless).toHaveCSS('stroke', 'rgb(105, 216, 199)')
-  await expect(catalogMarkers.darkNebula).toHaveCSS('stroke', 'rgb(170, 167, 232)')
-  await expect(catalogMarkers.pgc).toHaveCSS('stroke', 'rgb(135, 197, 223)')
+  await expect(catalogMarkers.messier).toHaveCSS('stroke', 'rgb(242, 202, 114)')
+  await expect(catalogMarkers.ngc).toHaveCSS('stroke', 'rgb(85, 207, 255)')
+  await expect(catalogMarkers.ic).toHaveCSS('stroke', 'rgb(114, 223, 185)')
+  await expect(catalogMarkers.sharpless).toHaveCSS('stroke', 'rgb(238, 154, 120)')
+  await expect(catalogMarkers.darkNebula).toHaveCSS('stroke', 'rgb(180, 163, 240)')
+  await expect(catalogMarkers.pgc).toHaveCSS('stroke', 'rgb(161, 174, 216)')
   const unorientedExtent = page.locator('[data-kind="dark-nebula"] ellipse')
   expect(await unorientedExtent.getAttribute('rx')).toBe(await unorientedExtent.getAttribute('ry'))
   await expect(page.locator('[data-kind="galaxy"]')).toHaveCount(2)
@@ -305,20 +321,30 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await page.getByRole('button', { name: /Older transients/ }).click()
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toBeVisible()
 
-  await page.getByRole('button', { name: /Filter catalogs 4\/4/ }).click()
+  await page.getByRole('button', { name: /Filter catalogs 6\/6/ }).click()
   await expect(page.getByRole('group', { name: 'Deep sky catalogs' })).toBeVisible()
-  await expect(page.getByRole('checkbox', { name: 'NGC / IC / Messier · 1' })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Messier · 1' })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'NGC · 1' })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'IC · 1' })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'Sharpless / vdB · 1' })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'Dark nebulae (B / LDN) · 1' })).toBeChecked()
+  const detailedOutlines = page.getByRole('checkbox', { name: 'Detailed OpenNGC outlines' })
+  await expect(detailedOutlines).toBeChecked()
+  await detailedOutlines.uncheck()
+  await expect(page.locator('.seiza-overlay__marker--outline')).toHaveCount(0)
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(6)
+  await detailedOutlines.check()
+  await expect(page.locator('.seiza-overlay__marker--outline')).toHaveCount(1)
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(5)
   const pgcCatalog = page.getByRole('checkbox', { name: 'PGC galaxies · 1' })
   await expect(pgcCatalog).toBeChecked()
   await pgcCatalog.uncheck()
-  await expect(page.getByRole('button', { name: /Filter catalogs 3\/4/ })).toHaveAttribute('data-filtered', 'true')
+  await expect(page.getByRole('button', { name: /Filter catalogs 5\/6/ })).toHaveAttribute('data-filtered', 'true')
   const skyOverlay = page.locator('.sky-overlay')
   await expect(skyOverlay.getByText('PGC 12345', { exact: false })).toHaveCount(0)
   await expect(skyOverlay.getByText('M 31 · Andromeda Galaxy', { exact: false })).toBeVisible()
   await expect(skyOverlay.getByText('Sh2-101 · Tulip Nebula', { exact: false })).toBeVisible()
-  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(2)
+  await expect(page.locator('.catalog-objects ellipse')).toHaveCount(4)
 
   await page.getByRole('button', { name: /Deep sky/ }).click()
   await expect(page.locator('.catalog-objects ellipse')).toHaveCount(0)
@@ -370,7 +396,7 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
       catalog_version: 'objects:test;stars:test;transients:test;minor-bodies:test',
       capture_time: null,
       available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, grid: true },
-      counts: { deep_sky: 4, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
       objects: baseObjects.filter((object) => object.kind !== 'comet' && object.kind !== 'asteroid'),
     }),
   }))
@@ -388,8 +414,9 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
 test('downloads a branded rendered PNG with the current overlay', async ({ page }, testInfo) => {
   await mockSolution(page)
   await page.goto(`/solutions/${publicId}`)
-  await page.getByRole('button', { name: /Filter catalogs 4\/4/ }).click()
+  await page.getByRole('button', { name: /Filter catalogs 6\/6/ }).click()
   await page.getByRole('checkbox', { name: 'PGC galaxies · 1' }).uncheck()
+  await page.getByRole('checkbox', { name: 'Detailed OpenNGC outlines' }).uncheck()
   await page.evaluate(() => {
     const originalCreateObjectUrl = URL.createObjectURL.bind(URL)
     const state = window as typeof window & { __seizaSerializedOverlay?: Promise<string> }
@@ -425,6 +452,8 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
       haloWidth: '',
       objectLabels: [],
       catalogColors: {},
+      outlineCount: 0,
+      sharplessEllipseCount: 0,
     }
     const markup = await state.__seizaSerializedOverlay
     const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml')
@@ -457,8 +486,10 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
           group.style.getPropertyValue('--seiza-overlay-deep-sky-color'),
         ]),
     )
+    const outlineCount = svg.querySelectorAll('.seiza-overlay__marker--outline').length
+    const sharplessEllipseCount = svg.querySelectorAll('[data-layer="deep-sky:sharpless-vdb"] ellipse').length
     host.remove()
-    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels, catalogColors }
+    return { labels, markerStroke, gridStroke, labelWeight, gridWeight, haloWidth, objectLabels, catalogColors, outlineCount, sharplessEllipseCount }
   })
   expect(renderedOverlay.markerStroke).toBe('0.7')
   expect(renderedOverlay.gridStroke).toBe('0.65')
@@ -468,10 +499,14 @@ test('downloads a branded rendered PNG with the current overlay', async ({ page 
   expect(renderedOverlay.objectLabels).toContain('M 31 · Andromeda Galaxy')
   expect(renderedOverlay.objectLabels).not.toContain('PGC 12345')
   expect(renderedOverlay.catalogColors).toMatchObject({
-    'deep-sky:ngc-ic-messier': '#5fd3ff',
-    'deep-sky:sharpless-vdb': '#69d8c7',
-    'deep-sky:dark-nebulae': '#aaa7e8',
+    'deep-sky:messier': '#f2ca72',
+    'deep-sky:ngc': '#55cfff',
+    'deep-sky:ic': '#72dfb9',
+    'deep-sky:sharpless-vdb': '#ee9a78',
+    'deep-sky:dark-nebulae': '#b4a3f0',
   })
+  expect(renderedOverlay.outlineCount).toBe(0)
+  expect(renderedOverlay.sharplessEllipseCount).toBe(1)
   expect(renderedOverlay.labels.length).toBeGreaterThan(0)
   for (const label of renderedOverlay.labels) {
     expect(label.x).toBeGreaterThanOrEqual(0)

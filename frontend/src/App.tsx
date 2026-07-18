@@ -354,6 +354,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState(defaultOverlayLayers)
   const [hiddenCatalogs, setHiddenCatalogs] = useState<DeepSkyCatalogId[]>([])
+  const [showCatalogOutlines, setShowCatalogOutlines] = useState(true)
   const [expanded, setExpanded] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
@@ -422,8 +423,10 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
           disabledReasons={disabledReasons}
           objects={overlayObjects}
           hiddenCatalogs={hiddenCatalogs}
+          showCatalogOutlines={showCatalogOutlines}
           onChange={setLayers}
           onHiddenCatalogsChange={setHiddenCatalogs}
+          onShowCatalogOutlinesChange={setShowCatalogOutlines}
         />
         {unavailableLayers && unavailableLayers.length > 0 && <p className="overlay-warning">Catalog data unavailable for this solution: {unavailableLayers.join(', ')}.</p>}
         {minorBodiesNeedCaptureTime && <p className="overlay-warning">Solar system positions require an acquisition time for this image. The minor-body catalog is installed.</p>}
@@ -446,7 +449,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
-            <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} />
+            <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
           </div>
         </div>
         <div className="overlay-footer">

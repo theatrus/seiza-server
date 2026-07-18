@@ -143,6 +143,7 @@ export function ApiDocsPage() {
           <h3>Annotation and overlay query parameters</h3>
           <div className="option-table">
             <OptionRow name="deep_sky, named_stars, transients, minor_bodies" defaultValue="true">Enable each installed catalog layer.</OptionRow>
+            <OptionRow name="outlines" defaultValue="true">Render detailed OpenNGC contours when available; disable it to use catalog ellipses instead.</OptionRow>
             <OptionRow name="star_identifiers, field_stars, historical_transients" defaultValue="false">Enable Tycho-sidecar labels, dense field-star markers, or older transient events.</OptionRow>
             <OptionRow name="star_identifier_mag_limit / max_star_identifiers" defaultValue="10.0 / 150">Limit stellar-identifier labels by magnitude and count.</OptionRow>
             <OptionRow name="field_star_mag_limit" defaultValue="10.0">Field-star limiting magnitude, clamped from −2 through 20.</OptionRow>

@@ -166,6 +166,8 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .catalog-menu label { display: flex; align-items: center; gap: .55rem; padding: .42rem .5rem; color: #c8dadd; font-size: .73rem; font-weight: 700; line-height: 1.25; cursor: pointer; white-space: nowrap; }
 .catalog-menu label:hover { color: #f2f8f9; background: #12313b; }
 .catalog-menu input { width: 1rem; height: 1rem; margin: 0; accent-color: #83dce5; }
+.catalog-color-swatch { width: .58rem; height: .58rem; border: 1px solid rgb(255 255 255 / 35%); border-radius: 50%; box-shadow: 0 0 0 2px rgb(0 0 0 / 18%); }
+.catalog-menu .catalog-outline-option { margin-top: .35rem; padding-top: .65rem; border-top: 1px solid #294851; color: #e2edf0; }
 .image-stage { display: grid; place-items: center; margin-top: 1.5rem; min-height: 280px; overflow: hidden; border: 1px solid #1d353d; background: #03070a; }
 .image-stage:not(.expanded) { cursor: zoom-in; transition: border-color 140ms ease, box-shadow 140ms ease; }
 .image-stage:not(.expanded):hover { border-color: #45646e; box-shadow: 0 0 0 1px rgb(117 215 226 / 12%); }

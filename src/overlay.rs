@@ -8,6 +8,7 @@ use std::fmt::Write;
 pub struct OverlayOptions {
     pub objects: bool,
     pub grid: bool,
+    pub outlines: bool,
 }
 
 impl Default for OverlayOptions {
@@ -15,6 +16,7 @@ impl Default for OverlayOptions {
         Self {
             objects: true,
             grid: false,
+            outlines: true,
         }
     }
 }
@@ -33,7 +35,13 @@ pub fn render_svg(
     let mut objects = String::new();
     if options.objects {
         for object in &solution.objects {
-            render_object(&mut objects, object, width as f64, height as f64);
+            render_object(
+                &mut objects,
+                object,
+                width as f64,
+                height as f64,
+                options.outlines,
+            );
         }
     }
     let GridMarkup {
@@ -364,7 +372,13 @@ fn format_dec(dec_degrees: f64) -> String {
     )
 }
 
-fn render_object(output: &mut String, object: &OverlayObject, width: f64, height: f64) {
+fn render_object(
+    output: &mut String,
+    object: &OverlayObject,
+    width: f64,
+    height: f64,
+    show_outlines: bool,
+) {
     let color = match object.kind.as_str() {
         "star" | "double-star" => "#ffe45e",
         "identified-star" => "#b7a6ff",
@@ -435,7 +449,7 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
             }
         }
         _ => {
-            if object.outlines.is_empty() {
+            if object.outlines.is_empty() || !show_outlines {
                 let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
                 let radius_y = if object.angle_deg.is_none() {
                     radius_x
@@ -465,26 +479,27 @@ fn render_object(output: &mut String, object: &OverlayObject, width: f64, height
 fn deep_sky_catalog_color(name: &str) -> &'static str {
     let name = name.trim().to_ascii_uppercase();
     if catalog_prefix(&name, "PGC") {
-        "#87c5df"
+        "#a1aed8"
     } else if catalog_prefix(&name, "UGC") {
-        "#73cbed"
+        "#79aff5"
     } else if catalog_prefix(&name, "LBN") {
-        "#78d4b6"
+        "#a2d96f"
     } else if catalog_prefix(&name, "CED") || catalog_prefix(&name, "CEDERBLAD") {
-        "#88d5c4"
+        "#70d7d0"
     } else if catalog_prefix(&name, "LDN") || numbered_designation(&name, "B") {
-        "#aaa7e8"
+        "#b4a3f0"
     } else if catalog_prefix(&name, "SNR") {
-        "#e2bd76"
+        "#f18782"
     } else if sharpless_designation(&name) || catalog_prefix(&name, "VDB") {
-        "#69d8c7"
-    } else if numbered_designation(&name, "NGC")
-        || numbered_designation(&name, "IC")
-        || numbered_designation(&name, "M")
-    {
-        "#5fd3ff"
+        "#ee9a78"
+    } else if numbered_designation(&name, "M") {
+        "#f2ca72"
+    } else if numbered_designation(&name, "NGC") {
+        "#55cfff"
+    } else if numbered_designation(&name, "IC") {
+        "#72dfb9"
     } else {
-        "#72ced8"
+        "#c1d1d3"
     }
 }
 
@@ -742,15 +757,16 @@ mod tests {
 
     #[test]
     fn deep_sky_catalogs_use_a_restrained_marker_palette() {
-        assert_eq!(deep_sky_catalog_color("M 31"), "#5fd3ff");
-        assert_eq!(deep_sky_catalog_color("NGC7000"), "#5fd3ff");
-        assert_eq!(deep_sky_catalog_color("Sh 2-101"), "#69d8c7");
-        assert_eq!(deep_sky_catalog_color("LBN 437"), "#78d4b6");
-        assert_eq!(deep_sky_catalog_color("LDN 935"), "#aaa7e8");
-        assert_eq!(deep_sky_catalog_color("SNR G120.1+1.4"), "#e2bd76");
-        assert_eq!(deep_sky_catalog_color("UGC 123"), "#73cbed");
-        assert_eq!(deep_sky_catalog_color("PGC 123"), "#87c5df");
-        assert_eq!(deep_sky_catalog_color("Abell 426"), "#72ced8");
+        assert_eq!(deep_sky_catalog_color("M 31"), "#f2ca72");
+        assert_eq!(deep_sky_catalog_color("NGC7000"), "#55cfff");
+        assert_eq!(deep_sky_catalog_color("IC 5070"), "#72dfb9");
+        assert_eq!(deep_sky_catalog_color("Sh 2-101"), "#ee9a78");
+        assert_eq!(deep_sky_catalog_color("LBN 437"), "#a2d96f");
+        assert_eq!(deep_sky_catalog_color("LDN 935"), "#b4a3f0");
+        assert_eq!(deep_sky_catalog_color("SNR G120.1+1.4"), "#f18782");
+        assert_eq!(deep_sky_catalog_color("UGC 123"), "#79aff5");
+        assert_eq!(deep_sky_catalog_color("PGC 123"), "#a1aed8");
+        assert_eq!(deep_sky_catalog_color("Abell 426"), "#c1d1d3");
     }
 
     #[test]
@@ -762,7 +778,7 @@ mod tests {
             &Bytes::from_static(b"png"),
             OverlayOptions::default(),
         );
-        assert!(ellipse_svg.contains("<ellipse class=\"marker\" stroke=\"#aaa7e8\""));
+        assert!(ellipse_svg.contains("<ellipse class=\"marker\" stroke=\"#b4a3f0\""));
 
         colored.objects[0].name = "Sh2-101".into();
         colored.objects[0].outlines = vec![OverlayOutline {
@@ -782,8 +798,19 @@ mod tests {
             OverlayOptions::default(),
         );
         assert!(outline_svg.contains(
-            "class=\"marker object-outline\" data-geometry-id=\"openngc:Sh2-101#outline-1\" data-outline-level=\"1\" stroke=\"#69d8c7\""
+            "class=\"marker object-outline\" data-geometry-id=\"openngc:Sh2-101#outline-1\" data-outline-level=\"1\" stroke=\"#ee9a78\""
         ));
+
+        let fallback_svg = render_svg(
+            &colored,
+            &Bytes::from_static(b"png"),
+            OverlayOptions {
+                outlines: false,
+                ..OverlayOptions::default()
+            },
+        );
+        assert!(!fallback_svg.contains("class=\"marker object-outline\""));
+        assert!(fallback_svg.contains("<ellipse class=\"marker\" stroke=\"#ee9a78\""));
     }
 
     #[test]
@@ -794,6 +821,7 @@ mod tests {
             OverlayOptions {
                 objects: false,
                 grid: true,
+                ..OverlayOptions::default()
             },
         );
         assert!(svg.contains("class=\"grid-line\""));
@@ -818,6 +846,7 @@ mod tests {
             OverlayOptions {
                 objects: false,
                 grid: true,
+                ..OverlayOptions::default()
             },
         );
         assert!(svg.contains("class=\"grid-line\""));
@@ -836,6 +865,7 @@ mod tests {
             OverlayOptions {
                 objects: false,
                 grid: true,
+                ..OverlayOptions::default()
             },
         );
         assert!(svg.contains("font: 700 68.27px ui-monospace"));

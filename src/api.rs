@@ -1748,6 +1748,7 @@ async fn get_solve_overlay(
         OverlayOptions {
             objects: query.objects,
             grid: query.grid,
+            outlines: query.outlines,
         },
     );
     Ok((
@@ -1768,6 +1769,8 @@ async fn get_solve_overlay(
 struct OverlayQuery {
     #[serde(default = "default_true")]
     objects: bool,
+    #[serde(default = "default_true")]
+    outlines: bool,
     #[serde(default)]
     grid: bool,
     #[serde(flatten)]
