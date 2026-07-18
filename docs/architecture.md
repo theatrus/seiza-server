@@ -70,6 +70,12 @@ Admission is separate and uses a token bucket per client/IP. It returns HTTP
 | Worker | Tokio tasks or HTTP worker | ECS/EC2 HTTP or direct SQS worker | dedicated worker service |
 | Authentication | public/stub | public/stub | API-key table, hash, revoke, tier/weight |
 
+The proposed account, verified-email, passkey, API-key, and pluggable email
+architecture is specified in
+[Accounts, passkeys, API keys, and email authentication](accounts-authentication.md).
+It is an implementation plan; the current runtime modes remain `public` and
+`stub-api-key`.
+
 SQLite survives process restarts and supports multiple worker processes that
 claim through one API process. It is intentionally a single-host durable queue:
 do not place its database file on object storage or use it as a multi-AZ

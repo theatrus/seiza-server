@@ -319,6 +319,10 @@ server fetch path. Tags, generated FITS images, durable sessions, and API-key
 verification are future additions. The canonical native API already provides
 annotations and a downloadable WCS header.
 
+The implementation plan for verified-email accounts, passkeys, durable
+sessions, API keys, and SES/authenticated-SMTP delivery is in
+[docs/accounts-authentication.md](docs/accounts-authentication.md).
+
 The endpoint shapes and multipart encoding follow the
 [Astrometry.net API documentation](https://astrometry.net/doc/net/api.html).
 
