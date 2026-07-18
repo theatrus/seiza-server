@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-    Browser["React / Vite UI"] --> Upload["TUS resumable upload\n5 MiB chunks"]
+    Browser["React / Vite UI"] --> Upload["TUS resumable upload\n32 MiB chunks"]
     Client["Native or Astrometry-compatible client"] --> API
     Upload --> API["Axum API"]
     API --> Admission["Auth stub + token bucket"]
@@ -125,8 +125,8 @@ durable copy, while the temporary original remains eligible for normal
 cleanup. S3 deployments should keep the validation prefix outside the
 temporary-upload lifecycle rule.
 
-The browser uses Uppy’s TUS client with 5 MiB chunks and retry delays. Files of
-at least 10 MiB are split into up to three concurrent TUS partial uploads. The
+The browser uses Uppy’s TUS client with 32 MiB chunks and retry delays. Files
+larger than 32 MiB are split into up to three concurrent TUS partial uploads. The
 partial boundaries stay aligned to chunk boundaries, leaving only the final
 chunk smaller than S3’s 5 MiB multipart minimum. A random upload-session URL
 identifies each manifest stored beside its chunks in the selected object store.

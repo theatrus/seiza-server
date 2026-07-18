@@ -3,8 +3,8 @@ import Tus from '@uppy/tus'
 
 export type JobStatus = 'queued' | 'solving' | 'succeeded' | 'failed'
 
-const uploadChunkBytes = 5 * 1024 * 1024
-const parallelUploadThresholdBytes = uploadChunkBytes * 2
+const uploadChunkBytes = 32 * 1024 * 1024
+const parallelUploadThresholdBytes = uploadChunkBytes
 const parallelUploadParts = 3
 
 export interface SolveOptions {
@@ -224,7 +224,7 @@ export async function submitSolve(
 }
 
 function alignedParallelUploadBoundaries(size: number): Array<{ start: number, end: number }> {
-  if (size < parallelUploadThresholdBytes) return []
+  if (size <= parallelUploadThresholdBytes) return []
   const chunkCount = Math.ceil(size / uploadChunkBytes)
   const partCount = Math.min(parallelUploadParts, chunkCount)
   const boundaries: Array<{ start: number, end: number }> = []
