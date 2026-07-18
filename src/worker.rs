@@ -1,12 +1,16 @@
 use crate::{
     config::Config,
-    models::{JobId, JobLease, WorkerCompletion},
+    models::{JobId, JobLease, JobResponse, JobStatus, WorkerCompletion},
     solver::SolverEngine,
 };
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use bytes::Bytes;
 use reqwest::{Client, StatusCode};
 use std::{env, time::Duration};
+
+const WORKER_HEARTBEAT_SECONDS: u64 = 60;
+const SQS_MAX_VISIBILITY_SECONDS: u64 = 43_200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerMode {
@@ -141,6 +145,22 @@ impl WorkerClient {
             .as_bool()
             .unwrap_or(false))
     }
+
+    async fn job_is_terminal(&self, job_id: JobId) -> Result<bool> {
+        let response = self
+            .client
+            .get(format!("{}/api/v1/solves/{job_id}", self.server))
+            .send()
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(true);
+        }
+        let job: JobResponse = response.error_for_status()?.json().await?;
+        Ok(matches!(
+            job.status,
+            JobStatus::Succeeded | JobStatus::Failed
+        ))
+    }
 }
 
 pub async fn run(args: WorkerArgs) -> Result<()> {
@@ -149,13 +169,14 @@ pub async fn run(args: WorkerArgs) -> Result<()> {
         config.catalog_path.as_deref(),
         config.blind_index_path.as_deref(),
     );
+    let lease_seconds = config.lease_seconds;
     if !engine.is_ready() {
         bail!("worker requires SEIZA_STAR_DATA to point at a Seiza tile catalog");
     }
     let client = WorkerClient::new(args.server, args.token);
     match args.mode {
         WorkerMode::Http => run_http_worker(client, engine).await,
-        WorkerMode::Sqs => run_sqs_worker(client, engine).await,
+        WorkerMode::Sqs => run_sqs_worker(client, engine, lease_seconds).await,
     }
 }
 
@@ -164,7 +185,7 @@ async fn run_http_worker(client: WorkerClient, engine: SolverEngine) -> Result<(
     loop {
         match client.claim(None).await {
             Ok(Some(lease)) => {
-                if let Err(error) = process_lease(&client, &engine, lease).await {
+                if let Err(error) = process_lease(&client, &engine, lease, &NoopHeartbeat).await {
                     // Leave the lease to expire rather than terminating the
                     // worker process. Another worker can safely retry it.
                     tracing::warn!(%error, "worker failed while processing lease; continuing");
@@ -180,10 +201,49 @@ async fn run_http_worker(client: WorkerClient, engine: SolverEngine) -> Result<(
     }
 }
 
+#[async_trait]
+trait DeliveryHeartbeat: Send + Sync {
+    async fn extend(&self) -> Result<()>;
+}
+
+struct NoopHeartbeat;
+
+#[async_trait]
+impl DeliveryHeartbeat for NoopHeartbeat {
+    async fn extend(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "aws")]
+struct SqsHeartbeat<'a> {
+    client: &'a aws_sdk_sqs::Client,
+    queue_url: &'a str,
+    receipt_handle: &'a str,
+    visibility_timeout: i32,
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+impl DeliveryHeartbeat for SqsHeartbeat<'_> {
+    async fn extend(&self) -> Result<()> {
+        self.client
+            .change_message_visibility()
+            .queue_url(self.queue_url)
+            .receipt_handle(self.receipt_handle)
+            .visibility_timeout(self.visibility_timeout)
+            .send()
+            .await
+            .context("extending SQS visibility timeout")?;
+        Ok(())
+    }
+}
+
 async fn process_lease(
     client: &WorkerClient,
     engine: &SolverEngine,
     lease: JobLease,
+    delivery_heartbeat: &dyn DeliveryHeartbeat,
 ) -> Result<bool> {
     let input = client.input(&lease).await?;
     let solve = engine.solve(
@@ -192,7 +252,7 @@ async fn process_lease(
         lease.options.clone(),
     );
     tokio::pin!(solve);
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(WORKER_HEARTBEAT_SECONDS));
     heartbeat.tick().await;
     let outcome = loop {
         tokio::select! {
@@ -201,6 +261,7 @@ async fn process_lease(
                 if !client.heartbeat(&lease).await? {
                     bail!("worker lease for job {} is no longer active", lease.job_id);
                 }
+                delivery_heartbeat.extend().await?;
             }
         }
     };
@@ -220,13 +281,18 @@ async fn process_lease(
 }
 
 #[cfg(feature = "aws")]
-async fn run_sqs_worker(client: WorkerClient, engine: SolverEngine) -> Result<()> {
+async fn run_sqs_worker(
+    client: WorkerClient,
+    engine: SolverEngine,
+    lease_seconds: u64,
+) -> Result<()> {
     let queue_url = env::var("SEIZA_SQS_QUEUE_URL")
         .context("SEIZA_SQS_QUEUE_URL is required for SQS workers")?;
     let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .load()
         .await;
     let sqs = aws_sdk_sqs::Client::new(&sdk_config);
+    let visibility_timeout = sqs_visibility_timeout(lease_seconds);
     tracing::info!(queue_url, "direct SQS worker started");
     loop {
         let response = sqs
@@ -234,7 +300,7 @@ async fn run_sqs_worker(client: WorkerClient, engine: SolverEngine) -> Result<()
             .queue_url(&queue_url)
             .max_number_of_messages(1)
             .wait_time_seconds(20)
-            .visibility_timeout(1_200)
+            .visibility_timeout(visibility_timeout)
             .send()
             .await
             .context("receiving SQS message")?;
@@ -256,9 +322,19 @@ async fn run_sqs_worker(client: WorkerClient, engine: SolverEngine) -> Result<()
                 }
             };
             let handled = match client.claim(Some(job_id)).await? {
-                Some(lease) => process_lease(&client, &engine, lease).await?,
-                // A duplicate or an already-completed message is safe to ack.
-                None => true,
+                Some(lease) => {
+                    let heartbeat = SqsHeartbeat {
+                        client: &sqs,
+                        queue_url: &queue_url,
+                        receipt_handle,
+                        visibility_timeout,
+                    };
+                    process_lease(&client, &engine, lease, &heartbeat).await?
+                }
+                // Ack completed/deleted jobs. An actively leased job may be
+                // an early or duplicate delivery, so leave that message for
+                // SQS to expose again after its visibility timeout.
+                None => client.job_is_terminal(job_id).await?,
             };
             if handled {
                 sqs.delete_message()
@@ -272,6 +348,28 @@ async fn run_sqs_worker(client: WorkerClient, engine: SolverEngine) -> Result<()
 }
 
 #[cfg(not(feature = "aws"))]
-async fn run_sqs_worker(_client: WorkerClient, _engine: SolverEngine) -> Result<()> {
+async fn run_sqs_worker(
+    _client: WorkerClient,
+    _engine: SolverEngine,
+    _lease_seconds: u64,
+) -> Result<()> {
     bail!("SQS worker mode requires `cargo run --features aws -- worker --mode sqs`")
+}
+
+fn sqs_visibility_timeout(lease_seconds: u64) -> i32 {
+    lease_seconds
+        .saturating_add(WORKER_HEARTBEAT_SECONDS)
+        .clamp(1, SQS_MAX_VISIBILITY_SECONDS) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqs_visibility_outlasts_the_database_lease() {
+        assert_eq!(sqs_visibility_timeout(900), 960);
+        assert_eq!(sqs_visibility_timeout(1), 61);
+        assert_eq!(sqs_visibility_timeout(u64::MAX), 43_200);
+    }
 }

@@ -378,10 +378,13 @@ catalog, and worker guidance.
 Build with AWS support and use a task role that can only `GetObject`,
 `PutObject`, and `DeleteObject` under the chosen S3 prefix plus `ListBucket`
 restricted to that prefix; `SendMessage`, `ReceiveMessage`, and `DeleteMessage`
-on the configured SQS queue; plus `GetItem`, `PutItem`,
-`UpdateItem`, `Scan`, and `TransactWriteItems` on the DynamoDB table when that
-job backend is selected. The AWS client is explicitly configured to use the
-AWS-LC-RS Rustls crypto provider rather than the legacy Ring connector:
+and `ChangeMessageVisibility` on the configured SQS queue; plus `GetItem`,
+`PutItem`, `UpdateItem`, and `ConditionCheckItem` on the DynamoDB table and
+`Query` on its recovery index when that job backend is selected. Those item
+permissions also authorize the repository's transactions. `migrate-store`
+additionally needs `Scan` and `DescribeTable`. The AWS client is explicitly
+configured to use the AWS-LC-RS Rustls crypto provider rather than the legacy
+Ring connector:
 
 ```bash
 cargo build --release --features aws
@@ -394,7 +397,7 @@ Run the API with `SEIZA_STORAGE_BACKEND=s3` and optionally
 - `SEIZA_JOB_BACKEND=dynamodb` and `SEIZA_DYNAMODB_TABLE=seiza-jobs` for a
   managed AWS job store. The supplied
   [DynamoDB template](infra/aws/seiza-jobs-dynamodb.yaml) creates the required
-  `pk` string partition key.
+  `pk` string partition key and `job-status-created-at` recovery GSI.
 
 Both backends use one UUIDv4 for each job: it is the durable primary key, public
 result locator, worker handle, object-path identity, and SQS message body.
@@ -403,10 +406,12 @@ records from the older numeric schema into the UUID schema, using each upload's
 existing public UUID, and retain mappings for legacy and Astrometry-compatible
 numeric URLs.
 
-SQS is a cross-process delivery adapter, not the authoritative scheduler: it
-carries only the job UUID. The selected durable job store retains priority
-selection, leases, results, and the notification-outbox state, and retries
-failed SQS publishes after a restart.
+SQS carries only the job UUID and is the normal cross-process delivery path.
+The selected durable job store remains the lease and result authority. The API
+publishes directly after committing a queued job; after one lease period, a
+slow recovery pass queries only old, undelivered `queued` records through the
+GSI and republishes them. Normal SQS claims read the job by primary key and do
+not scan the table.
 
 Run direct SQS workers with the same worker token and catalog:
 
@@ -414,11 +419,12 @@ Run direct SQS workers with the same worker token and catalog:
 cargo run --features aws -- worker --mode sqs --server http://api-host:8080
 ```
 
-The worker receives a job ID from SQS, claims that job from the API's selected
-job store, then deletes the SQS message only after completion is accepted.
-Duplicate messages and expired leases are safe by design. The AWS SDK uses the
-standard credential provider chain, so ECS task roles work without application
-secrets.
+The worker receives a job ID from SQS, claims that exact job from the API's
+selected job store, and renews SQS visibility whenever it heartbeats the job
+lease. It deletes the message only after completion is accepted or the job is
+already terminal. Duplicate messages, long solves, and worker crashes are safe
+by design. The AWS SDK uses the standard credential provider chain, so ECS task
+roles work without application secrets.
 Put `SEIZA_STAR_DATA`, `SEIZA_BLIND_INDEX`, and optional annotation catalogs on
 a read-only EFS mount or bake/version them into a dedicated server image.
 Workers need the star catalog and blind index; annotation catalogs are loaded

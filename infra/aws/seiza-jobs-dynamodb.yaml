@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Durable Seiza Server job store. Set SEIZA_DYNAMODB_TABLE to this table name.
+Description: Durable Seiza Server job store with a bounded queue-recovery index.
 
 Resources:
   SeizaJobs:
@@ -9,9 +9,24 @@ Resources:
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: job-status-created-at
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - notification_delivered_at
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
 

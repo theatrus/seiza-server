@@ -1,6 +1,6 @@
 use crate::{
     annotations::{AnnotationEngine, AnnotationOptions},
-    config::{AuthMode, Config},
+    config::{AuthMode, Config, JobBackend},
     models::{
         AnnotationResponse, AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus,
         SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
@@ -226,7 +226,14 @@ impl AppState {
     }
 
     async fn dispatch_outbox(&self) {
-        tracing::info!("external queue dispatcher started");
+        let retry_interval = match self.config.job_backend {
+            JobBackend::Sqlx => Duration::from_secs(2),
+            JobBackend::DynamoDb => Duration::from_secs(self.config.lease_seconds.max(1)),
+        };
+        tracing::info!(
+            retry_interval_seconds = retry_interval.as_secs(),
+            "external queue recovery dispatcher started"
+        );
         loop {
             match self.repository.pending_notifications(100).await {
                 Ok(job_ids) => {
@@ -247,7 +254,7 @@ impl AppState {
                 }
                 Err(error) => tracing::error!(%error, "failed to read durable queue outbox"),
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(retry_interval).await;
         }
     }
 
