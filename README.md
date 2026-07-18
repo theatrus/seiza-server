@@ -359,7 +359,7 @@ are currently supported:
 | `SEIZA_VALIDATION_PREFIX` | `validation` | Object-key prefix protected from temporary-upload cleanup for contributed validation images |
 | `SEIZA_SQS_QUEUE_URL` | unset | Required when queue transport is `sqs` |
 | `SEIZA_SQS_PRIORITY_QUEUE_URL` | unset | Optional second standard queue for jobs whose durable queue weight is above `1.0` |
-| `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged; also becomes the configured priority client's durable queue weight |
+| `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged (`2`–`100`); also becomes the configured priority client's durable queue weight |
 | `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
 
 `X-Forwarded-For`/`X-Real-IP` are used for anonymous fairness and rate limits.

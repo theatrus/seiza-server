@@ -331,29 +331,43 @@ impl SqsQueueSchedule {
 }
 
 #[cfg(feature = "aws")]
-async fn receive_sqs_message(
-    sqs: &aws_sdk_sqs::Client,
-    queue_url: &str,
-    visibility_timeout: i32,
-    wait_time_seconds: i32,
-) -> Result<Option<aws_sdk_sqs::types::Message>> {
-    Ok(sqs
-        .receive_message()
-        .queue_url(queue_url)
-        .max_number_of_messages(1)
-        .wait_time_seconds(wait_time_seconds)
-        .visibility_timeout(visibility_timeout)
-        .send()
-        .await
-        .context("receiving SQS message")?
-        .messages()
-        .first()
-        .cloned())
+#[async_trait]
+trait SqsMessageReceiver: Sync {
+    async fn receive_sqs_message(
+        &self,
+        queue_url: &str,
+        visibility_timeout: i32,
+        wait_time_seconds: i32,
+    ) -> Result<Option<aws_sdk_sqs::types::Message>>;
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+impl SqsMessageReceiver for aws_sdk_sqs::Client {
+    async fn receive_sqs_message(
+        &self,
+        queue_url: &str,
+        visibility_timeout: i32,
+        wait_time_seconds: i32,
+    ) -> Result<Option<aws_sdk_sqs::types::Message>> {
+        Ok(self
+            .receive_message()
+            .queue_url(queue_url)
+            .max_number_of_messages(1)
+            .wait_time_seconds(wait_time_seconds)
+            .visibility_timeout(visibility_timeout)
+            .send()
+            .await
+            .context("receiving SQS message")?
+            .messages()
+            .first()
+            .cloned())
+    }
 }
 
 #[cfg(feature = "aws")]
 async fn receive_weighted_sqs_message(
-    sqs: &aws_sdk_sqs::Client,
+    sqs: &impl SqsMessageReceiver,
     normal_queue_url: &str,
     priority_queue_url: &str,
     schedule: &mut SqsQueueSchedule,
@@ -374,24 +388,36 @@ async fn receive_weighted_sqs_message(
             priority_queue_url,
         ),
     };
-    if let Some(message) = receive_sqs_message(
-        sqs,
-        preferred_url,
-        visibility_timeout,
-        SQS_PRIORITY_POLL_SECONDS,
-    )
-    .await?
+    let preferred_receive_succeeded = match sqs
+        .receive_sqs_message(preferred_url, visibility_timeout, SQS_PRIORITY_POLL_SECONDS)
+        .await
     {
-        return Ok(Some((preferred_class, message)));
+        Ok(Some(message)) => return Ok(Some((preferred_class, message))),
+        Ok(None) => true,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                queue_class = ?preferred_class,
+                "SQS queue receive failed; polling the other queue"
+            );
+            false
+        }
+    };
+    match sqs
+        .receive_sqs_message(fallback_url, visibility_timeout, SQS_PRIORITY_POLL_SECONDS)
+        .await
+    {
+        Ok(message) => Ok(message.map(|message| (fallback_class, message))),
+        Err(error) if preferred_receive_succeeded => {
+            tracing::warn!(
+                %error,
+                queue_class = ?fallback_class,
+                "SQS fallback queue receive failed; preferred queue remains available"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error).context("receiving from both SQS queues failed"),
     }
-    Ok(receive_sqs_message(
-        sqs,
-        fallback_url,
-        visibility_timeout,
-        SQS_PRIORITY_POLL_SECONDS,
-    )
-    .await?
-    .map(|message| (fallback_class, message)))
 }
 
 #[cfg(feature = "aws")]
@@ -431,9 +457,9 @@ async fn run_sqs_worker(
             };
             message
         } else {
-            let Some(message) =
-                receive_sqs_message(&sqs, &queue_url, visibility_timeout, SQS_LONG_POLL_SECONDS)
-                    .await?
+            let Some(message) = sqs
+                .receive_sqs_message(&queue_url, visibility_timeout, SQS_LONG_POLL_SECONDS)
+                .await?
             else {
                 continue;
             };
@@ -506,6 +532,46 @@ fn sqs_visibility_timeout(lease_seconds: u64) -> i32 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "aws")]
+    use std::{collections::VecDeque, sync::Mutex as StdMutex};
+
+    #[cfg(feature = "aws")]
+    struct FakeSqsReceiver {
+        responses: StdMutex<VecDeque<Result<Option<aws_sdk_sqs::types::Message>>>>,
+        requested_queues: StdMutex<Vec<String>>,
+    }
+
+    #[cfg(feature = "aws")]
+    impl FakeSqsReceiver {
+        fn new(responses: Vec<Result<Option<aws_sdk_sqs::types::Message>>>) -> Self {
+            Self {
+                responses: StdMutex::new(responses.into()),
+                requested_queues: StdMutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[cfg(feature = "aws")]
+    #[async_trait]
+    impl SqsMessageReceiver for FakeSqsReceiver {
+        async fn receive_sqs_message(
+            &self,
+            queue_url: &str,
+            _visibility_timeout: i32,
+            _wait_time_seconds: i32,
+        ) -> Result<Option<aws_sdk_sqs::types::Message>> {
+            self.requested_queues
+                .lock()
+                .unwrap()
+                .push(queue_url.to_owned());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("fake SQS response")
+        }
+    }
+
     #[test]
     fn sqs_visibility_outlasts_the_database_lease() {
         assert_eq!(sqs_visibility_timeout(900), 960);
@@ -521,5 +587,66 @@ mod tests {
         assert_eq!(schedule.next(), SqsQueueClass::Priority);
         assert_eq!(schedule.next(), SqsQueueClass::Normal);
         assert_eq!(schedule.next(), SqsQueueClass::Priority);
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn priority_receive_failure_falls_back_to_normal_queue() {
+        let receiver = FakeSqsReceiver::new(vec![
+            Err(anyhow::anyhow!("priority queue unavailable")),
+            Ok(Some(
+                aws_sdk_sqs::types::Message::builder()
+                    .body("normal-job")
+                    .build(),
+            )),
+        ]);
+        let mut schedule = SqsQueueSchedule::new(2);
+
+        let (class, message) = receive_weighted_sqs_message(
+            &receiver,
+            "normal-queue",
+            "priority-queue",
+            &mut schedule,
+            960,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(class, SqsQueueClass::Normal);
+        assert_eq!(message.body(), Some("normal-job"));
+        assert_eq!(
+            *receiver.requested_queues.lock().unwrap(),
+            ["priority-queue", "normal-queue"]
+        );
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn fallback_receive_failure_does_not_hide_a_healthy_empty_queue() {
+        let receiver = FakeSqsReceiver::new(vec![
+            Ok(None),
+            Err(anyhow::anyhow!("priority queue unavailable")),
+        ]);
+        let mut schedule = SqsQueueSchedule {
+            priority_weight: 2,
+            cursor: 2,
+        };
+
+        let message = receive_weighted_sqs_message(
+            &receiver,
+            "normal-queue",
+            "priority-queue",
+            &mut schedule,
+            960,
+        )
+        .await
+        .unwrap();
+
+        assert!(message.is_none());
+        assert_eq!(
+            *receiver.requested_queues.lock().unwrap(),
+            ["normal-queue", "priority-queue"]
+        );
     }
 }

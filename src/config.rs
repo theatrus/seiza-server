@@ -179,9 +179,7 @@ impl Config {
         if lease_seconds == 0 {
             bail!("SEIZA_LEASE_SECONDS must be at least 1");
         }
-        if !(1..=100).contains(&sqs_priority_weight) {
-            bail!("SEIZA_SQS_PRIORITY_WEIGHT must be between 1 and 100");
-        }
+        validate_sqs_priority_weight(sqs_priority_weight)?;
         if upload_retention_seconds == 0 || upload_retention_seconds > i64::MAX as u64 {
             bail!("SEIZA_UPLOAD_RETENTION_SECONDS must be between 1 and i64::MAX");
         }
@@ -347,6 +345,13 @@ where
     }
 }
 
+fn validate_sqs_priority_weight(weight: usize) -> Result<()> {
+    if !(2..=100).contains(&weight) {
+        bail!("SEIZA_SQS_PRIORITY_WEIGHT must be between 2 and 100");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +452,13 @@ mod tests {
         assert_eq!(keys.queue_weight(Some("missing"), 2), 1.0);
         assert_eq!(keys.queue_weight(None, 2), 1.0);
         assert_eq!(format!("{keys:?}"), "PriorityApiKeys { count: 2 }");
+    }
+
+    #[test]
+    fn priority_weight_requires_an_actual_preference() {
+        assert!(validate_sqs_priority_weight(1).is_err());
+        assert!(validate_sqs_priority_weight(2).is_ok());
+        assert!(validate_sqs_priority_weight(100).is_ok());
+        assert!(validate_sqs_priority_weight(101).is_err());
     }
 }
