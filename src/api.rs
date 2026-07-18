@@ -509,6 +509,7 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     let frontend_dir = state.config.frontend_dir.clone();
+    let frontend_index = frontend_dir.join("index.html");
     Router::new()
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/catalog/objects", get(get_catalog_objects))
@@ -585,9 +586,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/jobs/{job_id}/info", get(astrometry_info))
         .route("/api/jobs/{job_id}/info/", get(astrometry_info))
+        // Known client-side routes must return a successful document response
+        // when loaded directly or refreshed. The final fallback keeps the SPA's
+        // rendered not-found page while preserving its 404 status.
+        .route_service("/", ServeFile::new(frontend_index.clone()))
+        .route_service("/solve", ServeFile::new(frontend_index.clone()))
+        .route_service("/docs/api", ServeFile::new(frontend_index.clone()))
+        .route_service("/data-sources", ServeFile::new(frontend_index.clone()))
+        .route_service(
+            "/solutions/{job_id}",
+            ServeFile::new(frontend_index.clone()),
+        )
         .fallback_service(
-            ServeDir::new(&frontend_dir)
-                .not_found_service(ServeFile::new(frontend_dir.join("index.html"))),
+            ServeDir::new(&frontend_dir).not_found_service(ServeFile::new(frontend_index)),
         )
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
@@ -2540,10 +2551,62 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
     use seiza::objects::{ObjectCatalog, ObjectMetadata};
     use seiza::star_ids::{
         StarIdentifier, StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind,
     };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn frontend_routes_are_successful_on_refresh_and_unknown_paths_remain_not_found() {
+        let root = std::env::temp_dir().join(format!("seiza-api-frontend-{}", Uuid::now_v7()));
+        let frontend_dir = root.join("frontend");
+        std::fs::create_dir_all(&frontend_dir).unwrap();
+        std::fs::write(frontend_dir.join("index.html"), "seiza frontend").unwrap();
+        let app = router(AppState::new(test_config(&root)).await.unwrap());
+
+        for path in [
+            "/",
+            "/solve",
+            "/docs/api",
+            "/data-sources",
+            "/solutions/550e8400-e29b-41d4-a716-446655440000",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "refreshing {path}");
+            assert_eq!(
+                &to_bytes(response.into_body(), usize::MAX).await.unwrap()[..],
+                b"seiza frontend"
+            );
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/not-a-real-page")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap()[..],
+            b"seiza frontend"
+        );
+
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn public_solution_locators_use_the_job_uuid() {
