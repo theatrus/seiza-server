@@ -2,7 +2,7 @@
 %undefine _debugsource_packages
 
 Name:           seiza-server
-Version:         %{?package_version}%{!?package_version:0.2.0}
+Version:         %{?package_version}%{!?package_version:0.3.0}
 Release:         %{?package_release}%{!?package_release:1}%{?dist}
 Summary:         Queued Seiza plate-solving web service
 License:         Apache-2.0
@@ -83,6 +83,10 @@ fi
 %attr(0640,root,seiza-server) %config(noreplace) %{_sysconfdir}/seiza-server/seiza-server.env
 
 %changelog
+* Sat Jul 18 2026 The Seiza Server Contributors <github@theatr.us> - 0.3.0-1
+- Add accounts, passkeys, API keys, account solve history, and hardened email sign-in
+- Add immutable re-solves, SIP polynomial results, and fair priority SQS delivery
+
 * Fri Jul 17 2026 The Seiza Server Contributors <github@theatr.us> - 0.2.0-1
 - Release catalog v4, resumable uploads, durable solution pages, and expanded overlays
 

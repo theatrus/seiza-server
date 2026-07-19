@@ -5,6 +5,30 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-18
+
+- Add verified-email accounts with passkey-first sign-in, multi-session browser
+  authentication, scoped and revocable API keys, SQLx/DynamoDB identity stores,
+  SES and authenticated SMTP delivery, and hardened email abuse controls.
+- Keep public browser and API solves independently configurable in accounts
+  mode, route anonymous jobs through the normal queue, and list recent solves
+  on the submitting account.
+- Upgrade to Seiza 0.8.1 with SIP polynomial orders 2–5, velocity-aware moving
+  bodies, improved data-directory discovery, and the corrected library data
+  path behavior.
+- Make re-solves immutable new jobs, preserve original results, and add ETag and
+  conditional HTTP caching for solve responses.
+- Replace idle embedded-worker database polling with in-process wakeups and a
+  long recovery fallback; replace DynamoDB recovery scans with a bounded GSI.
+- Add SQS fair-queue groups and a separate weighted priority queue while
+  preserving durable job-store ownership and recovery semantics.
+- Increase TUS upload chunks to 32 MiB and retain independent public UI/API
+  admission controls.
+- Adopt the published overlay package's suggested catalog palette, motion
+  vectors, and semantic catalog layers.
+- Document guided Seiza catalog setup plus N.I.N.A. ASTAP-compatible and Siril
+  solve-field-compatible integrations.
+
 ## 0.2.0 - 2026-07-17
 
 - Upgrade to Seiza 0.6.0 and `@seiza/astro-overlay` 0.2.0 with object-catalog
