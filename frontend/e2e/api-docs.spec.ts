@@ -5,13 +5,13 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
-test('advertises N.I.N.A. ASTAP integration on the home page', async ({ page }) => {
+test('advertises N.I.N.A. and Siril integrations on the home page', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page.getByRole('heading', { name: 'Bring Seiza into N.I.N.A. without a plugin.' })).toBeVisible()
-  await expect(page.getByText('Download the pre-built Windows', { exact: false })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Set up N.I.N.A.' })).toHaveAttribute('href', '/docs/api#integrations')
-  await expect(page.getByRole('link', { name: 'Download Windows binary' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
+  await expect(page.getByRole('heading', { name: 'Use Seiza in N.I.N.A. or Siril—no plugin required.' })).toBeVisible()
+  await expect(page.getByText('guided catalog setup', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Set up integrations' })).toHaveAttribute('href', '/docs/api#integrations')
+  await expect(page.getByRole('link', { name: 'Download Seiza' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
 })
 
 test('links the data-source acknowledgements from the home hero and about section', async ({ page }) => {
@@ -77,13 +77,16 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByText('/api/v1/catalog/stars/search', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/internal/worker/claim', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'N.I.N.A., ASTAP, and persistent clients.' })).toBeVisible()
-  await expect(page.getByText('no Rust toolchain, installer, or N.I.N.A. plugin is required.', { exact: false })).toBeVisible()
-  await expect(page.getByText('seiza-cli-…-windows-x86_64.zip', { exact: true })).toBeVisible()
-  await expect(page.getByText('C:\\Seiza\\seiza.exe download-data prebuilt', { exact: false })).toBeVisible()
-  await expect(page.getByText('--file stars-deep-gaia17.bin --file blind-gaia16.idx', { exact: false })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'N.I.N.A., Siril, and persistent clients.' })).toBeVisible()
+  await expect(page.getByText('Neither application needs a Seiza-specific plugin or a Rust toolchain.', { exact: false })).toBeVisible()
+  await expect(page.getByText('seiza-cli-…-windows-x86_64.msi', { exact: true })).toBeVisible()
+  await expect(page.getByText('Start → Seiza → Seiza Catalog Setup', { exact: false })).toBeVisible()
+  await expect(page.getByText('seiza setup', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('seiza install-solve-field --dir <directory>', { exact: true })).toBeVisible()
+  await expect(page.getByText('$sirilDir = "$env:LOCALAPPDATA\\Seiza\\siril-asnet"', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Siril’s local Astrometry.net documentation' })).toHaveAttribute('href', 'https://siril.readthedocs.io/en/stable/astrometry/platesolving.html')
   await expect(page.getByText('seiza worker --server https://seiza.fyi', { exact: true })).toBeVisible()
-  await expect(page.getByText('ASTAP path: C:\\Seiza\\seiza.exe', { exact: false })).toBeVisible()
+  await expect(page.getByText('ASTAP path: C:\\Program Files\\Seiza\\seiza.exe', { exact: false })).toBeVisible()
   await expect(page.getByText('Your images remain yours.')).toBeVisible()
   await expect(page.getByText('seiza-validation-image-grant-v2')).toBeVisible()
   await expect(page.getByText(/only to test, validate, debug, and improve the Seiza plate solver/)).toBeVisible()

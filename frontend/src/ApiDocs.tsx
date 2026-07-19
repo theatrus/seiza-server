@@ -55,14 +55,23 @@ curl -X POST https://seiza.fyi/api/upload \\
   -F 'request-json={"session":"seiza-…","scale_type":"ul","scale_units":"arcsecperpix","scale_lower":0.5,"scale_upper":2.0}' \\
   -F 'file=@M31.fits'`
 
-const ninaExample = `# PowerShell: after extracting the Windows release ZIP to C:\\Seiza
-C:\\Seiza\\seiza.exe download-data prebuilt --output C:\\Seiza --file stars-deep-gaia17.bin --file blind-gaia16.idx
+const ninaExample = `# PowerShell: the MSI adds Seiza to PATH.
+# This is the same guided catalog setup opened by "Seiza Catalog Setup".
+seiza setup
 
 # In N.I.N.A.: Options → Plate Solving
 # Plate Solver: ASTAP
-# ASTAP path: C:\\Seiza\\seiza.exe
+# ASTAP path: C:\\Program Files\\Seiza\\seiza.exe
 # Blind Solver: ASTAP
-# ASTAP path: C:\\Seiza\\seiza.exe`
+# ASTAP path: C:\\Program Files\\Seiza\\seiza.exe`
+
+const sirilExample = `# PowerShell: install the solve-field-compatible layout for Siril.
+$sirilDir = "$env:LOCALAPPDATA\\Seiza\\siril-asnet"
+seiza install-solve-field --dir $sirilDir
+
+# In Siril: Preferences → Astrometry
+# Location of local astrometry.net solver: the value of $sirilDir
+# In Plate Solving, select Astrometry.net instead of the internal Siril solver.`
 
 const errorExample = `{
   "error": {
@@ -111,16 +120,22 @@ export function ApiDocsPage() {
           <div className="api-note"><strong>Your images remain yours.</strong><span>Ordinary uploads are stored only temporarily to provide the solve. Seiza does not claim ownership and does not retain the image long-term unless the user explicitly contributes it.</span></div>
         </DocSection>
 
-        <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="N.I.N.A., ASTAP, and persistent clients.">
-          <p><code>seiza-cli</code> 0.7 implements the ASTAP command-line contract that N.I.N.A. already understands. The pre-built Windows binary is the shortest path: no Rust toolchain, installer, or N.I.N.A. plugin is required.</p>
+        <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="N.I.N.A., Siril, and persistent clients.">
+          <p>The pre-built Seiza packages include compatibility modes for N.I.N.A.’s ASTAP integration and Siril’s local Astrometry.net integration. Neither application needs a Seiza-specific plugin or a Rust toolchain.</p>
+          <h3>Install Seiza and its catalogs</h3>
           <ol className="integration-steps">
-            <li><strong>Download the binary.</strong><span>Open the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.zip</code>, and extract it to a stable directory such as <code>C:\Seiza</code>.</span></li>
-            <li><strong>Download the solving data.</strong><span>Run the command below once in PowerShell. Keeping the deep Gaia catalog and maintained blind index beside <code>seiza.exe</code> lets Seiza discover them automatically.</span></li>
-            <li><strong>Select it in N.I.N.A.</strong><span>Under <strong>Options → Plate Solving</strong>, choose ASTAP and set its executable path to <code>C:\Seiza\seiza.exe</code>. Use the same binary for the blind-solver slot.</span></li>
+            <li><strong>Install the release.</strong><span>From the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.msi</code>. The portable ZIP and Linux packages work too, but the Windows installer supplies the PATH entry and catalog-setup shortcut used below.</span></li>
+            <li><strong>Run catalog setup.</strong><span>Leave <strong>Download and configure Seiza catalogs now</strong> selected on the installer’s final page, open <strong>Start → Seiza → Seiza Catalog Setup</strong> later, or run <code>seiza setup</code> in a new PowerShell window. All three start the same guided, SHA-256-verified setup.</span></li>
+            <li><strong>Choose for your workload.</strong><span>The lightweight telescope-control preset is sufficient for ordinary hinted N.I.N.A. solves. Choose the denser Gaia preset for narrow or crowded fields, or <strong>Unknown sky position</strong> to install the deep Gaia catalog and maintained blind index required for reliable blind solving.</span></li>
           </ol>
+          <h3>N.I.N.A.: use Seiza in ASTAP-compatible mode</h3>
+          <p>Under <strong>Options → Plate Solving</strong>, select <strong>ASTAP</strong> and point its executable path at the installed <code>seiza.exe</code> (normally <code>C:\Program Files\Seiza\seiza.exe</code> for an all-users install). Select ASTAP and the same executable in the blind-solver slot if you installed the blind preset. Do not add an <code>astap</code> subcommand: N.I.N.A. launches <code>seiza.exe</code> with ASTAP-style flags, and Seiza detects that contract automatically.</p>
           <CodeExample label="Set up the pre-built Seiza binary for N.I.N.A." code={ninaExample} />
-          <div className="api-note"><strong>Hinted and blind solving</strong><span>N.I.N.A. supplies FITS input, field of view, and optional mount coordinates through ASTAP-style flags. Seiza solves the frame and writes the <code>.ini</code> calibration file N.I.N.A. expects, including scale, rotation, and parity. The same binary can be selected for both the normal and blind-solver slots.</span></div>
-          <div className="api-note"><strong>Smaller download</strong><span>If you only need ordinary hinted solves, download <code>stars-gaia.bin</code> instead. The deep catalog plus <code>blind-gaia16.idx</code> is the recommended pair for blind solving small, fine-scale fields.</span></div>
+          <div className="api-note"><strong>What N.I.N.A. receives</strong><span>N.I.N.A. supplies FITS input, field of view, and optional mount coordinates through ASTAP-style flags. Seiza writes the ASTAP <code>.ini</code> calibration result N.I.N.A. expects, including the full CD matrix for pixel scale, rotation, and parity. See the <a href="https://github.com/theatrus/seiza/blob/main/docs/design/astap-mode.md">ASTAP-compatible mode contract</a> for details.</span></div>
+          <h3>Siril: use Seiza in solve-field-compatible mode</h3>
+          <p>Siril does not use ASTAP. It can instead launch a local Astrometry.net <code>solve-field</code> installation. Run <code>seiza install-solve-field --dir &lt;directory&gt;</code> once, set Siril’s <strong>Preferences → Astrometry → Location of local astrometry.net solver</strong> to that directory, then select <strong>Astrometry.net</strong> in Plate Solving. Seiza creates the <code>solve-field</code>, <code>bin/bash</code>, and temporary-directory layout Siril expects; Windows does not need Cygwin or ansvr.</p>
+          <CodeExample label="Install Seiza's Siril compatibility layout" code={sirilExample} />
+          <div className="api-note"><strong>Siril star lists and WCS</strong><span>Siril detects stars and passes the list to Seiza, which returns the standard <code>.wcs</code> result and honors the requested SIP distortion order. When the source image is available, Seiza remeasures flux to make Siril’s PSF-amplitude ordering robust. See Seiza’s <a href="https://github.com/theatrus/seiza/blob/main/docs/design/solve-field-mode.md">solve-field-compatible mode contract</a> and <a href="https://siril.readthedocs.io/en/stable/astrometry/platesolving.html">Siril’s local Astrometry.net documentation</a>.</span></div>
           <div className="api-note"><strong>Server-backed applications</strong><span>Applications that want a persistent newline-delimited JSON-RPC process can run <code>seiza worker --server https://seiza.fyi</code>. That adapter uploads local image paths to this queued service; it is separate from the authenticated internal worker API used to add server compute capacity.</span></div>
         </DocSection>
 
