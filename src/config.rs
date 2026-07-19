@@ -197,6 +197,8 @@ pub struct Config {
     /// identity.
     pub trusted_proxy_hops: usize,
     pub auth_mode: AuthMode,
+    pub public_ui_solves: bool,
+    pub public_api_solves: bool,
     pub public_base_url: Option<Url>,
     pub auth_code_pepper_file: Option<PathBuf>,
     pub email_provider: Option<EmailProvider>,
@@ -276,6 +278,8 @@ impl Config {
             .ok()
             .filter(|value| !value.is_empty());
         let auth_mode: AuthMode = env_or("SEIZA_AUTH_MODE", "public").parse()?;
+        let public_ui_solves = parse_env("SEIZA_PUBLIC_UI_SOLVES", true)?;
+        let public_api_solves = parse_env("SEIZA_PUBLIC_API_SOLVES", true)?;
         if auth_mode == AuthMode::Accounts
             && identity_backend == JobBackend::DynamoDb
             && identity_dynamodb_table.is_none()
@@ -418,6 +422,8 @@ impl Config {
             rate_limit_burst,
             trusted_proxy_hops,
             auth_mode,
+            public_ui_solves,
+            public_api_solves,
             public_base_url,
             auth_code_pepper_file,
             email_provider,

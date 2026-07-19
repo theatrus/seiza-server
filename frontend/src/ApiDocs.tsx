@@ -119,7 +119,8 @@ export function ApiDocsPage() {
           <p>The simplest client sends one <code>file</code> part and an optional JSON <code>options</code> part. The server responds with <code>202 Accepted</code>; CPU-heavy solving happens later in a worker.</p>
           <CodeExample label="Submit an image" code={multipartExample} />
           <CodeExample label="Poll the opaque result URL" code={pollExample} />
-          <div className="api-note"><strong>Authentication modes</strong><span>Public installations need no credential. Stub-key mode accepts any nonempty <code>X-API-Key</code> or Bearer token. Account mode validates a revocable account API key with <code>solve:submit</code> for submissions and <code>solve:read</code> for reads; the same headers work for native and TUS requests.</span></div>
+          <div className="api-note"><strong>Authentication modes</strong><span>Public installations need no credential. Stub-key mode accepts any nonempty <code>X-API-Key</code> or Bearer token. Account mode can accept anonymous public solves on the normal queue; operators independently control bundled-browser and public API submissions with <code>SEIZA_PUBLIC_UI_SOLVES</code> and <code>SEIZA_PUBLIC_API_SOLVES</code>, both enabled by default. A browser session or revocable account API key attaches submissions to account history and applies its scopes and queue weight.</span></div>
+          <div className="api-note"><strong>Surface controls</strong><span>The bundled frontend identifies its native and TUS requests as web traffic; unmarked native requests and Astrometry compatibility use the API setting. This distinction controls supported product surfaces, not adversarial access—a custom public client can reproduce browser headers. Require account credentials for a security boundary.</span></div>
           <div className="api-note"><strong>Result URLs are capabilities.</strong><span>The returned <code>id</code> is an unguessable UUID. Preserve it to revisit the result; the same UUID identifies the durable job to workers and queue transports.</span></div>
           <div className="api-note"><strong>Your images remain yours.</strong><span>Ordinary uploads are stored only temporarily to provide the solve. Seiza does not claim ownership and does not retain the image long-term unless the user explicitly contributes it.</span></div>
         </DocSection>
@@ -236,6 +237,7 @@ export function ApiDocsPage() {
             <Endpoint method="POST" path="/api/v1/auth/logout">Revoke the current browser session and clear its cookie.</Endpoint>
             <Endpoint method="POST" path="/api/v1/auth/logout-all">Revoke every session for the signed-in account after recent authentication.</Endpoint>
             <Endpoint method="GET" path="/api/v1/account">Read the signed-in account, live sessions, passkeys, and API-key metadata.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/account/solves">List the signed-in account’s 100 most recent submitted solves.</Endpoint>
             <Endpoint method="GET" path="/api/v1/account/passkeys">List the signed-in account’s registered passkeys.</Endpoint>
             <Endpoint method="POST" path="/api/v1/account/passkeys/registration/start">Begin registering a new passkey for the signed-in account.</Endpoint>
             <Endpoint method="POST" path="/api/v1/account/passkeys/registration/complete">Verify the attestation and store the labeled passkey.</Endpoint>
@@ -246,12 +248,12 @@ export function ApiDocsPage() {
             <Endpoint method="DELETE" path="/api/v1/account/sessions/{session_id}">Revoke a browser or Astrometry session.</Endpoint>
           </div>
           <div className="api-note"><strong>Recent sign-in required</strong><span>Adding or removing passkeys and API keys requires a browser session verified within the last ten minutes. Older sessions receive <code>403</code> and must sign in again first.</span></div>
-          <div className="api-note"><strong>Account-level fairness</strong><span>All credentials belonging to one account submit as the same durable owner. API-key names and scopes cannot select queue priority.</span></div>
-          <div className="api-note"><strong>Result capabilities</strong><span>In this release, an unguessable result URL remains sufficient to read that result. Account-scoped job history and private result ACLs are intentionally deferred.</span></div>
+          <div className="api-note"><strong>Account-level fairness</strong><span>All credentials belonging to one account submit as the same durable owner. API-key names and scopes cannot select queue priority. Anonymous public submissions use queue weight 1 and the normal queue.</span></div>
+          <div className="api-note"><strong>History and result capabilities</strong><span>Signed-in browser, API-key, and Astrometry submissions appear in recent account history. Public submissions are not retroactively attached after sign-in. An unguessable result URL remains sufficient to read a result, and image/preview retention is unchanged.</span></div>
         </DocSection>
 
         <DocSection id="astrometry-api" eyebrow="COMPATIBILITY API" title="A practical Astrometry.net subset.">
-          <p>Existing clients can use the familiar <code>request-json</code> form field. In account mode, login validates an account API key with <code>solve:submit</code> and returns a persisted, expiring session; public and stub-key modes retain their compatibility behavior. Upload returns a numeric compatibility ID while the native queue remains UUID-based. Upload accepts <code>ul</code> and <code>ev</code> scale types with <code>degwidth</code>, <code>arcminwidth</code>, or <code>arcsecperpix</code> units.</p>
+          <p>Existing clients can use the familiar <code>request-json</code> form field. In account mode, login with an API key validates <code>solve:submit</code> and returns a persisted, expiring account session; omitting the key returns a public normal-queue session. Public and stub-key modes retain their compatibility behavior. Upload returns a numeric compatibility ID while the native queue remains UUID-based. Upload accepts <code>ul</code> and <code>ev</code> scale types with <code>degwidth</code>, <code>arcminwidth</code>, or <code>arcsecperpix</code> units.</p>
           <div className="endpoint-list compact">
             <Endpoint method="POST" path="/api/login">Create an Astrometry-style session.</Endpoint>
             <Endpoint method="POST" path="/api/upload">Submit <code>request-json</code> plus one file.</Endpoint>

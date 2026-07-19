@@ -9,6 +9,7 @@ export async function mockHealth(page: Page) {
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'public',
+      public_solve_access: { ui: true, api: true },
       job_backend: 'sqlx',
       queue_transport: 'local',
       embedded_workers: 1,

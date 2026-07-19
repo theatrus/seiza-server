@@ -39,6 +39,7 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',
+      public_solve_access: { ui: true, api: true },
       job_backend: 'sqlx',
       queue_transport: 'local',
       embedded_workers: 1,
@@ -77,6 +78,20 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
       }),
     })
   })
+  await page.route('**/api/v1/account/solves', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      solves: [{
+        id: '019f7d31-8f00-7000-8000-000000000006',
+        status: 'succeeded',
+        original_filename: 'm51-luminance.fits',
+        created_at: '2026-07-18T17:30:00Z',
+        started_at: '2026-07-18T17:30:01Z',
+        completed_at: '2026-07-18T17:30:03Z',
+        solve_time_ms: 2000,
+      }],
+    }),
+  }))
   await page.route('**/api/v1/account/passkeys/registration/start', (route) => {
     expect(route.request().headers()['x-csrf-token']).toBe('test-csrf')
     return route.fulfill({
@@ -137,6 +152,9 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
   })
 
   await page.goto('http://localhost:4173/account')
+  await expect(page.getByRole('heading', { name: 'Your recent fields' })).toBeVisible()
+  await expect(page.getByText('m51-luminance.fits')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'View result' })).toHaveAttribute('href', '/solutions/019f7d31-8f00-7000-8000-000000000006')
   await page.getByLabel('Passkey name').fill('Observatory laptop')
   await page.getByRole('button', { name: 'Add a passkey' }).click()
   await expect(page.getByText('Observatory laptop')).toBeVisible()
@@ -176,4 +194,102 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
   })
   await page.getByRole('button', { name: 'Use a passkey' }).click()
   await expect(page.getByRole('heading', { name: 'astronomer@example.com' })).toBeVisible()
+})
+
+test('accounts mode keeps anonymous solves available', async ({ page }) => {
+  await page.route('**/api/v1/health', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'ready',
+      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      solver_ready: true,
+      queue_depth: 0,
+      auth_mode: 'accounts',
+      public_solve_access: { ui: true, api: false },
+      job_backend: 'dynamodb',
+      queue_transport: 'sqs',
+      embedded_workers: 0,
+    }),
+  }))
+  await page.route('**/api/v1/account', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: '{}',
+  }))
+
+  await page.goto('http://localhost:4173/solve')
+  await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
+  await expect(page.getByText('Public solves remain available and use the normal queue.')).toBeVisible()
+  await expect(page.getByLabel('FITS or image file')).toBeVisible()
+})
+
+test('email sign-in honors the server resend cooldown', async ({ page }) => {
+  await page.route('**/api/v1/health', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'ready',
+      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      solver_ready: true,
+      queue_depth: 0,
+      auth_mode: 'accounts',
+      public_solve_access: { ui: true, api: true },
+      job_backend: 'dynamodb',
+      queue_transport: 'sqs',
+      embedded_workers: 0,
+    }),
+  }))
+  await page.route('**/api/v1/account', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: '{}',
+  }))
+  let starts = 0
+  await page.route('**/api/v1/auth/email/start', (route) => {
+    starts += 1
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        challenge_id: '019f7d31-8f00-7000-8000-000000000007',
+        resend_at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    })
+  })
+
+  await page.goto('http://localhost:4173/signin')
+  await page.getByLabel('Email address').fill('astronomer@example.com')
+  await page.getByRole('button', { name: 'Email me a sign-in link' }).click()
+
+  const resend = page.getByRole('button', { name: /Send another email \(\d+s\)/ })
+  await expect(resend).toBeDisabled()
+  expect(starts).toBe(1)
+})
+
+test('public browser and API solve access are presented independently', async ({ page }) => {
+  await page.route('**/api/v1/health', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'ready',
+      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      solver_ready: true,
+      queue_depth: 0,
+      auth_mode: 'accounts',
+      public_solve_access: { ui: false, api: true },
+      job_backend: 'dynamodb',
+      queue_transport: 'sqs',
+      embedded_workers: 0,
+    }),
+  }))
+  await page.route('**/api/v1/account', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: '{}',
+  }))
+
+  await page.goto('http://localhost:4173/solve')
+  await expect(page.getByRole('heading', { name: 'Public browser solves are disabled.' })).toBeVisible()
+  await expect(page.getByText('This deployment still accepts public API submissions.')).toBeVisible()
+  await expect(page.getByRole('main').getByRole('link', { name: 'Sign in' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Use the API' })).toBeVisible()
+  await expect(page.getByLabel('FITS or image file')).toHaveCount(0)
 })

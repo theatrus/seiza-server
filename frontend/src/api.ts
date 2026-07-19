@@ -6,6 +6,7 @@ export type JobStatus = 'queued' | 'solving' | 'succeeded' | 'failed'
 const uploadChunkBytes = 32 * 1024 * 1024
 const parallelUploadThresholdBytes = uploadChunkBytes * 2
 const parallelUploadParts = 3
+const webClient = 'web'
 
 export interface SolveOptions {
   center_ra_deg?: number | null
@@ -151,6 +152,10 @@ export interface Health {
   solver_ready: boolean
   queue_depth: number
   auth_mode: 'public' | 'stub-api-key' | 'accounts'
+  public_solve_access: {
+    ui: boolean
+    api: boolean
+  }
   job_backend: 'sqlx' | 'dynamodb'
   queue_transport: 'local' | 'sqs'
   embedded_workers: number
@@ -201,6 +206,16 @@ export interface AccountDetails {
   passkeys: PasskeySummary[]
   api_keys: ApiKeySummary[]
   sessions: AccountSession[]
+}
+
+export interface AccountSolve {
+  id: string
+  status: JobStatus
+  original_filename: string
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  solve_time_ms: number | null
 }
 
 export interface EmailSignInStart {
@@ -261,6 +276,11 @@ export async function getAccount(): Promise<AccountDetails | null> {
   const response = await sessionFetch('/api/v1/account')
   if (response.status === 401 || response.status === 404) return null
   return expectJson<AccountDetails>(response)
+}
+
+export async function getAccountSolves(): Promise<AccountSolve[]> {
+  const response = await expectJson<{ solves: AccountSolve[] }>(await sessionFetch('/api/v1/account/solves'))
+  return response.solves
 }
 
 export async function logout(all = false): Promise<void> {
@@ -361,6 +381,7 @@ export async function submitSolve(
     onBeforeRequest: (request, uploadedFile) => {
       const csrf = csrfToken()
       if (csrf) request.setHeader('X-CSRF-Token', csrf)
+      request.setHeader('X-Seiza-Client', webClient)
       request.setHeader('Upload-Metadata', [
         ['filename', uploadedFile.name],
         ['filetype', uploadedFile.type || 'application/octet-stream'],
@@ -593,6 +614,7 @@ async function sessionFetch(
   mutation = false,
 ): Promise<Response> {
   const headers = new Headers(init.headers)
+  headers.set('X-Seiza-Client', webClient)
   const csrf = mutation ? csrfToken() : null
   if (csrf) headers.set('X-CSRF-Token', csrf)
   return fetch(input, { ...init, headers, credentials: 'same-origin' })

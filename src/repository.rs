@@ -1,8 +1,8 @@
 use crate::{
     config::{Config, JobBackend},
     models::{
-        AstrometryId, JobId, JobLease, JobRecord, JobStatus, LegacyJobId, SolutionResponse,
-        ValidationDonation, astrometry_id_for_job,
+        AstrometryId, JobHistoryRecord, JobId, JobLease, JobRecord, JobStatus, LegacyJobId,
+        SolutionResponse, ValidationDonation, astrometry_id_for_job,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -22,6 +22,7 @@ pub trait JobRepository: Send + Sync {
     async fn get_by_legacy_id(&self, legacy_id: LegacyJobId) -> Result<Option<JobRecord>>;
     async fn get_by_astrometry_id(&self, astrometry_id: AstrometryId) -> Result<Option<JobRecord>>;
     async fn find_by_object_key(&self, object_key: &str) -> Result<Option<JobRecord>>;
+    async fn list_by_owner(&self, owner: &str, limit: usize) -> Result<Vec<JobHistoryRecord>>;
     async fn queue_depth(&self) -> Result<usize>;
     async fn claim(
         &self,
@@ -118,6 +119,7 @@ impl SqlxJobRepository {
         for statement in [
             "CREATE TABLE IF NOT EXISTS jobs_v2 (id TEXT PRIMARY KEY, astrometry_id BIGINT NOT NULL UNIQUE, legacy_id BIGINT UNIQUE, owner TEXT NOT NULL, queue_weight DOUBLE PRECISION NOT NULL, object_key TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, solution_json TEXT, error TEXT, lease_token TEXT, lease_expires_at TEXT, attempts BIGINT NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS jobs_v2_status_created_idx ON jobs_v2(status, created_at)",
+            "CREATE INDEX IF NOT EXISTS jobs_v2_owner_created_idx ON jobs_v2(owner, created_at)",
             "CREATE INDEX IF NOT EXISTS jobs_v2_lease_idx ON jobs_v2(status, lease_expires_at)",
             "CREATE UNIQUE INDEX IF NOT EXISTS jobs_v2_object_key_idx ON jobs_v2(object_key)",
             "CREATE TABLE IF NOT EXISTS validation_donations_v2 (job_id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, comment TEXT, solve_is_invalid BIGINT NOT NULL DEFAULT 0, license_version TEXT NOT NULL, donated_at TEXT NOT NULL)",
@@ -427,6 +429,21 @@ impl JobRepository for SqlxJobRepository {
         Ok(job)
     }
 
+    async fn list_by_owner(&self, owner: &str, limit: usize) -> Result<Vec<JobHistoryRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        sqlx::query("SELECT id, status, original_filename, created_at, started_at, completed_at FROM jobs_v2 WHERE owner = $1 ORDER BY created_at DESC LIMIT $2")
+            .bind(owner)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(history_record_from_row)
+            .collect()
+    }
+
     async fn queue_depth(&self) -> Result<usize> {
         let row = sqlx::query("SELECT COUNT(*) AS count FROM jobs_v2 WHERE status = 'queued'")
             .fetch_one(&self.pool)
@@ -652,6 +669,26 @@ fn record_from_row(row: sqlx::any::AnyRow) -> Result<JobRecord> {
     })
 }
 
+fn history_record_from_row(row: sqlx::any::AnyRow) -> Result<JobHistoryRecord> {
+    Ok(JobHistoryRecord {
+        id: decode_job_id(&row.try_get::<String, _>("id")?)?,
+        status: JobStatus::parse(&row.try_get::<String, _>("status")?)
+            .map_err(anyhow::Error::msg)?,
+        original_filename: row.try_get("original_filename")?,
+        created_at: decode_time(&row.try_get::<String, _>("created_at")?)?,
+        started_at: row
+            .try_get::<Option<String>, _>("started_at")?
+            .as_deref()
+            .map(decode_time)
+            .transpose()?,
+        completed_at: row
+            .try_get::<Option<String>, _>("completed_at")?
+            .as_deref()
+            .map(decode_time)
+            .transpose()?,
+    })
+}
+
 fn decode_job_id(value: &str) -> Result<JobId> {
     Uuid::parse_str(value).context("SQL job ID is not a UUID")
 }
@@ -740,6 +777,38 @@ mod tests {
 
         assert_eq!(repeated.id, first.id);
         assert_eq!(repository.queue_depth().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn lists_bounded_owner_history_newest_first() {
+        let repository = repository().await;
+        let now = Utc::now();
+        let mut older = job("account:one");
+        older.created_at = now - Duration::minutes(1);
+        older.original_filename = "older.fits".into();
+        let older = repository.enqueue(older).await.unwrap();
+        let other = repository.enqueue(job("public:192.0.2.1")).await.unwrap();
+        let mut newer = job("account:one");
+        newer.created_at = now;
+        newer.original_filename = "newer.fits".into();
+        let newer = repository.enqueue(newer).await.unwrap();
+
+        let history = repository.list_by_owner("account:one", 10).await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, newer.id);
+        assert_eq!(history[1].id, older.id);
+        assert!(!history.iter().any(|job| job.id == other.id));
+        assert_eq!(
+            repository.list_by_owner("account:one", 1).await.unwrap()[0].id,
+            newer.id
+        );
+        assert!(
+            repository
+                .list_by_owner("account:one", 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

@@ -39,7 +39,9 @@ disappears on a process restart.
   scheduler. Conditional leasing makes duplicate delivery safe across workers.
 - `public`, legacy `stub-api-key`, and `accounts` authentication modes. Account
   mode provides verified-email recovery, multi-session cookies, passkeys,
-  revocable scoped API keys, and persisted Astrometry-compatible sessions.
+  revocable scoped API keys, persisted Astrometry-compatible sessions, and
+  recent solve history. Anonymous solves remain available in account mode and
+  use the normal queue.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
@@ -322,9 +324,11 @@ curl -sS -X POST http://127.0.0.1:8080/api/upload \
 
 This is deliberately a focused interoperability surface, not a clone of every
 Astrometry.net endpoint. URL uploads are not exposed, avoiding an SSRF-capable
-server fetch path. In `accounts` mode the login validates an account API key
-and returns a persisted, expiring Astrometry session; public/stub modes retain
-their compatibility behavior. Tags and generated FITS images are not exposed.
+server fetch path. In `accounts` mode a login with an account API key returns a
+persisted, expiring account session. Omitting the key returns a public session
+whose submissions use the normal queue and do not enter account history.
+Public/stub modes retain their compatibility behavior. Tags and generated FITS
+images are not exposed.
 The canonical native API already provides annotations and a downloadable WCS
 header.
 
@@ -368,6 +372,8 @@ are currently supported:
 | `SEIZA_RATE_LIMIT_BURST` | `3` | Per-client initial burst size |
 | `SEIZA_TRUSTED_PROXY_HOPS` | `0` | Reverse proxies that append to `X-Forwarded-For`; `0` rate-limits sign-in by peer address and ignores forwarded headers |
 | `SEIZA_AUTH_MODE` | `public` | `public`, `stub-api-key`, or verified-email `accounts` |
+| `SEIZA_PUBLIC_UI_SOLVES` | `true` | Allow anonymous submissions from the bundled browser UI; authenticated accounts are unaffected |
+| `SEIZA_PUBLIC_API_SOLVES` | `true` | Allow anonymous native and Astrometry-compatible API submissions; authenticated account keys/sessions are unaffected |
 | `SEIZA_IDENTITY_BACKEND` | job backend | Identity storage for accounts: `sqlx` or `dynamodb` |
 | `SEIZA_IDENTITY_SQL_DATABASE_URL` | job SQL URL | SQLx identity database URL |
 | `SEIZA_IDENTITY_DYNAMODB_TABLE` | unset | Required for DynamoDB identity storage; composite string keys `pk` and `sk`, with `ttl_epoch` TTL |
@@ -391,9 +397,24 @@ are currently supported:
 | `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged (`2`–`100`); also becomes the configured priority client's durable queue weight |
 | `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
 
+The bundled frontend marks its solve requests with `X-Seiza-Client: web`, while
+unmarked native requests and all Astrometry-compatible submissions use the API
+setting. These independent switches control supported product surfaces and UI
+presentation; they are not a security boundary because a custom public client
+can reproduce browser HTTP headers. Require an account or another verified
+credential when adversarial access control is required.
+
 `X-Forwarded-For`/`X-Real-IP` are used for anonymous queue fairness. Sign-in
 rate limiting only honors them when `SEIZA_TRUSTED_PROXY_HOPS` declares the
 trusted proxy chain; otherwise the connected peer address is used.
+
+Authentication email has stricter per-network, distinct-recipient,
+per-recipient, and process-wide rolling limits described in
+[`docs/accounts-authentication.md`](docs/accounts-authentication.md). These
+counters are currently in memory: a process restart clears them and API
+replicas do not coordinate them. Use a single API process until the counters
+are moved to durable identity-store TTL records, and retain provider
+bounce/complaint suppression plus an edge rate limit as independent controls.
 
 Catalog paths are resolved by `seiza::data_paths`. Each explicit per-catalog
 variable may name either a file or a directory and fails startup when it does
@@ -452,7 +473,8 @@ Run the API with `SEIZA_STORAGE_BACKEND=s3` and optionally
 - `SEIZA_JOB_BACKEND=dynamodb` and `SEIZA_DYNAMODB_TABLE=seiza-jobs` for a
   managed AWS job store. The supplied
   [DynamoDB template](infra/aws/seiza-jobs-dynamodb.yaml) creates the required
-  `pk` string partition key and `job-status-created-at` recovery GSI.
+  `pk` string partition key, `job-status-created-at` recovery GSI, and
+  `job-owner-created-at` account-history GSI.
 
 Both backends use one UUIDv4 for each job: it is the durable primary key, public
 result locator, worker handle, object-path identity, and SQS message body.

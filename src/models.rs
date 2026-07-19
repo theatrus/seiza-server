@@ -586,6 +586,19 @@ impl JobRecord {
     }
 }
 
+/// Bounded account-history projection. This intentionally excludes the input,
+/// solve options, and full solution payload so listing an account's jobs stays
+/// inexpensive even when polynomial WCS results are large.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobHistoryRecord {
+    pub id: JobId,
+    pub status: JobStatus,
+    pub original_filename: String,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResponse {
     /// Opaque UUIDv4 capability used by public result and artifact URLs.

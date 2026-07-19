@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Durable Seiza Server job store with a bounded queue-recovery index.
+Description: Durable Seiza Server job store with bounded recovery and account-history indexes.
 
 Resources:
   SeizaJobs:
@@ -10,6 +10,8 @@ Resources:
         - AttributeName: pk
           AttributeType: S
         - AttributeName: status
+          AttributeType: S
+        - AttributeName: owner
           AttributeType: S
         - AttributeName: created_at
           AttributeType: S
@@ -27,6 +29,20 @@ Resources:
             ProjectionType: INCLUDE
             NonKeyAttributes:
               - notification_delivered_at
+        - IndexName: job-owner-created-at
+          KeySchema:
+            - AttributeName: owner
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - id
+              - status
+              - original_filename
+              - started_at
+              - completed_at
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
 

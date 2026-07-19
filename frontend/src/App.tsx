@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { AccountDetails, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
+import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -155,6 +155,7 @@ function Link({ to, children, className }: { to: string; children: ReactNode; cl
 export default function App() {
   const [path, setPath] = useState(window.location.pathname)
   const [authMode, setAuthMode] = useState<Health['auth_mode'] | null>(null)
+  const [publicSolveAccess, setPublicSolveAccess] = useState<Health['public_solve_access'] | null>(null)
   const [account, setAccount] = useState<AccountDetails | null>(null)
   const [accountChecked, setAccountChecked] = useState(false)
   useEffect(() => {
@@ -173,31 +174,40 @@ export default function App() {
     getHealth().then(async (health) => {
       if (!active) return
       setAuthMode(health.auth_mode)
+      setPublicSolveAccess(health.public_solve_access)
       if (health.auth_mode === 'accounts') {
         const current = await getAccount()
         if (active) setAccount(current)
       }
       if (active) setAccountChecked(true)
-    }).catch(() => { if (active) setAccountChecked(true) })
+    }).catch(() => {
+      if (active) {
+        setPublicSolveAccess({ ui: true, api: true })
+        setAccountChecked(true)
+      }
+    })
     return () => { active = false }
   }, [])
   const solutionMatch = path.match(/^\/solutions\/((?:\d+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
+  const publicUiSolves = authMode !== 'stub-api-key' && publicSolveAccess?.ui === true
+  const publicApiSolves = authMode !== 'stub-api-key' && publicSolveAccess?.api === true
+  const solveUiEnabled = account !== null || publicUiSolves
 
   return <div className="site-shell">
-    <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} />
-    {path === '/' && <HomePage />}
-    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} />}
+    <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} solveEnabled={solveUiEnabled} />
+    {path === '/' && <HomePage solveEnabled={solveUiEnabled} />}
+    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accessChecked={publicSolveAccess !== null} publicUiSolves={publicUiSolves} publicApiSolves={publicApiSolves} />}
     {path === '/docs/api' && <ApiDocsPage />}
     {path === '/data-sources' && <DataSourcesPage />}
-    {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} onAuthenticated={refreshAccount} />}
+    {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} solveEnabled={solveUiEnabled} publicApiSolves={publicApiSolves} onAuthenticated={refreshAccount} />}
     {path === '/account' && <AccountPage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} onAccountChanged={refreshAccount} />}
     {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
-    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage />}
+    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage solveEnabled={solveUiEnabled} />}
     <SiteFooter />
   </div>
 }
 
-function SiteHeader({ accountsEnabled, account }: { accountsEnabled: boolean; account: AccountDetails | null }) {
+function SiteHeader({ accountsEnabled, account, solveEnabled }: { accountsEnabled: boolean; account: AccountDetails | null; solveEnabled: boolean }) {
   return <nav className="site-nav" aria-label="Primary navigation">
     <Link to="/" className="brand-link">
       <img src="/seiza-mark.png" alt="" width="38" height="38" />
@@ -207,12 +217,12 @@ function SiteHeader({ accountsEnabled, account }: { accountsEnabled: boolean; ac
       <Link to="/">About</Link>
       <Link to="/docs/api">API</Link>
       {accountsEnabled && <Link to={account ? '/account' : '/signin'}>{account ? 'Account' : 'Sign in'}</Link>}
-      <Link to="/solve" className="button small">Solve an image</Link>
+      {solveEnabled && <Link to="/solve" className="button small">Solve an image</Link>}
     </div>
   </nav>
 }
 
-function HomePage() {
+function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
   return <main>
     <section className="hero">
       <div>
@@ -220,7 +230,7 @@ function HomePage() {
         <h1>Find exactly where your image meets the sky.</h1>
         <p className="intro">Seiza is a fast plate-solving library written in Rust. It recognizes star patterns, determines an image’s celestial coordinates, and returns a complete, standards-friendly WCS solution.</p>
         <div className="actions">
-          <Link to="/solve" className="button">Solve an image</Link>
+          {solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
           <Link to="/data-sources">See our data sources <span aria-hidden="true">→</span></Link>
         </div>
@@ -279,24 +289,37 @@ function HomePage() {
 function SolvePage({
   accountsEnabled,
   account,
-  accountChecked,
+  accessChecked,
+  publicUiSolves,
+  publicApiSolves,
 }: {
   accountsEnabled: boolean
   account: AccountDetails | null
-  accountChecked: boolean
+  accessChecked: boolean
+  publicUiSolves: boolean
+  publicApiSolves: boolean
 }) {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
 
-  if (accountsEnabled && !account) {
-    if (!accountChecked) return <main className="narrow-page solve-page"><p className="intro">Loading account…</p></main>
+  if (!account && !accessChecked) {
+    return <main className="narrow-page solve-page"><p className="intro">Loading solve access…</p></main>
+  }
+  if (!account && !publicUiSolves) {
     return <main className="narrow-page solve-page">
       <section className="empty-state">
         <p className="eyebrow">PLATE SOLVER</p>
-        <h1>Sign in to solve.</h1>
-        <p className="intro">This Seiza deployment requires an account before uploading images. Sign in with your passkey or a verified email, then return here to start a solve.</p>
-        <Link to="/signin" className="button">Sign in</Link>
+        <h1>Public browser solves are disabled.</h1>
+        <p className="intro">{accountsEnabled
+          ? publicApiSolves
+            ? 'Sign in to submit from the browser and keep the solve in your account history. This deployment still accepts public API submissions.'
+            : 'Sign in to submit from the browser and keep the solve in your account history.'
+          : publicApiSolves
+            ? 'This deployment accepts public API submissions, but its browser upload form is disabled.'
+            : 'This deployment is not accepting public solve submissions.'}</p>
+        {accountsEnabled && <Link to="/signin" className="button">Sign in</Link>}
+        {publicApiSolves && <Link to="/docs/api" className="button secondary">Use the API</Link>}
       </section>
     </main>
   }
@@ -333,7 +356,9 @@ function SolvePage({
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Solve this image.</h1>
       <p className="intro">Choose an image to start. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
-      <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.</p>
+      <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.{accountsEnabled && (account
+        ? <><br />This solve will be added to your account history.</>
+        : <><br />Public solves remain available and use the normal queue. <Link to="/signin">Sign in</Link> first if you want this solve recorded in your account history.</>)}</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -836,10 +861,14 @@ function DataPair({ label, value }: { label: string; value: string }) { return <
 function SignInPage({
   accountsEnabled,
   account,
+  solveEnabled,
+  publicApiSolves,
   onAuthenticated,
 }: {
   accountsEnabled: boolean
   account: AccountDetails | null
+  solveEnabled: boolean
+  publicApiSolves: boolean
   onAuthenticated: () => Promise<AccountDetails | null>
 }) {
   const linkToken = new URLSearchParams(window.location.search).get('token')
@@ -848,6 +877,19 @@ function SignInPage({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [resendAt, setResendAt] = useState<number | null>(null)
+  const [resendClock, setResendClock] = useState(() => Date.now())
+  const resendSeconds = resendAt === null ? 0 : Math.max(0, Math.ceil((resendAt - resendClock) / 1_000))
+
+  useEffect(() => {
+    if (resendAt === null || resendAt <= Date.now()) return
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      setResendClock(now)
+      if (now >= resendAt) window.clearInterval(timer)
+    }, 1_000)
+    return () => window.clearInterval(timer)
+  }, [resendAt])
 
   async function finish(request: Parameters<typeof completeEmailSignIn>[0]) {
     setSubmitting(true)
@@ -870,6 +912,9 @@ function SignInPage({
     try {
       const started = await startEmailSignIn(email)
       setChallengeId(started.challenge_id)
+      const parsedResendAt = Date.parse(started.resend_at)
+      setResendAt(Number.isNaN(parsedResendAt) ? Date.now() + 60_000 : parsedResendAt)
+      setResendClock(Date.now())
       setNotice('Check your email for a sign-in link or enter the eight-digit code below.')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Email sign-in is unavailable')
@@ -900,7 +945,7 @@ function SignInPage({
   }
 
   if (!accountsEnabled) {
-    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">This Seiza deployment currently accepts solves without an account.</p><Link to="/solve" className="button">Solve an image</Link></section></main>
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">{solveEnabled ? 'This Seiza deployment currently accepts browser solves without an account.' : publicApiSolves ? 'This Seiza deployment accepts public API solves, but not browser uploads.' : 'This Seiza deployment is not accepting public solve submissions.'}</p>{solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}{publicApiSolves && !solveEnabled && <Link to="/docs/api" className="button">Use the API</Link>}</section></main>
   }
   if (account) {
     return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">SIGNED IN</p><h1>You are already aboard.</h1><p className="intro">Signed in as {account.account.email}.</p><Link to="/account" className="button">Open your account</Link></section></main>
@@ -922,7 +967,7 @@ function SignInPage({
         <p className="eyebrow">EMAIL VERIFICATION</p><h2>Send a link and code</h2>
         <form onSubmit={requestEmail}>
           <label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-          <button className="button secondary" disabled={submitting}>{submitting ? 'Sending…' : challengeId ? 'Send another email' : 'Email me a sign-in link'}</button>
+          <button className="button secondary" disabled={submitting || resendSeconds > 0}>{submitting ? 'Sending…' : resendSeconds > 0 ? `Send another email (${resendSeconds}s)` : challengeId ? 'Send another email' : 'Email me a sign-in link'}</button>
         </form>
         {notice && <p className="success-note" role="status">{notice}</p>}
         {challengeId && <form className="code-form" onSubmit={submitCode}>
@@ -954,6 +999,26 @@ function AccountPage({
   const [apiKeyRead, setApiKeyRead] = useState(true)
   const [apiKeySubmit, setApiKeySubmit] = useState(true)
   const [createdApiToken, setCreatedApiToken] = useState<string | null>(null)
+  const [solveHistory, setSolveHistory] = useState<{
+    accountId: string
+    solves: AccountSolve[] | null
+    error: string | null
+  } | null>(null)
+  const accountId = account?.account.id
+  const currentHistory = solveHistory?.accountId === accountId ? solveHistory : null
+  const solves = currentHistory?.solves ?? null
+  const historyError = currentHistory?.error ?? null
+
+  useEffect(() => {
+    if (!accountsEnabled || !accountId) return
+    let active = true
+    getAccountSolves().then((history) => {
+      if (active) setSolveHistory({ accountId, solves: history, error: null })
+    }).catch((reason) => {
+      if (active) setSolveHistory({ accountId, solves: null, error: reason instanceof Error ? reason.message : 'Solve history failed to load' })
+    })
+    return () => { active = false }
+  }, [accountsEnabled, accountId])
 
   async function signOut(all: boolean) {
     setSubmitting(true)
@@ -1060,6 +1125,14 @@ function AccountPage({
   return <main className="account-page">
     <header className="page-heading"><p className="eyebrow">ACCOUNT</p><h1>{account.account.email}</h1><p className="intro">Verified {new Date(account.account.email_verified_at).toLocaleString()}.</p></header>
     {reauthRequired && <section className="account-callout" role="alert"><div><p className="eyebrow">RECENT SIGN-IN REQUIRED</p><h2>Sign in again to change security settings</h2><p>Adding or removing passkeys and API keys requires a session verified within the last ten minutes. Sign in again, then retry the change.</p></div><Link to="/signin" className="button">Sign in again</Link></section>}
+    <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">SOLVES</p><h2>Your recent fields</h2></div><Link to="/solve" className="button secondary small">Solve another image</Link></div>
+      <p className="section-intro">Signed-in browser, API-key, and Astrometry submissions appear here. Solve metadata remains in your account history; uploaded images and previews still follow the normal retention window.</p>
+      {solves === null && !historyError && <p className="section-intro">Loading solve history…</p>}
+      {historyError && <p className="error" role="alert">{historyError}</p>}
+      {solves?.length === 0 && <p className="section-intro">No signed-in solves yet. Public solves submitted before signing in are not attached retroactively.</p>}
+      {solves && solves.length > 0 && <div className="session-list">{solves.map((solve) => <div key={solve.id}><div><strong>{solve.original_filename}</strong><span>{solve.status.charAt(0).toUpperCase() + solve.status.slice(1)} · submitted {new Date(solve.created_at).toLocaleString()}{solve.solve_time_ms !== null ? ` · ${(solve.solve_time_ms / 1000).toFixed(1)} s` : ''}</span></div><Link to={`/solutions/${solve.id}`} className="text-button">{pending.has(solve.status) ? 'View progress' : 'View result'}</Link></div>)}</div>}
+    </section>
     {account.passkey_setup_required && <section className="account-callout"><div><p className="eyebrow">RECOMMENDED NEXT STEP</p><h2>Add a passkey</h2><p>Your email is verified. Add a phishing-resistant passkey for faster sign-in; email remains available for recovery.</p></div><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button" disabled={submitting}>{submitting ? 'Waiting for device…' : 'Add a passkey'}</button></form></section>}
     {!account.passkey_setup_required && <section className="panel account-section">
       <div className="section-heading"><div><p className="eyebrow">PASSKEYS</p><h2>Phishing-resistant sign-in</h2></div></div>
@@ -1081,8 +1154,8 @@ function AccountPage({
   </main>
 }
 
-function NotFoundPage() {
-  return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist, but the solver is ready for another field.</p><Link to="/solve" className="button">Solve an image</Link></section></main>
+function NotFoundPage({ solveEnabled }: { solveEnabled: boolean }) {
+  return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist{solveEnabled ? ', but the solver is ready for another field.' : '.'}</p>{solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}</section></main>
 }
 
 function SiteFooter() {
