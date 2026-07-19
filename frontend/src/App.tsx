@@ -244,16 +244,16 @@ function HomePage() {
       </ol>
     </section>
 
-    <section className="about-card integration-card" aria-labelledby="nina-integration">
+    <section className="about-card integration-card" aria-labelledby="application-integrations">
       <div>
         <p className="eyebrow">APPLICATION INTEGRATIONS</p>
-        <h2 id="nina-integration">Bring Seiza into N.I.N.A. without a plugin.</h2>
+        <h2 id="application-integrations">Use Seiza in N.I.N.A. or Siril—no plugin required.</h2>
       </div>
       <div className="about-copy">
-        <p>Download the pre-built Windows <code>seiza.exe</code>, add the hosted catalog files, and select ASTAP for N.I.N.A.’s normal and blind solvers. No Rust toolchain, installer, or plugin is required.</p>
+        <p>The Windows installer includes guided catalog setup. Point N.I.N.A.’s ASTAP integration at <code>seiza.exe</code>, or install Seiza’s <code>solve-field</code>-compatible layout for Siril.</p>
         <div className="text-links">
-          <a href="/docs/api#integrations">Set up N.I.N.A. <span aria-hidden="true">→</span></a>
-          <a href="https://github.com/theatrus/seiza/releases">Download Windows binary <span aria-hidden="true">↗</span></a>
+          <a href="/docs/api#integrations">Set up integrations <span aria-hidden="true">→</span></a>
+          <a href="https://github.com/theatrus/seiza/releases">Download Seiza <span aria-hidden="true">↗</span></a>
         </div>
       </div>
     </section>

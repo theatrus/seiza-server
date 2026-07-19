@@ -35,7 +35,7 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
     contentType: 'application/json',
     body: JSON.stringify({
       status: 'ready',
-      versions: { seiza_server: '0.2.0', seiza: '0.8.0' },
+      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',

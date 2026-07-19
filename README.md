@@ -26,7 +26,7 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.8.0, including catalog-seeded matching for source lists
+  solving with Seiza 0.8.1, including catalog-seeded matching for source lists
   whose brightness ranking is unreliable. Optional SIP orders 2–5 fit forward
   and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
@@ -53,9 +53,9 @@ disappears on a process restart.
 
 ## Quick start
 
-Install Seiza CLI 0.8.0 or newer, then get the prebuilt catalogs and maintained
+Install Seiza CLI 0.8.1 or newer, then get the prebuilt catalogs and maintained
 blind index. The server automatically prefers the deep Gaia G<=17 catalog and
-its matching G<=16 index when both are present. Seiza 0.8.0's prebuilt object
+its matching G<=16 index when both are present. Seiza 0.8.1's prebuilt object
 catalog is memory-mapped, includes the expanded LBN and Cederblad datasets, and
 provides embedded spatial and designation indices. The prebuilt bundle also
 includes `stars-lite-tycho2.ids.bin`; the server turns its proper,
@@ -84,12 +84,13 @@ Open Vite's local URL (normally `http://localhost:5173`). To have Axum serve
 the built UI instead, run `npm run build` and then `cargo run`; the default
 `SEIZA_FRONTEND_DIR` is `frontend/dist`.
 
-`SEIZA_STAR_DATA` is intentionally required for usable solves and is not in
-this repository. `SEIZA_BLIND_INDEX` is strongly recommended for blind solving;
-without it each worker builds and caches a shallower legacy index on its first
-blind job. The health endpoint stays available without a star catalog and
-reports `"degraded"`, while queued solves fail with a clear configuration
-error.
+A usable star catalog is intentionally required for solves and is not in this
+repository. Set `SEIZA_STAR_DATA` explicitly, or let the server discover a
+catalog installed through `SEIZA_CATALOG_DIR` or `seiza setup`.
+`SEIZA_BLIND_INDEX` is strongly recommended for blind solving; without it each
+worker builds and caches a shallower legacy index on its first blind job. The
+health endpoint stays available without a star catalog and reports
+`"degraded"`, while queued solves fail with a clear configuration error.
 
 ## Worker processes and durable queue
 
@@ -98,9 +99,9 @@ default queue is an SQLx SQLite database at `SEIZA_QUEUE_DATABASE` (default
 `data/jobs.sqlite3`) and preserves queued jobs after a restart. Set a
 `SEIZA_SQL_DATABASE_URL` for a SQLite URL or PostgreSQL connection instead.
 Embedded workers check the durable queue once at startup to recover queued work.
-New and retried jobs then wake them in memory. A fallback check after one lease
-period (15 minutes by default) recovers jobs written by another process and
-expired leases without continuously polling an idle job store.
+Newly submitted and re-solved jobs then wake them in memory. A fallback check
+after one lease period (15 minutes by default) recovers jobs written by another
+process and expired leases without continuously polling an idle job store.
 To separate API and CPU work, set a shared worker token and disable embedded
 workers on the API process:
 
@@ -273,7 +274,7 @@ curl "http://127.0.0.1:8080/api/v1/catalog/stars/search?q=RR%20L&prefix=true&lim
 
 `sort` accepts `prominence`, `size`, `magnitude`, `distance`, or `name`.
 Responses include stable IDs, aliases, hierarchy, and source provenance when
-the v3 catalog supplies them. Legacy v1 object catalogs remain readable, but
+the v4 catalog supplies them. Legacy v1 object catalogs remain readable, but
 their identity/provenance fields are empty and their name lookups require an
 in-memory scan.
 

@@ -5,7 +5,7 @@ not seiza-server page components. Their canonical home is the dedicated
 [`theatrus/seiza-overlay`](https://github.com/theatrus/seiza-overlay)
 repository, which publishes `@seiza/astro-overlay` under Apache-2.0.
 Seiza-server consumes the exact published
-`@seiza/astro-overlay@0.1.1` package from npm rather than carrying a vendored
+`@seiza/astro-overlay@0.4.0` package from npm rather than carrying a vendored
 copy.
 
 ## Package boundary
@@ -19,6 +19,9 @@ The package owns:
   seiza-server;
 - deep-sky, stellar, transient, comet, asteroid, field-star, and center marker
   SVG geometry;
+- apparent-speed-scaled comet tails and asteroid motion vectors;
+- an optional restrained deep-sky catalog palette plus suggested NGC, IC, and
+  other-catalog groupings;
 - label collision handling and frame-encompassing captions; and
 - live-SVG serialization plus browser canvas PNG compositing.
 
@@ -53,15 +56,23 @@ widths, label and grid font weights, halo width, colors, opacity, dash patterns,
 or font families. The default density is `0.6`; callers that need every ranked
 object can pass `density={1}`.
 
+`movingBodyVectors` configures the duration and display clamps used to turn
+solar-system `motion_arcsec_per_hour` metadata into image-space comet tails and
+asteroid arrows. The `suggestedDeepSky*` helpers provide an opt-in palette,
+catalog classification, and semantic catalog layers for applications that want
+matching per-catalog controls. Neither feature changes the generic theme unless
+the consumer enables it.
+
 ## Application adapters
 
-Seiza-server already speaks the package's canonical `image_width`,
-`image_height`, `wcs`, and `objects` response. Its local adapter only translates
-camel-case UI toggle state to semantic snake-case layer IDs.
+Seiza-server speaks the package's canonical `image_width`, `image_height`,
+`wcs`, and `objects` response. Its adapter supplies application-owned controls,
+the suggested deep-sky catalog palette and grouping, three-hour moving-body
+vectors, and the Seiza PNG attribution plaque.
 
-PSF Guard's in-flight `AstrometrySolutionResponse` is a compatible superset,
-including stable IDs, aliases, hierarchy, and provenance. It can consume the
-component directly when its WCS phase lands.
+PSF Guard's `AstrometrySolutionResponse` is a compatible superset, including
+stable IDs, aliases, hierarchy, and provenance. Its frontend consumes the shared
+component through a thin palette adapter while retaining its own controls.
 
 Tenrankai currently returns `width`, `height`, `scale_arcsec_px`, and a reduced
 object shape. Its fetch hook should normalize those three field names once and
@@ -71,9 +82,10 @@ application `layerForObject` callback; its controls remain unchanged.
 ## Release and adoption
 
 The standalone repository owns CI, Dependabot, and a guarded manual release
-workflow. Version 0.1.1 is published with npm provenance and is consumed by
-seiza-server from the registry. Tenrankai and PSF Guard can adopt releases
-independently without coupling their application release cycles.
+workflow. Version 0.4.0 is published with npm provenance and is consumed by
+seiza-server from the registry. PSF Guard consumes the package on its own
+release cadence; Tenrankai can adopt it independently without coupling
+application release cycles.
 
 Keeping a single package with subpath exports is preferable to three packages
 at this size: it preserves one versioned geometry contract while React remains
