@@ -23,14 +23,14 @@ impl SignInEmail {
 
     fn text_body(&self) -> String {
         format!(
-            "Sign in to Seiza\n\nOpen this link:\n{}\n\nOr enter this code:\n{}\n\nThis link and code expire in {} minutes and can be used only once. If you did not request this message, you can ignore it.\n",
+            "Sign in to Seiza\n\nOpen this link:\n{}\n\nOr enter this code:\n{}\n\nThis link and code expire in {} minutes and can be used only once. Never share this code; Seiza will never ask you for it. If you did not request this message, you can ignore it.\n",
             self.link, self.code, self.expires_minutes
         )
     }
 
     fn html_body(&self) -> String {
         format!(
-            "<!doctype html><html><body><h1>Sign in to Seiza</h1><p><a href=\"{}\">Continue signing in</a></p><p>Or enter this code:</p><p style=\"font-size:1.5rem;letter-spacing:.2em;font-family:monospace\"><strong>{}</strong></p><p>This link and code expire in {} minutes and can be used only once.</p><p>If you did not request this message, you can ignore it.</p></body></html>",
+            "<!doctype html><html><body><h1>Sign in to Seiza</h1><p><a href=\"{}\">Continue signing in</a></p><p>Or enter this code:</p><p style=\"font-size:1.5rem;letter-spacing:.2em;font-family:monospace\"><strong>{}</strong></p><p>This link and code expire in {} minutes and can be used only once.</p><p><strong>Never share this code; Seiza will never ask you for it.</strong></p><p>If you did not request this message, you can ignore it.</p></body></html>",
             escape_html(&self.link),
             escape_html(&self.code),
             self.expires_minutes

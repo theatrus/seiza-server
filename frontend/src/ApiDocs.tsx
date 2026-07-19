@@ -212,11 +212,16 @@ export function ApiDocsPage() {
             <Endpoint method="POST" path="/api/v1/auth/email/complete">Verify the link or code and create a browser session.</Endpoint>
             <Endpoint method="POST" path="/api/v1/auth/passkeys/authentication/start">Start discoverable passkey sign-in.</Endpoint>
             <Endpoint method="POST" path="/api/v1/auth/passkeys/authentication/complete">Verify a passkey assertion and create a browser session.</Endpoint>
-            <Endpoint method="GET" path="/api/v1/account">Read the signed-in account, sessions, passkeys, and API-key metadata.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/account">Read the signed-in account, live sessions, passkeys, and API-key metadata.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/account/passkeys">List the signed-in account’s registered passkeys.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/account/passkeys/registration/start">Begin registering a new passkey for the signed-in account.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/account/passkeys/registration/complete">Verify the attestation and store the labeled passkey.</Endpoint>
+            <Endpoint method="DELETE" path="/api/v1/account/passkeys/{passkey_id}">Remove a registered passkey.</Endpoint>
             <Endpoint method="POST" path="/api/v1/account/api-keys">Create a named key with explicit <code>solve:read</code> and/or <code>solve:submit</code> scopes.</Endpoint>
-            <Endpoint method="DELETE" path="/api/v1/account/api-keys/{key_id}">Immediately revoke an account API key.</Endpoint>
+            <Endpoint method="DELETE" path="/api/v1/account/api-keys/{key_id}">Immediately revoke an account API key and any Astrometry sessions created from it.</Endpoint>
             <Endpoint method="DELETE" path="/api/v1/account/sessions/{session_id}">Revoke a browser or Astrometry session.</Endpoint>
           </div>
+          <div className="api-note"><strong>Recent sign-in required</strong><span>Adding or removing passkeys and API keys requires a browser session verified within the last ten minutes. Older sessions receive <code>403</code> and must sign in again first.</span></div>
           <div className="api-note"><strong>Account-level fairness</strong><span>All credentials belonging to one account submit as the same durable owner. API-key names and scopes cannot select queue priority.</span></div>
           <div className="api-note"><strong>Result capabilities</strong><span>In this release, an unguessable result URL remains sufficient to read that result. Account-scoped job history and private result ACLs are intentionally deferred.</span></div>
         </DocSection>

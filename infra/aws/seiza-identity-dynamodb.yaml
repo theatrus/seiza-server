@@ -4,6 +4,9 @@ Description: Seiza Server identity store for accounts, credentials, challenges, 
 Resources:
   SeizaIdentity:
     Type: AWS::DynamoDB::Table
+    # Identities are not re-creatable and PITR does not survive table deletion.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:

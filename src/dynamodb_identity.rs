@@ -1,5 +1,10 @@
 use crate::{
     config::Config,
+    dynamodb_common::{
+        Item, encode_time, insert_optional_string, insert_optional_time, insert_optional_uuid,
+        number, optional_string, optional_time, optional_uuid, required_string, required_time,
+        required_uuid, string,
+    },
     identity::{
         Account, AccountId, AccountStatus, ApiKey, ApiKeyId, AuthChallenge, AuthSession,
         ChallengeId, ChallengePurpose, CompletedEmailSignIn, CompletedPasskeySignIn,
@@ -10,15 +15,13 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{
     Client,
-    types::{AttributeValue, ConditionCheck, Put, ReturnValue, TransactWriteItem, Update},
+    types::{AttributeValue, ConditionCheck, Delete, Put, ReturnValue, TransactWriteItem, Update},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use uuid::Uuid;
-
-type Item = HashMap<String, AttributeValue>;
 
 pub struct DynamoDbIdentityRepository {
     client: Client,
@@ -236,16 +239,16 @@ impl IdentityRepository for DynamoDbIdentityRepository {
                         .put(tracker_put.build()?)
                         .build(),
                 );
+            // Delete rather than mark-consumed: an unconditioned Update would
+            // upsert a permanent stub if TTL already removed the item.
             for challenge_id in evicted {
-                let update = Update::builder()
+                let delete = Delete::builder()
                     .table_name(&self.table)
                     .key("pk", string(challenge_key(challenge_id)))
                     .key("sk", string("CHALLENGE"))
-                    .update_expression("SET consumed_at = :now")
-                    .expression_attribute_values(":now", string(encode_time(challenge.created_at)))
                     .build()?;
                 transaction =
-                    transaction.transact_items(TransactWriteItem::builder().update(update).build());
+                    transaction.transact_items(TransactWriteItem::builder().delete(delete).build());
             }
             match transaction.send().await {
                 Ok(_) => return Ok(()),
@@ -363,16 +366,16 @@ impl IdentityRepository for DynamoDbIdentityRepository {
                 .client
                 .transact_write_items()
                 .transact_items(TransactWriteItem::builder().update(consume).build());
+            // Delete rather than mark-consumed: an unconditioned Update would
+            // upsert a permanent stub if TTL already removed the item.
             for other_id in live_ids.into_iter().filter(|id| *id != challenge_id) {
-                let invalidate = Update::builder()
+                let invalidate = Delete::builder()
                     .table_name(&self.table)
                     .key("pk", string(challenge_key(other_id)))
                     .key("sk", string("CHALLENGE"))
-                    .update_expression("SET consumed_at = :now")
-                    .expression_attribute_values(":now", string(encode_time(now)))
                     .build()?;
                 transaction = transaction
-                    .transact_items(TransactWriteItem::builder().update(invalidate).build());
+                    .transact_items(TransactWriteItem::builder().delete(invalidate).build());
             }
 
             let mut tracker_put =
@@ -602,6 +605,19 @@ impl IdentityRepository for DynamoDbIdentityRepository {
         Ok(revoked)
     }
 
+    async fn delete_session(&self, account_id: AccountId, session_id: SessionId) -> Result<()> {
+        self.client
+            .delete_item()
+            .table_name(&self.table)
+            .key("pk", string(account_key(account_id)))
+            .key("sk", string(session_key(session_id)))
+            .condition_expression("attribute_not_exists(pk) OR entity = :entity")
+            .expression_attribute_values(":entity", string("auth_session"))
+            .send()
+            .await?;
+        Ok(())
+    }
+
     async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()> {
         let credential_key = credential_key(&passkey.credential_id);
         let passkey_put = Put::builder()
@@ -641,56 +657,61 @@ impl IdentityRepository for DynamoDbIdentityRepository {
         passkey: PasskeyCredential,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        let consume = Update::builder()
-            .table_name(&self.table)
-            .key("pk", string(challenge_key(challenge_id)))
-            .key("sk", string("CHALLENGE"))
-            .condition_expression("purpose = :purpose AND account_id = :account_id AND attribute_not_exists(consumed_at) AND expires_at > :now")
-            .update_expression("SET consumed_at = :now")
-            .expression_attribute_values(":purpose", string(ChallengePurpose::PasskeyRegistration.as_str()))
-            .expression_attribute_values(":account_id", string(passkey.account_id))
-            .expression_attribute_values(":now", string(encode_time(now)))
-            .build()?;
-        let passkey_put = Put::builder()
-            .table_name(&self.table)
-            .set_item(Some(passkey_item(&passkey)))
-            .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
-            .build()?;
-        let credential_put = Put::builder()
-            .table_name(&self.table)
-            .set_item(Some(HashMap::from([
-                ("pk".into(), string(credential_key(&passkey.credential_id))),
-                ("sk".into(), string("ACCOUNT")),
-                ("entity".into(), string("passkey_lookup")),
-                ("account_id".into(), string(passkey.account_id)),
-                ("passkey_id".into(), string(passkey.id)),
-            ])))
-            .condition_expression("attribute_not_exists(pk)")
-            .build()?;
-        let result = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(consume).build())
-            .transact_items(
-                TransactWriteItem::builder()
-                    .condition_check(self.active_account_check(passkey.account_id)?)
-                    .build(),
-            )
-            .transact_items(TransactWriteItem::builder().put(passkey_put).build())
-            .transact_items(TransactWriteItem::builder().put(credential_put).build())
-            .send()
-            .await;
-        match result {
-            Ok(_) => Ok(true),
-            Err(error)
-                if error
+        for _ in 0..5 {
+            let consume = Update::builder()
+                .table_name(&self.table)
+                .key("pk", string(challenge_key(challenge_id)))
+                .key("sk", string("CHALLENGE"))
+                .condition_expression("purpose = :purpose AND account_id = :account_id AND attribute_not_exists(consumed_at) AND expires_at > :now")
+                .update_expression("SET consumed_at = :now")
+                .expression_attribute_values(":purpose", string(ChallengePurpose::PasskeyRegistration.as_str()))
+                .expression_attribute_values(":account_id", string(passkey.account_id))
+                .expression_attribute_values(":now", string(encode_time(now)))
+                .build()?;
+            let passkey_put = Put::builder()
+                .table_name(&self.table)
+                .set_item(Some(passkey_item(&passkey)))
+                .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
+                .build()?;
+            let credential_put = Put::builder()
+                .table_name(&self.table)
+                .set_item(Some(HashMap::from([
+                    ("pk".into(), string(credential_key(&passkey.credential_id))),
+                    ("sk".into(), string("ACCOUNT")),
+                    ("entity".into(), string("passkey_lookup")),
+                    ("account_id".into(), string(passkey.account_id)),
+                    ("passkey_id".into(), string(passkey.id)),
+                ])))
+                .condition_expression("attribute_not_exists(pk)")
+                .build()?;
+            let result = self
+                .client
+                .transact_write_items()
+                .transact_items(TransactWriteItem::builder().update(consume).build())
+                .transact_items(
+                    TransactWriteItem::builder()
+                        .condition_check(self.active_account_check(passkey.account_id)?)
+                        .build(),
+                )
+                .transact_items(TransactWriteItem::builder().put(passkey_put).build())
+                .transact_items(TransactWriteItem::builder().put(credential_put).build())
+                .send()
+                .await;
+            match result {
+                Ok(_) => return Ok(true),
+                Err(error) => match error
                     .as_service_error()
-                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
-            {
-                Ok(false)
+                    .and_then(canceled_only_by_condition_checks)
+                {
+                    // A failed condition check is a definitive refusal.
+                    Some(true) => return Ok(false),
+                    // Conflicting concurrent transaction or throttling: retry.
+                    Some(false) => {}
+                    None => return Err(error.into()),
+                },
             }
-            Err(error) => Err(error.into()),
         }
+        anyhow::bail!("passkey registration conflicted with concurrent account activity; retry")
     }
 
     async fn complete_passkey_sign_in(
@@ -703,7 +724,8 @@ impl IdentityRepository for DynamoDbIdentityRepository {
         if passkey.account_id != session.account_id {
             anyhow::bail!("passkey and session account IDs differ");
         }
-        let consume = Update::builder()
+        for _ in 0..5 {
+            let consume = Update::builder()
             .table_name(&self.table)
             .key("pk", string(challenge_key(challenge_id)))
             .key("sk", string("CHALLENGE"))
@@ -717,64 +739,70 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             )
             .expression_attribute_values(":now", string(encode_time(now)))
             .build()?;
-        let update_passkey = Update::builder()
-            .table_name(&self.table)
-            .key("pk", string(account_key(passkey.account_id)))
-            .key("sk", string(passkey_key(passkey.id)))
-            .condition_expression(
-                "attribute_not_exists(revoked_at) AND credential_id = :credential_id",
-            )
-            .update_expression("SET credential_json = :credential_json, last_used_at = :now")
-            .expression_attribute_values(":credential_id", string(&passkey.credential_id))
-            .expression_attribute_values(":credential_json", string(&passkey.credential_json))
-            .expression_attribute_values(":now", string(encode_time(now)))
-            .build()?;
-        let session_put = Put::builder()
-            .table_name(&self.table)
-            .set_item(Some(session_item(&session)))
-            .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
-            .build()?;
-        let update_account = Update::builder()
-            .table_name(&self.table)
-            .key("pk", string(account_key(passkey.account_id)))
-            .key("sk", string("PROFILE"))
-            .condition_expression("#status = :active")
-            .update_expression("SET updated_at = :now, last_authenticated_at = :now")
-            .expression_attribute_names("#status", "status")
-            .expression_attribute_values(":active", string(AccountStatus::Active.as_str()))
-            .expression_attribute_values(":now", string(encode_time(now)))
-            .build()?;
-        let result = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(consume).build())
-            .transact_items(TransactWriteItem::builder().update(update_passkey).build())
-            .transact_items(TransactWriteItem::builder().put(session_put).build())
-            .transact_items(TransactWriteItem::builder().update(update_account).build())
-            .send()
-            .await;
-        match result {
-            Ok(_) => {
-                let Some(account) = self.account_by_id(passkey.account_id).await? else {
-                    anyhow::bail!("passkey account disappeared after successful authentication");
-                };
-                let mut passkey = passkey;
-                passkey.last_used_at = Some(now);
-                Ok(Some(CompletedPasskeySignIn {
-                    account,
-                    session,
-                    passkey,
-                }))
-            }
-            Err(error)
-                if error
+            let update_passkey = Update::builder()
+                .table_name(&self.table)
+                .key("pk", string(account_key(passkey.account_id)))
+                .key("sk", string(passkey_key(passkey.id)))
+                .condition_expression(
+                    "attribute_not_exists(revoked_at) AND credential_id = :credential_id",
+                )
+                .update_expression("SET credential_json = :credential_json, last_used_at = :now")
+                .expression_attribute_values(":credential_id", string(&passkey.credential_id))
+                .expression_attribute_values(":credential_json", string(&passkey.credential_json))
+                .expression_attribute_values(":now", string(encode_time(now)))
+                .build()?;
+            let session_put = Put::builder()
+                .table_name(&self.table)
+                .set_item(Some(session_item(&session)))
+                .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
+                .build()?;
+            let update_account = Update::builder()
+                .table_name(&self.table)
+                .key("pk", string(account_key(passkey.account_id)))
+                .key("sk", string("PROFILE"))
+                .condition_expression("#status = :active")
+                .update_expression("SET updated_at = :now, last_authenticated_at = :now")
+                .expression_attribute_names("#status", "status")
+                .expression_attribute_values(":active", string(AccountStatus::Active.as_str()))
+                .expression_attribute_values(":now", string(encode_time(now)))
+                .build()?;
+            let result = self
+                .client
+                .transact_write_items()
+                .transact_items(TransactWriteItem::builder().update(consume).build())
+                .transact_items(TransactWriteItem::builder().update(update_passkey).build())
+                .transact_items(TransactWriteItem::builder().put(session_put).build())
+                .transact_items(TransactWriteItem::builder().update(update_account).build())
+                .send()
+                .await;
+            match result {
+                Ok(_) => {
+                    let Some(account) = self.account_by_id(passkey.account_id).await? else {
+                        anyhow::bail!(
+                            "passkey account disappeared after successful authentication"
+                        );
+                    };
+                    let mut passkey = passkey;
+                    passkey.last_used_at = Some(now);
+                    return Ok(Some(CompletedPasskeySignIn {
+                        account,
+                        session,
+                        passkey,
+                    }));
+                }
+                Err(error) => match error
                     .as_service_error()
-                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
-            {
-                Ok(None)
+                    .and_then(canceled_only_by_condition_checks)
+                {
+                    // A failed condition check is a definitive refusal.
+                    Some(true) => return Ok(None),
+                    // Conflicting concurrent transaction or throttling: retry.
+                    Some(false) => {}
+                    None => return Err(error.into()),
+                },
             }
-            Err(error) => Err(error.into()),
         }
+        anyhow::bail!("passkey sign-in conflicted with concurrent account activity; retry")
     }
 
     async fn passkey_by_credential_id(
@@ -817,29 +845,58 @@ impl IdentityRepository for DynamoDbIdentityRepository {
         passkey_id: crate::identity::PasskeyId,
         revoked_at: DateTime<Utc>,
     ) -> Result<bool> {
-        let result = self
-            .client
-            .update_item()
-            .table_name(&self.table)
-            .key("pk", string(account_key(account_id)))
-            .key("sk", string(passkey_key(passkey_id)))
-            .condition_expression("entity = :entity AND attribute_not_exists(revoked_at)")
-            .update_expression("SET revoked_at = :revoked_at")
-            .expression_attribute_values(":entity", string("passkey"))
-            .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
-            .send()
-            .await;
-        match result {
-            Ok(_) => Ok(true),
-            Err(error)
-                if error
-                    .as_service_error()
-                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
-            {
-                Ok(false)
+        for _ in 0..5 {
+            // The credential lookup item is deleted alongside the revocation so
+            // the same authenticator can be registered again later.
+            let passkey = self
+                .get_item(account_key(account_id), passkey_key(passkey_id))
+                .await?
+                .as_ref()
+                .map(passkey_from_item)
+                .transpose()?;
+            let Some(passkey) = passkey else {
+                return Ok(false);
+            };
+            if passkey.revoked_at.is_some() {
+                return Ok(false);
             }
-            Err(error) => Err(error.into()),
+            let revoke = Update::builder()
+                .table_name(&self.table)
+                .key("pk", string(account_key(account_id)))
+                .key("sk", string(passkey_key(passkey_id)))
+                .condition_expression(
+                    "entity = :entity AND attribute_not_exists(revoked_at) AND credential_id = :credential_id",
+                )
+                .update_expression("SET revoked_at = :revoked_at")
+                .expression_attribute_values(":entity", string("passkey"))
+                .expression_attribute_values(":credential_id", string(&passkey.credential_id))
+                .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
+                .build()?;
+            let delete_lookup = Delete::builder()
+                .table_name(&self.table)
+                .key("pk", string(credential_key(&passkey.credential_id)))
+                .key("sk", string("ACCOUNT"))
+                .build()?;
+            let result = self
+                .client
+                .transact_write_items()
+                .transact_items(TransactWriteItem::builder().update(revoke).build())
+                .transact_items(TransactWriteItem::builder().delete(delete_lookup).build())
+                .send()
+                .await;
+            match result {
+                Ok(_) => return Ok(true),
+                Err(error) => match error
+                    .as_service_error()
+                    .and_then(canceled_only_by_condition_checks)
+                {
+                    Some(true) => return Ok(false),
+                    Some(false) => {}
+                    None => return Err(error.into()),
+                },
+            }
         }
+        anyhow::bail!("passkey revocation conflicted with concurrent account activity; retry")
     }
 
     async fn create_api_key(&self, api_key: ApiKey) -> Result<()> {
@@ -931,17 +988,57 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .send()
             .await;
         match result {
-            Ok(_) => Ok(true),
+            Ok(_) => {}
             Err(error)
                 if error
                     .as_service_error()
                     .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
             {
-                Ok(false)
+                return Ok(false);
             }
-            Err(error) => Err(error.into()),
+            Err(error) => return Err(error.into()),
         }
+        // Best-effort sweep of sessions minted from this key so revocation is
+        // visible in listings immediately. Authentication re-validates the key
+        // itself, so a session missed here still fails closed.
+        for session in self.list_sessions(account_id).await? {
+            if session.api_key_id == Some(key_id) && session.revoked_at.is_none() {
+                self.revoke_session(account_id, session.id, revoked_at)
+                    .await?;
+            }
+        }
+        Ok(true)
     }
+
+    async fn purge_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+        // Every challenge, session, and tracker item carries a `ttl_epoch`;
+        // DynamoDB TTL performs the deletion.
+        Ok(0)
+    }
+}
+
+/// Classifies a `TransactWriteItems` service error: `Some(true)` when the
+/// transaction was canceled solely by failed condition checks (a definitive
+/// refusal from the data), `Some(false)` when it was canceled by a concurrent
+/// transaction conflict or throttling (retryable), and `None` for every other
+/// error.
+fn canceled_only_by_condition_checks(
+    error: &aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError,
+) -> Option<bool> {
+    use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+    let TransactWriteItemsError::TransactionCanceledException(canceled) = error else {
+        return None;
+    };
+    let reasons = canceled.cancellation_reasons();
+    Some(
+        reasons.is_empty()
+            || reasons.iter().all(|reason| {
+                matches!(
+                    reason.code(),
+                    None | Some("None" | "ConditionalCheckFailed")
+                )
+            }),
+    )
 }
 
 fn account_item(account: &Account) -> Item {
@@ -988,6 +1085,14 @@ fn challenge_tracker_item(pk: String, version: u64, challenge_ids: &[ChallengeId
         (
             "challenge_ids".into(),
             AttributeValue::L(challenge_ids.iter().copied().map(string).collect()),
+        ),
+        // Trackers are created by unauthenticated requests — one per email
+        // address ever entered — so each write refreshes a TTL that outlives
+        // the challenges it can reference. A version restart after TTL
+        // deletion is safe: creation treats a missing tracker as version zero.
+        (
+            "ttl_epoch".into(),
+            number((Utc::now() + Duration::hours(48)).timestamp()),
         ),
     ])
 }
@@ -1074,6 +1179,7 @@ fn session_item(session: &AuthSession) -> Item {
         ),
     ]);
     insert_optional_string(&mut item, "csrf_digest", session.csrf_digest.as_deref());
+    insert_optional_uuid(&mut item, "api_key_id", session.api_key_id);
     insert_optional_time(&mut item, "revoked_at", session.revoked_at);
     item
 }
@@ -1161,6 +1267,7 @@ fn session_from_item(item: &Item) -> Result<AuthSession> {
         account_id: required_uuid(item, "account_id")?,
         kind: SessionKind::parse(&required_string(item, "kind")?)?,
         csrf_digest: optional_string(item, "csrf_digest"),
+        api_key_id: optional_uuid(item, "api_key_id")?,
         created_at: required_time(item, "created_at")?,
         last_seen_at: required_time(item, "last_seen_at")?,
         expires_at: required_time(item, "expires_at")?,
@@ -1234,81 +1341,29 @@ fn lookup_digest(value: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
 }
 
-fn string(value: impl ToString) -> AttributeValue {
-    AttributeValue::S(value.to_string())
-}
-
-fn number(value: impl ToString) -> AttributeValue {
-    AttributeValue::N(value.to_string())
-}
-
-fn insert_optional_string(item: &mut Item, name: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        item.insert(name.into(), string(value));
-    }
-}
-
-fn insert_optional_uuid(item: &mut Item, name: &str, value: Option<Uuid>) {
-    if let Some(value) = value {
-        item.insert(name.into(), string(value));
-    }
-}
-
-fn insert_optional_time(item: &mut Item, name: &str, value: Option<DateTime<Utc>>) {
-    if let Some(value) = value {
-        item.insert(name.into(), string(encode_time(value)));
-    }
-}
-
-fn required_string(item: &Item, name: &str) -> Result<String> {
-    match item.get(name) {
-        Some(AttributeValue::S(value)) | Some(AttributeValue::N(value)) => Ok(value.clone()),
-        _ => anyhow::bail!("DynamoDB identity item is missing string/number `{name}`"),
-    }
-}
-
-fn optional_string(item: &Item, name: &str) -> Option<String> {
-    match item.get(name) {
-        Some(AttributeValue::S(value)) | Some(AttributeValue::N(value)) => Some(value.clone()),
-        _ => None,
-    }
-}
-
-fn required_uuid(item: &Item, name: &str) -> Result<Uuid> {
-    Uuid::parse_str(&required_string(item, name)?)
-        .with_context(|| format!("DynamoDB identity `{name}` is not a UUID"))
-}
-
-fn optional_uuid(item: &Item, name: &str) -> Result<Option<Uuid>> {
-    optional_string(item, name)
-        .as_deref()
-        .map(Uuid::parse_str)
-        .transpose()
-        .with_context(|| format!("DynamoDB identity `{name}` is not a UUID"))
-}
-
-fn required_time(item: &Item, name: &str) -> Result<DateTime<Utc>> {
-    decode_time(&required_string(item, name)?)
-}
-
-fn optional_time(item: &Item, name: &str) -> Result<Option<DateTime<Utc>>> {
-    optional_string(item, name)
-        .as_deref()
-        .map(decode_time)
-        .transpose()
-}
-
-fn encode_time(value: DateTime<Utc>) -> String {
-    value.to_rfc3339()
-}
-
-fn decode_time(value: &str) -> Result<DateTime<Utc>> {
-    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs the shared `IdentityRepository` contract against a real table so
+    /// the DynamoDB transactions exercise the same invariants the SQLx
+    /// backend is tested with. DynamoDB Local works:
+    /// `SEIZA_TEST_IDENTITY_TABLE=seiza-identity-test AWS_ENDPOINT_URL=http://localhost:8000 \
+    ///  cargo test --features aws -- --ignored dynamodb_satisfies`
+    #[tokio::test]
+    #[ignore = "requires SEIZA_TEST_IDENTITY_TABLE and DynamoDB credentials"]
+    async fn dynamodb_satisfies_the_identity_repository_contract() {
+        let table = std::env::var("SEIZA_TEST_IDENTITY_TABLE")
+            .expect("set SEIZA_TEST_IDENTITY_TABLE to run this test");
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await;
+        let repository = DynamoDbIdentityRepository {
+            client: Client::new(&sdk_config),
+            table,
+        };
+        crate::identity::contract::assert_contract(&repository).await;
+    }
 
     #[test]
     fn session_and_api_key_items_are_account_partition_point_lookups() {
@@ -1320,6 +1375,7 @@ mod tests {
             account_id,
             kind: SessionKind::Browser,
             csrf_digest: Some("csrf-digest".into()),
+            api_key_id: None,
             created_at: now,
             last_seen_at: now,
             expires_at: now + Duration::days(30),

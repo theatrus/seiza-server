@@ -21,7 +21,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -40,7 +40,7 @@ use std::{
     collections::HashMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    net::{IpAddr, Ipv6Addr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime},
 };
@@ -55,6 +55,9 @@ use uuid::Uuid;
 
 const VALIDATION_LICENSE_VERSION: &str = "seiza-validation-image-grant-v2";
 const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
+/// Auth and account requests are small JSON bodies; the largest are WebAuthn
+/// ceremony payloads at a few kilobytes.
+const AUTH_BODY_LIMIT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -111,6 +114,26 @@ impl AppState {
     pub fn start_background_tasks(&self) {
         let state = self.clone();
         tokio::spawn(async move { state.cleanup_expired_uploads().await });
+        if let Some(identity) = self.identity.clone() {
+            let interval_seconds = self.config.upload_cleanup_interval_seconds;
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(Duration::from_secs(interval_seconds.max(60)));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    match identity.purge_expired(Utc::now()).await {
+                        Ok(0) => {}
+                        Ok(purged) => {
+                            tracing::info!(purged, "purged expired identity records");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not purge expired identity records");
+                        }
+                    }
+                }
+            });
+        }
         if self.transport.uses_external_queue() {
             let state = self.clone();
             tokio::spawn(async move { state.dispatch_outbox().await });
@@ -610,6 +633,9 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/account/sessions/{session_id}",
             axum::routing::delete(revoke_account_session),
         )
+        // Auth and account bodies are small JSON documents; they must not
+        // inherit the multi-hundred-megabyte upload body limit.
+        .route_layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT_BYTES))
         .route("/api/v1/catalog/objects", get(get_catalog_objects))
         .route(
             "/api/v1/catalog/objects/search",
@@ -758,13 +784,14 @@ struct EmailStartRequest {
 
 async fn start_email_sign_in(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<EmailStartRequest>,
 ) -> Result<Response, ApiError> {
     let auth = auth_service(&state)?;
-    let source = request_source(&headers);
+    let source = request_source(&state.config, &headers, peer);
     let started = auth
-        .start_email(&request.email, source)
+        .start_email(&request.email, &source)
         .await
         .map_err(auth_api_error)?;
     let mut response = (StatusCode::ACCEPTED, Json(started)).into_response();
@@ -871,9 +898,14 @@ async fn get_account(
         "passkey_setup_required": !passkeys.iter().any(|passkey| passkey.revoked_at.is_none()),
         "passkeys": passkeys.iter().filter(|passkey| passkey.revoked_at.is_none()).map(passkey_json).collect::<Vec<_>>(),
         "api_keys": api_keys.iter().filter(|key| key.revoked_at.is_none()).map(api_key_json).collect::<Vec<_>>(),
-        "sessions": sessions.into_iter().map(|session| json!({
+        "sessions": sessions.into_iter().filter(|session| {
+            session.revoked_at.is_none()
+                && session.expires_at > Utc::now()
+                && session.absolute_expires_at > Utc::now()
+        }).map(|session| json!({
             "id": session.id,
             "kind": session.kind,
+            "api_key_id": session.api_key_id,
             "created_at": session.created_at,
             "last_seen_at": session.last_seen_at,
             "expires_at": session.expires_at,
@@ -888,9 +920,14 @@ async fn get_account(
     Ok(response)
 }
 
-async fn start_passkey_sign_in(State(state): State<AppState>) -> Result<Response, ApiError> {
+async fn start_passkey_sign_in(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let source = request_source(&state.config, &headers, peer);
     let started = auth_service(&state)?
-        .start_passkey_authentication()
+        .start_passkey_authentication(&source)
         .await
         .map_err(auth_api_error)?;
     no_store_json(started)
@@ -1284,15 +1321,46 @@ fn append_set_cookie(response: &mut Response, cookie: Cookie<'_>) -> Result<(), 
     Ok(())
 }
 
-fn request_source(headers: &HeaderMap) -> &str {
-    headers
-        .get("x-forwarded-for")
-        .or_else(|| headers.get("x-real-ip"))
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("anonymous")
+/// Derives the rate-limiting identity of a request. Forwarded headers are
+/// client-controlled, so they are honored only when the operator declares how
+/// many trusted proxies stand in front of the server; the entry that the
+/// nearest trusted proxy recorded is the client. Otherwise the connected peer
+/// address is authoritative.
+fn request_source(config: &Config, headers: &HeaderMap, peer: SocketAddr) -> String {
+    if config.trusted_proxy_hops > 0 {
+        let forwarded: Vec<&str> = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect();
+        let claimed = if forwarded.len() >= config.trusted_proxy_hops {
+            Some(forwarded[forwarded.len() - config.trusted_proxy_hops])
+        } else {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+        };
+        if let Some(address) = claimed.and_then(|value| value.parse::<IpAddr>().ok()) {
+            return rate_limit_source(address);
+        }
+    }
+    rate_limit_source(peer.ip())
+}
+
+/// IPv6 clients rotate within their /64 trivially, so buckets cover the
+/// prefix, matching `public_client_id`.
+fn rate_limit_source(address: IpAddr) -> String {
+    match address {
+        IpAddr::V4(address) => address.to_string(),
+        IpAddr::V6(address) => {
+            let prefix = u128::from(address) & (u128::MAX << 64);
+            Ipv6Addr::from(prefix).to_string()
+        }
+    }
 }
 
 fn auth_api_error(error: AuthError) -> ApiError {
@@ -2045,6 +2113,12 @@ async fn get_resumable_upload_result(
             "upload has received {} of {} bytes",
             upload.offset, upload.total_size
         )));
+    }
+    // Finalizing an uncommitted upload enqueues a solve. An API key needs the
+    // submit scope for that; browser and Astrometry sessions already carry
+    // submission authority.
+    if upload.job_id.is_none() && request_api_key(&headers).is_some() {
+        client_from_headers(&state, &headers, None, true).await?;
     }
     let job = state.finalize_resumable(&mut upload).await?;
     Ok(Json(state.job_response(&job)?))
@@ -3013,7 +3087,7 @@ async fn client_from_headers(
                 .map_err(auth_api_error)?;
             return Ok(Client {
                 id: format!("account:{}", authenticated.account.id),
-                queue_weight: 1.0,
+                queue_weight: authenticated.queue_weight,
             });
         }
         if let Some(api_key) = api_key {
@@ -4395,6 +4469,7 @@ mod tests {
 
         let start_response = start_email_sign_in(
             State(state.clone()),
+            ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))),
             HeaderMap::new(),
             Json(EmailStartRequest {
                 email: "Astronomer@Example.com".into(),
@@ -4569,7 +4644,13 @@ mod tests {
         .unwrap();
         assert!(registration["challenge_id"].is_string());
         assert!(registration["options"]["publicKey"].is_object());
-        let authentication = start_passkey_sign_in(State(state.clone())).await.unwrap();
+        let authentication = start_passkey_sign_in(
+            State(state.clone()),
+            ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(authentication.status(), StatusCode::OK);
         let authentication: Value = serde_json::from_slice(
             &to_bytes(authentication.into_body(), usize::MAX)
@@ -4667,6 +4748,7 @@ mod tests {
             upload_cleanup_interval_seconds: 3_600,
             rate_limit_per_minute: 60.0,
             rate_limit_burst: 10.0,
+            trusted_proxy_hops: 0,
             auth_mode: AuthMode::Public,
             public_base_url: None,
             auth_code_pepper_file: None,

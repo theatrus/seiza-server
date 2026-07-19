@@ -359,6 +359,7 @@ are currently supported:
 | `SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS` | `3600` | Local/S3 expired-object sweep interval |
 | `SEIZA_RATE_LIMIT_PER_MINUTE` | `6` | Per-client submission refill rate |
 | `SEIZA_RATE_LIMIT_BURST` | `3` | Per-client initial burst size |
+| `SEIZA_TRUSTED_PROXY_HOPS` | `0` | Reverse proxies that append to `X-Forwarded-For`; `0` rate-limits sign-in by peer address and ignores forwarded headers |
 | `SEIZA_AUTH_MODE` | `public` | `public`, `stub-api-key`, or verified-email `accounts` |
 | `SEIZA_IDENTITY_BACKEND` | job backend | Identity storage for accounts: `sqlx` or `dynamodb` |
 | `SEIZA_IDENTITY_SQL_DATABASE_URL` | job SQL URL | SQLx identity database URL |
@@ -383,8 +384,9 @@ are currently supported:
 | `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged (`2`–`100`); also becomes the configured priority client's durable queue weight |
 | `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
 
-`X-Forwarded-For`/`X-Real-IP` are used for anonymous fairness and rate limits.
-Only accept those headers from a trusted reverse proxy in production.
+`X-Forwarded-For`/`X-Real-IP` are used for anonymous queue fairness. Sign-in
+rate limiting only honors them when `SEIZA_TRUSTED_PROXY_HOPS` declares the
+trusted proxy chain; otherwise the connected peer address is used.
 
 Catalog paths are resolved by `seiza::data_paths`. Each explicit per-catalog
 variable may name either a file or a directory and fails startup when it does

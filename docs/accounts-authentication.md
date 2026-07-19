@@ -390,7 +390,7 @@ limits and fair queueing.
 provider failure returns a generic retryable `503` for every address; account
 existence must not affect the response. Link completion accepts a token only in
 the POST body, not the URL after the landing page loads. Responses set the
-cookie and return the CSRF token plus `passkey_setup_recommended`.
+cookie and return the CSRF token plus `passkey_setup_required`.
 
 ### Account and credentials
 
@@ -423,8 +423,14 @@ weight, and authentication time. Authentication order is:
 The internal worker routes retain their separate `SEIZA_WORKER_TOKEN` contract;
 they must never accept account API keys. In `accounts` mode, `/api/login`
 validates the supplied account API key and creates a persisted
-`kind=astrometry` session. Existing Astrometry clients then continue sending
-that opaque session in `request-json`.
+`kind=astrometry` session that records the minting key's ID. Existing
+Astrometry clients then continue sending that opaque session in
+`request-json`. Every astrometry request re-validates the minting key, so
+revoking an API key immediately invalidates all sessions created from it (the
+sessions are also marked revoked for the account UI), and the key's queue
+weight applies live. Because Astrometry clients commonly log in once per job,
+live sessions per key are capped; the oldest is recycled when a new login
+would exceed the cap.
 
 Submission persists `account:<uuid>` as owner and the server-controlled account
 tier as queue weight. `SEIZA_PRIORITY_API_KEYS` remains only for legacy stub

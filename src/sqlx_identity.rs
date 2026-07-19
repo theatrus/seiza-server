@@ -17,6 +17,7 @@ const IDENTITY_MIGRATIONS: &[(&str, &str)] = &[(
 #[derive(Clone)]
 pub struct SqlxIdentityRepository {
     pool: AnyPool,
+    postgres: bool,
 }
 
 impl SqlxIdentityRepository {
@@ -44,7 +45,10 @@ impl SqlxIdentityRepository {
                 .await
                 .context("enabling SQLite foreign keys for the identity repository")?;
         }
-        let repository = Self { pool };
+        let repository = Self {
+            pool,
+            postgres: !sqlite,
+        };
         repository.migrate().await?;
         Ok(repository)
     }
@@ -54,16 +58,30 @@ impl SqlxIdentityRepository {
             .execute(&self.pool)
             .await?;
         for (version, migration) in IDENTITY_MIGRATIONS {
+            // Serialize concurrent replicas: BEGIN IMMEDIATE takes SQLite's
+            // write reservation up front, and Postgres replicas queue on one
+            // advisory lock, so exactly one process applies each migration.
+            let mut transaction = if self.postgres {
+                self.pool.begin().await?
+            } else {
+                self.pool.begin_with("BEGIN IMMEDIATE").await?
+            };
+            if self.postgres {
+                sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                    .bind(0x0073_6569_7a62_i64)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
             let already_applied =
                 sqlx::query("SELECT version FROM identity_schema_migrations WHERE version = $1")
                     .bind(version)
-                    .fetch_optional(&self.pool)
+                    .fetch_optional(&mut *transaction)
                     .await?
                     .is_some();
             if already_applied {
+                transaction.rollback().await?;
                 continue;
             }
-            let mut transaction = self.pool.begin().await?;
             sqlx::raw_sql(*migration)
                 .execute(&mut *transaction)
                 .await
@@ -112,21 +130,7 @@ impl IdentityRepository for SqlxIdentityRepository {
     }
 
     async fn create_challenge(&self, challenge: AuthChallenge) -> Result<()> {
-        sqlx::query("INSERT INTO auth_challenges (id, purpose, account_id, email_lookup, link_token_digest, code_digest, webauthn_state_json, attempts, created_at, expires_at, consumed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
-            .bind(challenge.id.to_string())
-            .bind(challenge.purpose.as_str())
-            .bind(challenge.account_id.map(|id| id.to_string()))
-            .bind(challenge.email_lookup)
-            .bind(challenge.link_token_digest)
-            .bind(challenge.code_digest)
-            .bind(challenge.webauthn_state_json)
-            .bind(i64::from(challenge.attempts))
-            .bind(encode_time(challenge.created_at))
-            .bind(encode_time(challenge.expires_at))
-            .bind(challenge.consumed_at.map(encode_time))
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        insert_challenge(&self.pool, &challenge).await
     }
 
     async fn challenge_by_id(&self, challenge_id: ChallengeId) -> Result<Option<AuthChallenge>> {
@@ -155,20 +159,7 @@ impl IdentityRepository for SqlxIdentityRepository {
             .context("email challenge is missing email_lookup")?;
         let created_at = challenge.created_at;
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("INSERT INTO auth_challenges (id, purpose, account_id, email_lookup, link_token_digest, code_digest, webauthn_state_json, attempts, created_at, expires_at, consumed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
-            .bind(challenge.id.to_string())
-            .bind(challenge.purpose.as_str())
-            .bind(challenge.account_id.map(|id| id.to_string()))
-            .bind(challenge.email_lookup)
-            .bind(challenge.link_token_digest)
-            .bind(challenge.code_digest)
-            .bind(challenge.webauthn_state_json)
-            .bind(i64::from(challenge.attempts))
-            .bind(encode_time(challenge.created_at))
-            .bind(encode_time(challenge.expires_at))
-            .bind(challenge.consumed_at.map(encode_time))
-            .execute(&mut *transaction)
-            .await?;
+        insert_challenge(&mut *transaction, &challenge).await?;
         let live = sqlx::query("SELECT id FROM auth_challenges WHERE email_lookup = $1 AND purpose = 'email-login' AND consumed_at IS NULL AND expires_at > $2 ORDER BY created_at DESC")
             .bind(email_lookup)
             .bind(encode_time(created_at))
@@ -271,21 +262,13 @@ impl IdentityRepository for SqlxIdentityRepository {
                 .map(account_from_row)??;
             (account, inserted.rows_affected() == 1)
         };
+        if account.status != AccountStatus::Active {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
 
         new_session.account_id = account.id;
-        sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-            .bind(new_session.id.to_string())
-            .bind(&new_session.token_digest)
-            .bind(new_session.account_id.to_string())
-            .bind(new_session.kind.as_str())
-            .bind(&new_session.csrf_digest)
-            .bind(encode_time(new_session.created_at))
-            .bind(encode_time(new_session.last_seen_at))
-            .bind(encode_time(new_session.expires_at))
-            .bind(encode_time(new_session.absolute_expires_at))
-            .bind(new_session.revoked_at.map(encode_time))
-            .execute(&mut *transaction)
-            .await?;
+        insert_session(&mut *transaction, &new_session).await?;
         sqlx::query("UPDATE auth_challenges SET consumed_at = $1 WHERE email_lookup = $2 AND purpose = 'email-login' AND consumed_at IS NULL")
             .bind(encode_time(now))
             .bind(&email_lookup)
@@ -309,20 +292,7 @@ impl IdentityRepository for SqlxIdentityRepository {
     }
 
     async fn create_session(&self, session: AuthSession) -> Result<()> {
-        sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-            .bind(session.id.to_string())
-            .bind(session.token_digest)
-            .bind(session.account_id.to_string())
-            .bind(session.kind.as_str())
-            .bind(session.csrf_digest)
-            .bind(encode_time(session.created_at))
-            .bind(encode_time(session.last_seen_at))
-            .bind(encode_time(session.expires_at))
-            .bind(encode_time(session.absolute_expires_at))
-            .bind(session.revoked_at.map(encode_time))
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        insert_session(&self.pool, &session).await
     }
 
     async fn session(
@@ -396,19 +366,17 @@ impl IdentityRepository for SqlxIdentityRepository {
         .rows_affected())
     }
 
-    async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()> {
-        sqlx::query("INSERT INTO passkey_credentials (id, credential_id, account_id, credential_json, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
-            .bind(passkey.id.to_string())
-            .bind(passkey.credential_id)
-            .bind(passkey.account_id.to_string())
-            .bind(passkey.credential_json)
-            .bind(passkey.label)
-            .bind(encode_time(passkey.created_at))
-            .bind(passkey.last_used_at.map(encode_time))
-            .bind(passkey.revoked_at.map(encode_time))
+    async fn delete_session(&self, account_id: AccountId, session_id: SessionId) -> Result<()> {
+        sqlx::query("DELETE FROM auth_sessions WHERE id = $1 AND account_id = $2")
+            .bind(session_id.to_string())
+            .bind(account_id.to_string())
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()> {
+        insert_passkey(&self.pool, &passkey).await
     }
 
     async fn complete_passkey_registration(
@@ -428,17 +396,7 @@ impl IdentityRepository for SqlxIdentityRepository {
             transaction.rollback().await?;
             return Ok(false);
         }
-        sqlx::query("INSERT INTO passkey_credentials (id, credential_id, account_id, credential_json, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
-            .bind(passkey.id.to_string())
-            .bind(passkey.credential_id)
-            .bind(passkey.account_id.to_string())
-            .bind(passkey.credential_json)
-            .bind(passkey.label)
-            .bind(encode_time(passkey.created_at))
-            .bind(passkey.last_used_at.map(encode_time))
-            .bind(passkey.revoked_at.map(encode_time))
-            .execute(&mut *transaction)
-            .await?;
+        insert_passkey(&mut *transaction, &passkey).await?;
         transaction.commit().await?;
         Ok(true)
     }
@@ -485,19 +443,7 @@ impl IdentityRepository for SqlxIdentityRepository {
             transaction.rollback().await?;
             return Ok(None);
         }
-        sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-            .bind(session.id.to_string())
-            .bind(&session.token_digest)
-            .bind(session.account_id.to_string())
-            .bind(session.kind.as_str())
-            .bind(&session.csrf_digest)
-            .bind(encode_time(session.created_at))
-            .bind(encode_time(session.last_seen_at))
-            .bind(encode_time(session.expires_at))
-            .bind(encode_time(session.absolute_expires_at))
-            .bind(session.revoked_at.map(encode_time))
-            .execute(&mut *transaction)
-            .await?;
+        insert_session(&mut *transaction, &session).await?;
         sqlx::query("UPDATE accounts SET updated_at = $1, last_authenticated_at = $1 WHERE id = $2 AND status = 'active'")
             .bind(encode_time(now))
             .bind(passkey.account_id.to_string())
@@ -519,12 +465,14 @@ impl IdentityRepository for SqlxIdentityRepository {
         &self,
         credential_id: &str,
     ) -> Result<Option<PasskeyCredential>> {
-        sqlx::query("SELECT * FROM passkey_credentials WHERE credential_id = $1")
-            .bind(credential_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(passkey_from_row)
-            .transpose()
+        sqlx::query(
+            "SELECT * FROM passkey_credentials WHERE credential_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(credential_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(passkey_from_row)
+        .transpose()
     }
 
     async fn list_passkeys(&self, account_id: AccountId) -> Result<Vec<PasskeyCredential>> {
@@ -615,15 +563,107 @@ impl IdentityRepository for SqlxIdentityRepository {
         key_id: ApiKeyId,
         revoked_at: DateTime<Utc>,
     ) -> Result<bool> {
-        Ok(sqlx::query("UPDATE api_keys SET revoked_at = $1 WHERE id = $2 AND account_id = $3 AND revoked_at IS NULL")
+        let mut transaction = self.pool.begin().await?;
+        let revoked = sqlx::query("UPDATE api_keys SET revoked_at = $1 WHERE id = $2 AND account_id = $3 AND revoked_at IS NULL")
             .bind(encode_time(revoked_at))
             .bind(key_id.to_string())
             .bind(account_id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?
             .rows_affected()
-            > 0)
+            > 0;
+        if !revoked {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("UPDATE auth_sessions SET revoked_at = $1 WHERE account_id = $2 AND api_key_id = $3 AND revoked_at IS NULL")
+            .bind(encode_time(revoked_at))
+            .bind(account_id.to_string())
+            .bind(key_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(true)
     }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+        // Mirrors the DynamoDB TTL policy: challenges are kept one day past
+        // expiry and dead sessions thirty days for audit.
+        let challenge_cutoff = encode_time(now - chrono::Duration::hours(24));
+        let session_grace_cutoff = encode_time(now - chrono::Duration::days(30));
+        let purged_challenges = sqlx::query("DELETE FROM auth_challenges WHERE expires_at < $1")
+            .bind(&challenge_cutoff)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        let purged_sessions = sqlx::query("DELETE FROM auth_sessions WHERE absolute_expires_at < $1 OR expires_at < $2 OR revoked_at < $2")
+            .bind(encode_time(now))
+            .bind(&session_grace_cutoff)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(purged_challenges + purged_sessions)
+    }
+}
+
+async fn insert_challenge<'e, E>(executor: E, challenge: &AuthChallenge) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    sqlx::query("INSERT INTO auth_challenges (id, purpose, account_id, email_lookup, link_token_digest, code_digest, webauthn_state_json, attempts, created_at, expires_at, consumed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+        .bind(challenge.id.to_string())
+        .bind(challenge.purpose.as_str())
+        .bind(challenge.account_id.map(|id| id.to_string()))
+        .bind(&challenge.email_lookup)
+        .bind(&challenge.link_token_digest)
+        .bind(&challenge.code_digest)
+        .bind(&challenge.webauthn_state_json)
+        .bind(i64::from(challenge.attempts))
+        .bind(encode_time(challenge.created_at))
+        .bind(encode_time(challenge.expires_at))
+        .bind(challenge.consumed_at.map(encode_time))
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+async fn insert_passkey<'e, E>(executor: E, passkey: &PasskeyCredential) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    sqlx::query("INSERT INTO passkey_credentials (id, credential_id, account_id, credential_json, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+        .bind(passkey.id.to_string())
+        .bind(&passkey.credential_id)
+        .bind(passkey.account_id.to_string())
+        .bind(&passkey.credential_json)
+        .bind(&passkey.label)
+        .bind(encode_time(passkey.created_at))
+        .bind(passkey.last_used_at.map(encode_time))
+        .bind(passkey.revoked_at.map(encode_time))
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+async fn insert_session<'e, E>(executor: E, session: &AuthSession) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, api_key_id, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+        .bind(session.id.to_string())
+        .bind(&session.token_digest)
+        .bind(session.account_id.to_string())
+        .bind(session.kind.as_str())
+        .bind(&session.csrf_digest)
+        .bind(session.api_key_id.map(|id| id.to_string()))
+        .bind(encode_time(session.created_at))
+        .bind(encode_time(session.last_seen_at))
+        .bind(encode_time(session.expires_at))
+        .bind(encode_time(session.absolute_expires_at))
+        .bind(session.revoked_at.map(encode_time))
+        .execute(executor)
+        .await?;
+    Ok(())
 }
 
 async fn account_query(
@@ -686,6 +726,7 @@ fn session_from_row(row: sqlx::any::AnyRow) -> Result<AuthSession> {
         )?,
         kind: SessionKind::parse(&row.try_get::<String, _>("kind")?)?,
         csrf_digest: row.try_get("csrf_digest")?,
+        api_key_id: optional_uuid(row.try_get("api_key_id")?, "session API key ID")?,
         created_at: decode_time(&row.try_get::<String, _>("created_at")?)?,
         last_seen_at: decode_time(&row.try_get::<String, _>("last_seen_at")?)?,
         expires_at: decode_time(&row.try_get::<String, _>("expires_at")?)?,
@@ -758,6 +799,88 @@ mod tests {
     use crate::identity::{AccountStatus, ChallengePurpose, SessionKind};
     use chrono::Duration;
 
+    #[tokio::test]
+    async fn sqlite_satisfies_the_identity_repository_contract() {
+        let repository = SqlxIdentityRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::identity::contract::assert_contract(&repository).await;
+    }
+
+    fn purge_challenge(now: DateTime<Utc>) -> AuthChallenge {
+        AuthChallenge {
+            id: Uuid::now_v7(),
+            purpose: ChallengePurpose::EmailLogin,
+            account_id: None,
+            email_lookup: Some("astronomer@example.com".into()),
+            link_token_digest: Some("link-digest".into()),
+            code_digest: Some("code-digest".into()),
+            webauthn_state_json: None,
+            attempts: 0,
+            created_at: now,
+            expires_at: now + Duration::minutes(10),
+            consumed_at: None,
+        }
+    }
+
+    fn purge_session(account: &Account, now: DateTime<Utc>) -> AuthSession {
+        AuthSession {
+            id: Uuid::now_v7(),
+            token_digest: format!("digest-{}", Uuid::now_v7()),
+            account_id: account.id,
+            kind: SessionKind::Browser,
+            csrf_digest: None,
+            api_key_id: None,
+            created_at: now,
+            last_seen_at: now,
+            expires_at: now + Duration::days(30),
+            absolute_expires_at: now + Duration::days(90),
+            revoked_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_removes_dead_challenges_and_sessions_but_keeps_live_ones() {
+        let repository = SqlxIdentityRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let account = account(now);
+        repository.create_account(account.clone()).await.unwrap();
+        let mut dead_challenge = purge_challenge(now);
+        dead_challenge.expires_at = now - Duration::days(2);
+        repository.create_challenge(dead_challenge).await.unwrap();
+        let live_challenge = purge_challenge(now);
+        repository
+            .create_challenge(live_challenge.clone())
+            .await
+            .unwrap();
+        let mut dead_session = purge_session(&account, now);
+        dead_session.absolute_expires_at = now - Duration::days(1);
+        repository.create_session(dead_session).await.unwrap();
+        let live_session = purge_session(&account, now);
+        repository
+            .create_session(live_session.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(repository.purge_expired(now).await.unwrap(), 2);
+        assert!(
+            repository
+                .challenge_by_id(live_challenge.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            repository
+                .session(account.id, live_session.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
     fn account(now: DateTime<Utc>) -> Account {
         Account {
             id: Uuid::now_v7(),
@@ -828,6 +951,7 @@ mod tests {
             account_id: account.id,
             kind: SessionKind::Browser,
             csrf_digest: Some("csrf-digest".into()),
+            api_key_id: None,
             created_at: now,
             last_seen_at: now,
             expires_at: now + Duration::days(30),
@@ -992,6 +1116,7 @@ mod tests {
             account_id: account.id,
             kind: SessionKind::Browser,
             csrf_digest: Some("passkey-csrf".into()),
+            api_key_id: None,
             created_at: now,
             last_seen_at: now,
             expires_at: now + Duration::days(30),
@@ -1023,14 +1148,28 @@ mod tests {
                 .await
                 .unwrap()
         );
+        // The credential lookup resolves live passkeys only, so a revoked
+        // authenticator can be registered again.
         assert!(
             repository
                 .passkey_by_credential_id(&passkey.credential_id)
                 .await
                 .unwrap()
+                .is_none()
+        );
+        let mut replacement = passkey.clone();
+        replacement.id = Uuid::now_v7();
+        repository
+            .create_passkey(replacement.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repository
+                .passkey_by_credential_id(&passkey.credential_id)
+                .await
                 .unwrap()
-                .revoked_at
-                .is_some()
+                .map(|found| found.id),
+            Some(replacement.id)
         );
     }
 }

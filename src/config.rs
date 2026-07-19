@@ -191,6 +191,11 @@ pub struct Config {
     pub upload_cleanup_interval_seconds: u64,
     pub rate_limit_per_minute: f64,
     pub rate_limit_burst: f64,
+    /// Number of reverse proxies in front of the server that append to
+    /// `X-Forwarded-For`. Zero (the default) ignores forwarded headers and
+    /// rate-limits by peer address, so a direct client cannot spoof its
+    /// identity.
+    pub trusted_proxy_hops: usize,
     pub auth_mode: AuthMode,
     pub public_base_url: Option<Url>,
     pub auth_code_pepper_file: Option<PathBuf>,
@@ -226,6 +231,7 @@ impl Config {
             parse_env("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS", 3_600u64)?;
         let rate_limit_per_minute = parse_env("SEIZA_RATE_LIMIT_PER_MINUTE", 6.0f64)?;
         let rate_limit_burst = parse_env("SEIZA_RATE_LIMIT_BURST", 3.0f64)?;
+        let trusted_proxy_hops = parse_env("SEIZA_TRUSTED_PROXY_HOPS", 0usize)?;
         let embedded_workers = parse_env("SEIZA_EMBEDDED_WORKERS", true)?;
         let lease_seconds = parse_env("SEIZA_LEASE_SECONDS", 900u64)?;
         let sqs_priority_weight = parse_env("SEIZA_SQS_PRIORITY_WEIGHT", 2usize)?;
@@ -410,6 +416,7 @@ impl Config {
             upload_cleanup_interval_seconds,
             rate_limit_per_minute,
             rate_limit_burst,
+            trusted_proxy_hops,
             auth_mode,
             public_base_url,
             auth_code_pepper_file,

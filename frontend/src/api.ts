@@ -167,6 +167,7 @@ export interface Account {
 export interface AccountSession {
   id: string
   kind: 'browser' | 'astrometry'
+  api_key_id: string | null
   created_at: string
   last_seen_at: string
   expires_at: string
@@ -214,9 +215,19 @@ export interface CompletedSignIn {
   csrf_token: string
 }
 
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function expectJson<T>(response: Response): Promise<T> {
   const payload = await response.json() as T & ApiFailure
-  if (!response.ok) throw new Error(payload.error?.message ?? `Request failed (${response.status})`)
+  if (!response.ok) throw new ApiError(payload.error?.message ?? `Request failed (${response.status})`, response.status)
   return payload
 }
 

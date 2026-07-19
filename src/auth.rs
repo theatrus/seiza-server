@@ -34,6 +34,10 @@ const SESSION_ABSOLUTE_LIFETIME: Duration = Duration::days(90);
 const SESSION_TOUCH_INTERVAL: Duration = Duration::minutes(15);
 const RECENT_AUTH_LIFETIME: Duration = Duration::minutes(10);
 const API_KEY_TOUCH_INTERVAL: Duration = Duration::minutes(15);
+/// Astrometry-compat clients commonly call `/api/login` once per job, so the
+/// live sessions minted from one API key are capped and the oldest are
+/// recycled instead of accumulating without bound.
+const MAX_LIVE_ASTROMETRY_SESSIONS_PER_KEY: usize = 20;
 pub const SCOPE_SOLVE_READ: &str = "solve:read";
 pub const SCOPE_SOLVE_SUBMIT: &str = "solve:submit";
 
@@ -113,6 +117,8 @@ pub struct AuthenticatedApiKey {
 pub struct AuthenticatedAstrometrySession {
     pub account: Account,
     pub session: AuthSession,
+    /// Live queue weight of the API key that minted the session.
+    pub queue_weight: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +149,9 @@ pub struct AuthService {
     code_pepper: Vec<u8>,
     source_limiter: RateLimiter,
     email_limiter: RateLimiter,
+    /// Long-horizon cap on messages to one address; the per-minute limiter
+    /// alone would still allow thousands of messages a day to a victim inbox.
+    email_daily_limiter: RateLimiter,
     webauthn: Webauthn,
 }
 
@@ -155,15 +164,15 @@ impl AuthService {
             .auth_code_pepper_file
             .as_deref()
             .context("SEIZA_AUTH_CODE_PEPPER_FILE is required")?;
-        let pepper = tokio::fs::read(pepper_path)
+        let mut pepper = tokio::fs::read(pepper_path)
             .await
             .with_context(|| format!("reading auth code pepper {}", pepper_path.display()))?;
-        let pepper = pepper
-            .strip_suffix(b"\n")
-            .unwrap_or(&pepper)
-            .strip_suffix(b"\r")
-            .unwrap_or(&pepper)
-            .to_vec();
+        while pepper
+            .last()
+            .is_some_and(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            pepper.pop();
+        }
         if pepper.len() < 32 {
             anyhow::bail!("SEIZA_AUTH_CODE_PEPPER_FILE must contain at least 32 bytes");
         }
@@ -201,6 +210,7 @@ impl AuthService {
             code_pepper,
             source_limiter: RateLimiter::new(10.0, 5.0),
             email_limiter: RateLimiter::new(5.0, 3.0),
+            email_daily_limiter: RateLimiter::new(20.0 / (24.0 * 60.0), 10.0),
             webauthn,
         })
     }
@@ -227,7 +237,17 @@ impl AuthService {
             .check(&format!("email:{email}"))
             .await
             .err();
-        if let Some(retry_after) = source_retry.into_iter().chain(email_retry).max() {
+        let email_daily_retry = self
+            .email_daily_limiter
+            .check(&format!("email:{email}"))
+            .await
+            .err();
+        if let Some(retry_after) = source_retry
+            .into_iter()
+            .chain(email_retry)
+            .chain(email_daily_retry)
+            .max()
+        {
             return Err(AuthError::RateLimited(retry_after));
         }
 
@@ -253,7 +273,7 @@ impl AuthService {
             .await
             .map_err(AuthError::Internal)?;
 
-        let link_token = format!("seiza_login_{challenge_id}_{link_secret}");
+        let link_token = format_prefixed_token("login", &[challenge_id], &link_secret);
         let mut link = self
             .public_base_url
             .join("signin")
@@ -349,30 +369,18 @@ impl AuthService {
             updated_at: now,
             last_authenticated_at: now,
         };
-        let session_id = Uuid::now_v7();
-        let session_secret = random_secret(32).map_err(AuthError::Internal)?;
-        let csrf_token = random_secret(32).map_err(AuthError::Internal)?;
-        let session = AuthSession {
-            id: session_id,
-            token_digest: secret_digest(&session_secret),
-            account_id,
-            kind: SessionKind::Browser,
-            csrf_digest: Some(secret_digest(&csrf_token)),
-            created_at: now,
-            last_seen_at: now,
-            expires_at: now + SESSION_IDLE_LIFETIME,
-            absolute_expires_at: now + SESSION_ABSOLUTE_LIFETIME,
-            revoked_at: None,
-        };
+        let (session, session_secret, csrf_token) =
+            new_browser_session(account_id, now).map_err(AuthError::Internal)?;
         let completion = self
             .repository
             .complete_email_challenge(challenge_id, now, MAX_CHALLENGE_ATTEMPTS, account, session)
             .await
             .map_err(AuthError::Internal)?
             .ok_or(AuthError::InvalidCredential)?;
-        let session_token = format!(
-            "seiza_session_{}_{}_{}",
-            completion.account.id, completion.session.id, session_secret
+        let session_token = format_prefixed_token(
+            "session",
+            &[completion.account.id, completion.session.id],
+            &session_secret,
         );
         Ok(CompletedBrowserSignIn {
             completion,
@@ -594,7 +602,13 @@ impl AuthService {
 
     pub async fn start_passkey_authentication(
         &self,
+        source: &str,
     ) -> Result<PasskeyAuthenticationStart, AuthError> {
+        // Unauthenticated challenge creation writes a row per request, so it
+        // shares the per-source budget with email sign-in starts.
+        if let Err(retry_after) = self.source_limiter.check(source).await {
+            return Err(AuthError::RateLimited(retry_after));
+        }
         let (options, state) = self
             .webauthn
             .start_discoverable_authentication()
@@ -678,9 +692,10 @@ impl AuthService {
             .map_err(AuthError::Internal)?
             .ok_or(AuthError::InvalidCredential)?;
         Ok(CompletedPasskeyBrowserSignIn {
-            session_token: format!(
-                "seiza_session_{}_{}_{}",
-                completed.account.id, completed.session.id, session_secret
+            session_token: format_prefixed_token(
+                "session",
+                &[completed.account.id, completed.session.id],
+                &session_secret,
             ),
             csrf_token,
             account: completed.account,
@@ -715,10 +730,7 @@ impl AuthService {
         let now = Utc::now();
         let key_id = Uuid::now_v7();
         let secret = random_secret(32).map_err(AuthError::Internal)?;
-        let token = format!(
-            "seiza_key_{}_{}_{}",
-            authenticated.account.id, key_id, secret
-        );
+        let token = format_prefixed_token("key", &[authenticated.account.id, key_id], &secret);
         let api_key = ApiKey {
             id: key_id,
             account_id: authenticated.account.id,
@@ -792,6 +804,8 @@ impl AuthService {
             .authenticate_api_key(api_key_token, SCOPE_SOLVE_SUBMIT)
             .await?;
         let now = Utc::now();
+        self.recycle_astrometry_sessions(&authenticated, now)
+            .await?;
         let secret = random_secret(32).map_err(AuthError::Internal)?;
         let session = AuthSession {
             id: Uuid::now_v7(),
@@ -799,6 +813,7 @@ impl AuthService {
             account_id: authenticated.account.id,
             kind: SessionKind::Astrometry,
             csrf_digest: None,
+            api_key_id: Some(authenticated.api_key.id),
             created_at: now,
             last_seen_at: now,
             expires_at: now + SESSION_IDLE_LIFETIME,
@@ -810,13 +825,52 @@ impl AuthService {
             .await
             .map_err(AuthError::Internal)?;
         Ok(CreatedAstrometrySession {
-            token: format!(
-                "seiza_session_{}_{}_{}",
-                authenticated.account.id, session.id, secret
+            token: format_prefixed_token(
+                "session",
+                &[authenticated.account.id, session.id],
+                &secret,
             ),
             account: authenticated.account,
             session,
         })
+    }
+
+    /// Recycles the oldest live sessions minted from an API key so `/api/login`
+    /// churn stays bounded per key.
+    async fn recycle_astrometry_sessions(
+        &self,
+        authenticated: &AuthenticatedApiKey,
+        now: DateTime<Utc>,
+    ) -> Result<(), AuthError> {
+        let mut live: Vec<AuthSession> = self
+            .repository
+            .list_sessions(authenticated.account.id)
+            .await
+            .map_err(AuthError::Internal)?
+            .into_iter()
+            .filter(|session| {
+                session.kind == SessionKind::Astrometry
+                    && session.api_key_id == Some(authenticated.api_key.id)
+                    && session.revoked_at.is_none()
+                    && session.expires_at > now
+                    && session.absolute_expires_at > now
+            })
+            .collect();
+        if live.len() < MAX_LIVE_ASTROMETRY_SESSIONS_PER_KEY {
+            return Ok(());
+        }
+        live.sort_by_key(|session| session.created_at);
+        let excess = live.len() + 1 - MAX_LIVE_ASTROMETRY_SESSIONS_PER_KEY;
+        for session in live.into_iter().take(excess) {
+            // Deleted rather than revoked: recycling is routine churn, and
+            // keeping a thirty-day revoked row per login would grow the
+            // account's session set without bound.
+            self.repository
+                .delete_session(authenticated.account.id, session.id)
+                .await
+                .map_err(AuthError::Internal)?;
+        }
+        Ok(())
     }
 
     pub async fn authenticate_astrometry_session(
@@ -846,6 +900,39 @@ impl AuthService {
             .map_err(AuthError::Internal)?
             .filter(|account| account.status == AccountStatus::Active)
             .ok_or(AuthError::InvalidCredential)?;
+        // Re-validate the minting API key so key revocation immediately cuts
+        // off every session created from it, and so the key's queue weight
+        // applies live.
+        let queue_weight = match session.api_key_id {
+            Some(key_id) => {
+                let api_key = self
+                    .repository
+                    .api_key(account_id, key_id)
+                    .await
+                    .map_err(AuthError::Internal)?
+                    .filter(|key| {
+                        key.revoked_at.is_none()
+                            && key.expires_at.is_none_or(|expires_at| expires_at > now)
+                    })
+                    .ok_or(AuthError::InvalidCredential)?;
+                if api_key
+                    .last_used_at
+                    .is_none_or(|last_used_at| now - last_used_at >= API_KEY_TOUCH_INTERVAL)
+                {
+                    match self.repository.touch_api_key(account_id, key_id, now).await {
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(
+                            %error,
+                            %account_id,
+                            %key_id,
+                            "could not update API key usage metadata"
+                        ),
+                    }
+                }
+                api_key.queue_weight
+            }
+            None => 1.0,
+        };
         if now - session.last_seen_at >= SESSION_TOUCH_INTERVAL {
             let expires_at = (now + SESSION_IDLE_LIFETIME).min(session.absolute_expires_at);
             if self
@@ -858,7 +945,11 @@ impl AuthService {
                 session.expires_at = expires_at;
             }
         }
-        Ok(AuthenticatedAstrometrySession { account, session })
+        Ok(AuthenticatedAstrometrySession {
+            account,
+            session,
+            queue_weight,
+        })
     }
 
     async fn valid_webauthn_challenge(
@@ -908,6 +999,7 @@ fn new_browser_session(
             account_id,
             kind: SessionKind::Browser,
             csrf_digest: Some(secret_digest(&csrf_token)),
+            api_key_id: None,
             created_at: now,
             last_seen_at: now,
             expires_at: now + SESSION_IDLE_LIFETIME,
@@ -925,45 +1017,50 @@ pub fn normalize_email(value: &str) -> Result<String> {
     Ok(normalized)
 }
 
-fn parse_login_token(token: &str) -> Option<(ChallengeId, String)> {
-    let mut components = token.splitn(4, '_');
-    if components.next()? != "seiza" || components.next()? != "login" {
+/// Structured secret tokens have the shape `seiza_<kind>_<uuid…>_<secret>`.
+/// The embedded IDs allow primary-key lookups so verification is one point
+/// read plus a constant-time digest comparison; only the trailing secret is
+/// sensitive. The secret is base64url and may itself contain underscores, so
+/// parsing splits off exactly the leading components.
+fn format_prefixed_token(kind: &str, ids: &[Uuid], secret: &str) -> String {
+    let mut token = format!("seiza_{kind}");
+    for id in ids {
+        token.push('_');
+        token.push_str(&id.to_string());
+    }
+    token.push('_');
+    token.push_str(secret);
+    token
+}
+
+fn parse_prefixed_token<const N: usize>(token: &str, kind: &str) -> Option<([Uuid; N], String)> {
+    let mut components = token.splitn(3 + N, '_');
+    if components.next()? != "seiza" || components.next()? != kind {
         return None;
     }
-    let challenge_id = Uuid::parse_str(components.next()?).ok()?;
+    let mut ids = [Uuid::nil(); N];
+    for id in &mut ids {
+        *id = Uuid::parse_str(components.next()?).ok()?;
+    }
     let secret = components.next()?.to_owned();
     if secret.is_empty() {
         return None;
     }
-    Some((challenge_id, secret))
+    Some((ids, secret))
+}
+
+fn parse_login_token(token: &str) -> Option<(ChallengeId, String)> {
+    parse_prefixed_token::<1>(token, "login").map(|([challenge_id], secret)| (challenge_id, secret))
 }
 
 pub fn parse_session_token(token: &str) -> Option<(Uuid, Uuid, String)> {
-    let mut components = token.splitn(5, '_');
-    if components.next()? != "seiza" || components.next()? != "session" {
-        return None;
-    }
-    let account_id = Uuid::parse_str(components.next()?).ok()?;
-    let session_id = Uuid::parse_str(components.next()?).ok()?;
-    let secret = components.next()?.to_owned();
-    if secret.is_empty() {
-        return None;
-    }
-    Some((account_id, session_id, secret))
+    parse_prefixed_token::<2>(token, "session")
+        .map(|([account_id, session_id], secret)| (account_id, session_id, secret))
 }
 
 pub fn parse_api_key_token(token: &str) -> Option<(Uuid, Uuid, String)> {
-    let mut components = token.splitn(5, '_');
-    if components.next()? != "seiza" || components.next()? != "key" {
-        return None;
-    }
-    let account_id = Uuid::parse_str(components.next()?).ok()?;
-    let key_id = Uuid::parse_str(components.next()?).ok()?;
-    let secret = components.next()?.to_owned();
-    if secret.is_empty() {
-        return None;
-    }
-    Some((account_id, key_id, secret))
+    parse_prefixed_token::<2>(token, "key")
+        .map(|([account_id, key_id], secret)| (account_id, key_id, secret))
 }
 
 fn random_secret(bytes: usize) -> Result<String> {

@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { AccountDetails, Annotations, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
+import { AccountDetails, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -186,7 +186,7 @@ export default function App() {
   return <div className="site-shell">
     <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} />
     {path === '/' && <HomePage />}
-    {path === '/solve' && <SolvePage />}
+    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} />}
     {path === '/docs/api' && <ApiDocsPage />}
     {path === '/data-sources' && <DataSourcesPage />}
     {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} onAuthenticated={refreshAccount} />}
@@ -276,10 +276,30 @@ function HomePage() {
   </main>
 }
 
-function SolvePage() {
+function SolvePage({
+  accountsEnabled,
+  account,
+  accountChecked,
+}: {
+  accountsEnabled: boolean
+  account: AccountDetails | null
+  accountChecked: boolean
+}) {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+
+  if (accountsEnabled && !account) {
+    if (!accountChecked) return <main className="narrow-page solve-page"><p className="intro">Loading account…</p></main>
+    return <main className="narrow-page solve-page">
+      <section className="empty-state">
+        <p className="eyebrow">PLATE SOLVER</p>
+        <h1>Sign in to solve.</h1>
+        <p className="intro">This Seiza deployment requires an account before uploading images. Sign in with your passkey or a verified email, then return here to start a solve.</p>
+        <Link to="/signin" className="button">Sign in</Link>
+      </section>
+    </main>
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -836,7 +856,7 @@ function SignInPage({
       await completeEmailSignIn(request)
       await onAuthenticated()
       window.history.replaceState({}, '', '/account')
-      navigate('/account')
+      window.dispatchEvent(new PopStateEvent('popstate'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Sign-in failed')
       setSubmitting(false)
@@ -928,6 +948,7 @@ function AccountPage({
 }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reauthRequired, setReauthRequired] = useState(false)
   const [passkeyLabel, setPasskeyLabel] = useState('This device')
   const [apiKeyName, setApiKeyName] = useState('Observatory')
   const [apiKeyRead, setApiKeyRead] = useState(true)
@@ -947,15 +968,26 @@ function AccountPage({
     }
   }
 
+  // Passkey and API-key changes require a session verified within the last
+  // ten minutes; the server refuses older sessions with 403.
+  function reportSecurityError(reason: unknown, fallback: string) {
+    if (reason instanceof ApiError && reason.status === 403) {
+      setReauthRequired(true)
+      return
+    }
+    setError(reason instanceof Error ? reason.message : fallback)
+  }
+
   async function addPasskey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setSubmitting(true)
     setError(null)
+    setReauthRequired(false)
     try {
       await registerPasskey(passkeyLabel)
       await onAccountChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Passkey setup failed')
+      reportSecurityError(reason, 'Passkey setup failed')
     } finally {
       setSubmitting(false)
     }
@@ -964,11 +996,12 @@ function AccountPage({
   async function removePasskey(passkeyId: string) {
     setSubmitting(true)
     setError(null)
+    setReauthRequired(false)
     try {
       await revokePasskey(passkeyId)
       await onAccountChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Passkey removal failed')
+      reportSecurityError(reason, 'Passkey removal failed')
     } finally {
       setSubmitting(false)
     }
@@ -978,6 +1011,7 @@ function AccountPage({
     event.preventDefault()
     setSubmitting(true)
     setError(null)
+    setReauthRequired(false)
     setCreatedApiToken(null)
     try {
       const scopes = [apiKeyRead && 'solve:read', apiKeySubmit && 'solve:submit'].filter((scope): scope is string => Boolean(scope))
@@ -985,7 +1019,7 @@ function AccountPage({
       setCreatedApiToken(created.token)
       await onAccountChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'API key creation failed')
+      reportSecurityError(reason, 'API key creation failed')
     } finally {
       setSubmitting(false)
     }
@@ -994,11 +1028,12 @@ function AccountPage({
   async function removeApiKey(keyId: string) {
     setSubmitting(true)
     setError(null)
+    setReauthRequired(false)
     try {
       await revokeApiKey(keyId)
       await onAccountChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'API key revocation failed')
+      reportSecurityError(reason, 'API key revocation failed')
     } finally {
       setSubmitting(false)
     }
@@ -1024,6 +1059,7 @@ function AccountPage({
 
   return <main className="account-page">
     <header className="page-heading"><p className="eyebrow">ACCOUNT</p><h1>{account.account.email}</h1><p className="intro">Verified {new Date(account.account.email_verified_at).toLocaleString()}.</p></header>
+    {reauthRequired && <section className="account-callout" role="alert"><div><p className="eyebrow">RECENT SIGN-IN REQUIRED</p><h2>Sign in again to change security settings</h2><p>Adding or removing passkeys and API keys requires a session verified within the last ten minutes. Sign in again, then retry the change.</p></div><Link to="/signin" className="button">Sign in again</Link></section>}
     {account.passkey_setup_required && <section className="account-callout"><div><p className="eyebrow">RECOMMENDED NEXT STEP</p><h2>Add a passkey</h2><p>Your email is verified. Add a phishing-resistant passkey for faster sign-in; email remains available for recovery.</p></div><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button" disabled={submitting}>{submitting ? 'Waiting for device…' : 'Add a passkey'}</button></form></section>}
     {!account.passkey_setup_required && <section className="panel account-section">
       <div className="section-heading"><div><p className="eyebrow">PASSKEYS</p><h2>Phishing-resistant sign-in</h2></div></div>
@@ -1039,7 +1075,7 @@ function AccountPage({
     </section>
     <section className="panel account-section">
       <div className="section-heading"><div><p className="eyebrow">SECURITY</p><h2>Signed-in sessions</h2></div><button className="button secondary small" disabled={submitting} onClick={() => void signOut(true)}>Sign out everywhere</button></div>
-      <div className="session-list">{account.sessions.filter((session) => session.revoked_at == null).map((session) => <div key={session.id}><div><strong>{session.current ? 'This browser' : session.kind === 'browser' ? 'Browser session' : 'Astrometry session'}</strong><span>Last used {new Date(session.last_seen_at).toLocaleString()} · expires {new Date(session.expires_at).toLocaleString()}</span></div><button className="text-button" disabled={submitting} onClick={() => session.current ? void signOut(false) : void removeSession(session.id)}>{session.current ? 'Sign out' : 'Revoke'}</button></div>)}</div>
+      <div className="session-list">{account.sessions.map((session) => <div key={session.id}><div><strong>{session.current ? 'This browser' : session.kind === 'browser' ? 'Browser session' : session.api_key_id ? 'Astrometry (API key)' : 'Astrometry session'}</strong><span>Last used {new Date(session.last_seen_at).toLocaleString()} · expires {new Date(session.expires_at).toLocaleString()}</span></div><button className="text-button" disabled={submitting} onClick={() => session.current ? void signOut(false) : void removeSession(session.id)}>{session.current ? 'Sign out' : 'Revoke'}</button></div>)}</div>
       {error && <p className="error" role="alert">{error}</p>}
     </section>
   </main>

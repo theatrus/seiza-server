@@ -3,6 +3,8 @@ pub mod api;
 pub mod auth;
 pub mod config;
 #[cfg(feature = "aws")]
+mod dynamodb_common;
+#[cfg(feature = "aws")]
 pub mod dynamodb_identity;
 #[cfg(feature = "aws")]
 pub mod dynamodb_repository;

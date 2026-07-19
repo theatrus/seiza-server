@@ -15,7 +15,10 @@ use std::{
 };
 use uuid::Uuid;
 
-type DynamoItem = HashMap<String, AttributeValue>;
+use crate::dynamodb_common::{
+    number, optional_bool, optional_string, required_number, required_string, string,
+};
+type DynamoItem = crate::dynamodb_common::Item;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StoreBackend {
@@ -1155,35 +1158,6 @@ fn client_key(owner: &str) -> String {
 
 fn object_index_key(object_key: &str) -> String {
     format!("OBJECT#{object_key}")
-}
-
-fn string(value: impl ToString) -> AttributeValue {
-    AttributeValue::S(value.to_string())
-}
-
-fn number(value: impl ToString) -> AttributeValue {
-    AttributeValue::N(value.to_string())
-}
-
-fn optional_string(item: &DynamoItem, name: &str) -> Option<String> {
-    item.get(name).and_then(|value| value.as_s().ok()).cloned()
-}
-
-fn optional_bool(item: &DynamoItem, name: &str) -> Option<bool> {
-    item.get(name)
-        .and_then(|value| value.as_bool().ok())
-        .copied()
-}
-
-fn required_string(item: &DynamoItem, name: &str) -> Result<String> {
-    optional_string(item, name).with_context(|| format!("DynamoDB item is missing string {name}"))
-}
-
-fn required_number(item: &DynamoItem, name: &str) -> Result<String> {
-    item.get(name)
-        .and_then(|value| value.as_n().ok())
-        .cloned()
-        .with_context(|| format!("DynamoDB item is missing number {name}"))
 }
 
 fn required_u64(item: &DynamoItem, name: &str) -> Result<u64> {

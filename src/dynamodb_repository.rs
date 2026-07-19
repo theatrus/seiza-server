@@ -1,5 +1,9 @@
 use crate::{
     config::Config,
+    dynamodb_common::{
+        Item, decode_time, encode_time, number, optional_bool, optional_string, required_number,
+        required_string, required_uuid, string,
+    },
     models::{
         AstrometryId, JobId, JobLease, JobRecord, JobStatus, LegacyJobId, SolutionResponse,
         ValidationDonation, astrometry_id_for_job,
@@ -16,7 +20,6 @@ use chrono::{DateTime, Duration, Utc};
 use std::{cmp::Ordering, collections::HashMap};
 use uuid::Uuid;
 
-type Item = HashMap<String, AttributeValue>;
 const JOB_STATUS_CREATED_AT_INDEX: &str = "job-status-created-at";
 
 #[derive(Clone, Copy)]
@@ -728,12 +731,6 @@ fn record_from_item(item: &Item) -> Result<JobRecord> {
     })
 }
 
-fn string(value: impl ToString) -> AttributeValue {
-    AttributeValue::S(value.to_string())
-}
-fn number(value: impl ToString) -> AttributeValue {
-    AttributeValue::N(value.to_string())
-}
 fn nullable_json(value: Option<SolutionResponse>) -> Result<AttributeValue> {
     match value {
         Some(value) => Ok(AttributeValue::S(serde_json::to_string(&value)?)),
@@ -761,34 +758,6 @@ fn client_key(owner: &str) -> String {
 fn object_index_key(object_key: &str) -> String {
     format!("OBJECT#{object_key}")
 }
-fn encode_time(value: DateTime<Utc>) -> String {
-    value.to_rfc3339()
-}
-fn decode_time(value: &str) -> Result<DateTime<Utc>> {
-    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
-}
-fn optional_string(item: &Item, name: &str) -> Option<String> {
-    item.get(name).and_then(|value| value.as_s().ok()).cloned()
-}
-fn optional_bool(item: &Item, name: &str) -> Option<bool> {
-    item.get(name)
-        .and_then(|value| value.as_bool().ok())
-        .copied()
-}
-fn required_string(item: &Item, name: &str) -> Result<String> {
-    optional_string(item, name).with_context(|| format!("DynamoDB item is missing string {name}"))
-}
-fn required_uuid(item: &Item, name: &str) -> Result<Uuid> {
-    Uuid::parse_str(&required_string(item, name)?)
-        .with_context(|| format!("DynamoDB item has invalid UUID {name}"))
-}
-fn required_number(item: &Item, name: &str) -> Result<String> {
-    item.get(name)
-        .and_then(|value| value.as_n().ok())
-        .cloned()
-        .with_context(|| format!("DynamoDB item is missing number {name}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
