@@ -592,6 +592,38 @@ impl IdentityRepository for SqlxIdentityRepository {
             .map(api_key_from_row)
             .collect()
     }
+
+    async fn touch_api_key(
+        &self,
+        account_id: AccountId,
+        key_id: ApiKeyId,
+        last_used_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(sqlx::query("UPDATE api_keys SET last_used_at = $1 WHERE id = $2 AND account_id = $3 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > $1)")
+            .bind(encode_time(last_used_at))
+            .bind(key_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
+
+    async fn revoke_api_key(
+        &self,
+        account_id: AccountId,
+        key_id: ApiKeyId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(sqlx::query("UPDATE api_keys SET revoked_at = $1 WHERE id = $2 AND account_id = $3 AND revoked_at IS NULL")
+            .bind(encode_time(revoked_at))
+            .bind(key_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
 }
 
 async fn account_query(

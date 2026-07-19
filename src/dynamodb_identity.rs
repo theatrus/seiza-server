@@ -528,8 +528,9 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .table_name(&self.table)
             .key("pk", string(account_key(account_id)))
             .key("sk", string(session_key(session_id)))
-            .condition_expression("attribute_not_exists(revoked_at) AND absolute_expires_at > :last_seen_at")
+            .condition_expression("entity = :entity AND attribute_not_exists(revoked_at) AND absolute_expires_at > :last_seen_at")
             .update_expression("SET last_seen_at = :last_seen_at, expires_at = :expires_at, ttl_epoch = :ttl_epoch")
+            .expression_attribute_values(":entity", string("auth_session"))
             .expression_attribute_values(":last_seen_at", string(encode_time(last_seen_at)))
             .expression_attribute_values(":expires_at", string(encode_time(expires_at)))
             .expression_attribute_values(":ttl_epoch", number(expires_at.timestamp()))
@@ -560,8 +561,9 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .table_name(&self.table)
             .key("pk", string(account_key(account_id)))
             .key("sk", string(session_key(session_id)))
-            .condition_expression("attribute_not_exists(revoked_at)")
+            .condition_expression("entity = :entity AND attribute_not_exists(revoked_at)")
             .update_expression("SET revoked_at = :revoked_at, ttl_epoch = :ttl_epoch")
+            .expression_attribute_values(":entity", string("auth_session"))
             .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
             .expression_attribute_values(
                 ":ttl_epoch",
@@ -821,8 +823,9 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .table_name(&self.table)
             .key("pk", string(account_key(account_id)))
             .key("sk", string(passkey_key(passkey_id)))
-            .condition_expression("attribute_not_exists(revoked_at)")
+            .condition_expression("entity = :entity AND attribute_not_exists(revoked_at)")
             .update_expression("SET revoked_at = :revoked_at")
+            .expression_attribute_values(":entity", string("passkey"))
             .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
             .send()
             .await;
@@ -872,6 +875,72 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .iter()
             .map(api_key_from_item)
             .collect()
+    }
+
+    async fn touch_api_key(
+        &self,
+        account_id: AccountId,
+        key_id: ApiKeyId,
+        last_used_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(account_key(account_id)))
+            .key("sk", string(api_key_key(key_id)))
+            .condition_expression("entity = :entity AND attribute_not_exists(revoked_at) AND (attribute_not_exists(expires_at) OR expires_at > :now)")
+            .update_expression("SET last_used_at = :now")
+            .expression_attribute_values(":entity", string("api_key"))
+            .expression_attribute_values(":now", string(encode_time(last_used_at)))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn revoke_api_key(
+        &self,
+        account_id: AccountId,
+        key_id: ApiKeyId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(account_key(account_id)))
+            .key("sk", string(api_key_key(key_id)))
+            .condition_expression("entity = :entity AND attribute_not_exists(revoked_at)")
+            .update_expression("SET revoked_at = :revoked_at, ttl_epoch = :ttl_epoch")
+            .expression_attribute_values(":entity", string("api_key"))
+            .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
+            .expression_attribute_values(
+                ":ttl_epoch",
+                number((revoked_at + Duration::days(30)).timestamp()),
+            )
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 

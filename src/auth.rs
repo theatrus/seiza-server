@@ -2,7 +2,7 @@ use crate::{
     config::Config,
     email::{EmailSender, SignInEmail, email_sender},
     identity::{
-        Account, AccountStatus, AuthChallenge, AuthSession, ChallengeId, ChallengePurpose,
+        Account, AccountStatus, ApiKey, AuthChallenge, AuthSession, ChallengeId, ChallengePurpose,
         CompletedEmailSignIn, IdentityRepository, PasskeyCredential, SessionKind,
     },
     rate_limit::RateLimiter,
@@ -33,6 +33,9 @@ const SESSION_IDLE_LIFETIME: Duration = Duration::days(30);
 const SESSION_ABSOLUTE_LIFETIME: Duration = Duration::days(90);
 const SESSION_TOUCH_INTERVAL: Duration = Duration::minutes(15);
 const RECENT_AUTH_LIFETIME: Duration = Duration::minutes(10);
+const API_KEY_TOUCH_INTERVAL: Duration = Duration::minutes(15);
+pub const SCOPE_SOLVE_READ: &str = "solve:read";
+pub const SCOPE_SOLVE_SUBMIT: &str = "solve:submit";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -52,6 +55,8 @@ pub enum AuthError {
     RecentAuthenticationRequired,
     #[error("passkey label must be between 1 and 80 characters")]
     InvalidPasskeyLabel,
+    #[error("API key name or scopes are invalid")]
+    InvalidApiKeyRequest,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +101,31 @@ pub struct CompletedPasskeyBrowserSignIn {
     pub passkey: PasskeyCredential,
     pub session_token: String,
     pub csrf_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedApiKey {
+    pub account: Account,
+    pub api_key: ApiKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedAstrometrySession {
+    pub account: Account,
+    pub session: AuthSession,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreatedApiKey {
+    pub api_key: ApiKey,
+    pub token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreatedAstrometrySession {
+    pub account: Account,
+    pub session: AuthSession,
+    pub token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -659,6 +689,178 @@ impl AuthService {
         })
     }
 
+    pub async fn create_api_key(
+        &self,
+        authenticated: &AuthenticatedBrowserSession,
+        name: &str,
+        scopes: &[String],
+    ) -> Result<CreatedApiKey, AuthError> {
+        self.require_recent_auth(authenticated)?;
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(AuthError::InvalidApiKeyRequest);
+        }
+        if scopes.is_empty() {
+            return Err(AuthError::InvalidApiKeyRequest);
+        }
+        let mut scopes = scopes.to_vec();
+        scopes.sort();
+        scopes.dedup();
+        if scopes
+            .iter()
+            .any(|scope| !matches!(scope.as_str(), SCOPE_SOLVE_READ | SCOPE_SOLVE_SUBMIT))
+        {
+            return Err(AuthError::InvalidApiKeyRequest);
+        }
+        let now = Utc::now();
+        let key_id = Uuid::now_v7();
+        let secret = random_secret(32).map_err(AuthError::Internal)?;
+        let token = format!(
+            "seiza_key_{}_{}_{}",
+            authenticated.account.id, key_id, secret
+        );
+        let api_key = ApiKey {
+            id: key_id,
+            account_id: authenticated.account.id,
+            secret_digest: secret_digest(&secret),
+            display_prefix: format!("seiza_key_{}_{}…", authenticated.account.id, key_id),
+            name: name.to_owned(),
+            scopes,
+            queue_weight: 1.0,
+            created_at: now,
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+        };
+        self.repository
+            .create_api_key(api_key.clone())
+            .await
+            .map_err(AuthError::Internal)?;
+        Ok(CreatedApiKey { api_key, token })
+    }
+
+    pub async fn authenticate_api_key(
+        &self,
+        token: &str,
+        required_scope: &str,
+    ) -> Result<AuthenticatedApiKey, AuthError> {
+        let (account_id, key_id, secret) =
+            parse_api_key_token(token).ok_or(AuthError::InvalidCredential)?;
+        let now = Utc::now();
+        let mut api_key = self
+            .repository
+            .api_key(account_id, key_id)
+            .await
+            .map_err(AuthError::Internal)?
+            .filter(|key| {
+                key.revoked_at.is_none()
+                    && key.expires_at.is_none_or(|expires_at| expires_at > now)
+                    && key.scopes.iter().any(|scope| scope == required_scope)
+                    && constant_time_eq(&key.secret_digest, &secret_digest(&secret))
+            })
+            .ok_or(AuthError::InvalidCredential)?;
+        let account = self
+            .repository
+            .account_by_id(account_id)
+            .await
+            .map_err(AuthError::Internal)?
+            .filter(|account| account.status == AccountStatus::Active)
+            .ok_or(AuthError::InvalidCredential)?;
+        if api_key
+            .last_used_at
+            .is_none_or(|last_used_at| now - last_used_at >= API_KEY_TOUCH_INTERVAL)
+        {
+            match self.repository.touch_api_key(account_id, key_id, now).await {
+                Ok(true) => api_key.last_used_at = Some(now),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    %error,
+                    %account_id,
+                    %key_id,
+                    "could not update API key usage metadata"
+                ),
+            }
+        }
+        Ok(AuthenticatedApiKey { account, api_key })
+    }
+
+    pub async fn create_astrometry_session(
+        &self,
+        api_key_token: &str,
+    ) -> Result<CreatedAstrometrySession, AuthError> {
+        let authenticated = self
+            .authenticate_api_key(api_key_token, SCOPE_SOLVE_SUBMIT)
+            .await?;
+        let now = Utc::now();
+        let secret = random_secret(32).map_err(AuthError::Internal)?;
+        let session = AuthSession {
+            id: Uuid::now_v7(),
+            token_digest: secret_digest(&secret),
+            account_id: authenticated.account.id,
+            kind: SessionKind::Astrometry,
+            csrf_digest: None,
+            created_at: now,
+            last_seen_at: now,
+            expires_at: now + SESSION_IDLE_LIFETIME,
+            absolute_expires_at: now + SESSION_ABSOLUTE_LIFETIME,
+            revoked_at: None,
+        };
+        self.repository
+            .create_session(session.clone())
+            .await
+            .map_err(AuthError::Internal)?;
+        Ok(CreatedAstrometrySession {
+            token: format!(
+                "seiza_session_{}_{}_{}",
+                authenticated.account.id, session.id, secret
+            ),
+            account: authenticated.account,
+            session,
+        })
+    }
+
+    pub async fn authenticate_astrometry_session(
+        &self,
+        token: &str,
+    ) -> Result<AuthenticatedAstrometrySession, AuthError> {
+        let (account_id, session_id, secret) =
+            parse_session_token(token).ok_or(AuthError::InvalidCredential)?;
+        let now = Utc::now();
+        let mut session = self
+            .repository
+            .session(account_id, session_id)
+            .await
+            .map_err(AuthError::Internal)?
+            .filter(|session| {
+                session.kind == SessionKind::Astrometry
+                    && session.revoked_at.is_none()
+                    && session.expires_at > now
+                    && session.absolute_expires_at > now
+                    && constant_time_eq(&session.token_digest, &secret_digest(&secret))
+            })
+            .ok_or(AuthError::InvalidCredential)?;
+        let account = self
+            .repository
+            .account_by_id(account_id)
+            .await
+            .map_err(AuthError::Internal)?
+            .filter(|account| account.status == AccountStatus::Active)
+            .ok_or(AuthError::InvalidCredential)?;
+        if now - session.last_seen_at >= SESSION_TOUCH_INTERVAL {
+            let expires_at = (now + SESSION_IDLE_LIFETIME).min(session.absolute_expires_at);
+            if self
+                .repository
+                .touch_session(account_id, session_id, now, expires_at)
+                .await
+                .map_err(AuthError::Internal)?
+            {
+                session.last_seen_at = now;
+                session.expires_at = expires_at;
+            }
+        }
+        Ok(AuthenticatedAstrometrySession { account, session })
+    }
+
     async fn valid_webauthn_challenge(
         &self,
         challenge_id: ChallengeId,
@@ -748,6 +950,20 @@ pub fn parse_session_token(token: &str) -> Option<(Uuid, Uuid, String)> {
         return None;
     }
     Some((account_id, session_id, secret))
+}
+
+pub fn parse_api_key_token(token: &str) -> Option<(Uuid, Uuid, String)> {
+    let mut components = token.splitn(5, '_');
+    if components.next()? != "seiza" || components.next()? != "key" {
+        return None;
+    }
+    let account_id = Uuid::parse_str(components.next()?).ok()?;
+    let key_id = Uuid::parse_str(components.next()?).ok()?;
+    let secret = components.next()?.to_owned();
+    if secret.is_empty() {
+        return None;
+    }
+    Some((account_id, key_id, secret))
 }
 
 fn random_secret(bytes: usize) -> Result<String> {
@@ -930,6 +1146,97 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn api_keys_and_astrometry_sessions_use_exact_revocable_records() {
+        let (service, sender) = service().await;
+        let start = service
+            .start_email("api@example.com", "192.0.2.1")
+            .await
+            .unwrap();
+        let message = sender.0.lock().await[0].clone();
+        let signed_in = service
+            .complete_email(EmailCredential::Code {
+                email: "api@example.com".into(),
+                challenge_id: start.challenge_id,
+                code: message.code,
+            })
+            .await
+            .unwrap();
+        let browser = service
+            .authenticate_browser_session(&signed_in.session_token, Some(&signed_in.csrf_token))
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.create_api_key(&browser, "No scopes", &[]).await,
+            Err(AuthError::InvalidApiKeyRequest)
+        ));
+        let read_only = service
+            .create_api_key(&browser, "Read only", &[SCOPE_SOLVE_READ.into()])
+            .await
+            .unwrap();
+        assert!(
+            service
+                .authenticate_api_key(&read_only.token, SCOPE_SOLVE_SUBMIT)
+                .await
+                .is_err()
+        );
+        let created = service
+            .create_api_key(
+                &browser,
+                "Observatory",
+                &[SCOPE_SOLVE_READ.into(), SCOPE_SOLVE_SUBMIT.into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            parse_api_key_token(&created.token).unwrap().0,
+            browser.account.id
+        );
+        assert_eq!(
+            service
+                .authenticate_api_key(&created.token, SCOPE_SOLVE_READ)
+                .await
+                .unwrap()
+                .account
+                .id,
+            browser.account.id
+        );
+        assert!(
+            service
+                .authenticate_api_key(&format!("{}wrong", created.token), SCOPE_SOLVE_READ)
+                .await
+                .is_err()
+        );
+
+        let astrometry = service
+            .create_astrometry_session(&created.token)
+            .await
+            .unwrap();
+        assert_eq!(astrometry.session.kind, SessionKind::Astrometry);
+        assert_eq!(
+            service
+                .authenticate_astrometry_session(&astrometry.token)
+                .await
+                .unwrap()
+                .account
+                .id,
+            browser.account.id
+        );
+        assert!(
+            service
+                .repository
+                .revoke_api_key(browser.account.id, created.api_key.id, Utc::now())
+                .await
+                .unwrap()
+        );
+        assert!(
+            service
+                .authenticate_api_key(&created.token, SCOPE_SOLVE_READ)
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn composite_session_tokens_preserve_base64url_underscores() {
         let account_id = Uuid::now_v7();
@@ -938,6 +1245,17 @@ mod tests {
         assert_eq!(
             parse_session_token(&token),
             Some((account_id, session_id, "secret_with_underlines".into()))
+        );
+    }
+
+    #[test]
+    fn composite_api_key_tokens_preserve_base64url_underscores() {
+        let account_id = Uuid::now_v7();
+        let key_id = Uuid::now_v7();
+        let token = format!("seiza_key_{account_id}_{key_id}_secret_with_underlines");
+        assert_eq!(
+            parse_api_key_token(&token),
+            Some((account_id, key_id, "secret_with_underlines".into()))
         );
     }
 }

@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { AccountDetails, Annotations, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokePasskey, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
+import { AccountDetails, Annotations, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -929,6 +929,10 @@ function AccountPage({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [passkeyLabel, setPasskeyLabel] = useState('This device')
+  const [apiKeyName, setApiKeyName] = useState('Observatory')
+  const [apiKeyRead, setApiKeyRead] = useState(true)
+  const [apiKeySubmit, setApiKeySubmit] = useState(true)
+  const [createdApiToken, setCreatedApiToken] = useState<string | null>(null)
 
   async function signOut(all: boolean) {
     setSubmitting(true)
@@ -970,9 +974,52 @@ function AccountPage({
     }
   }
 
+  async function addApiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    setCreatedApiToken(null)
+    try {
+      const scopes = [apiKeyRead && 'solve:read', apiKeySubmit && 'solve:submit'].filter((scope): scope is string => Boolean(scope))
+      const created = await createApiKey(apiKeyName, scopes)
+      setCreatedApiToken(created.token)
+      await onAccountChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'API key creation failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeApiKey(keyId: string) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await revokeApiKey(keyId)
+      await onAccountChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'API key revocation failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeSession(sessionId: string) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await revokeSession(sessionId)
+      await onAccountChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Session revocation failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   if (!accountChecked) return <main className="narrow-page auth-page"><p className="intro">Loading account…</p></main>
   if (!accountsEnabled || !account) {
-    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNT</p><h1>Sign in to continue.</h1><p className="intro">Your account keeps browser sessions and, in the next phases, passkeys and API keys under your control.</p><Link to="/signin" className="button">Sign in</Link></section></main>
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNT</p><h1>Sign in to continue.</h1><p className="intro">Your account keeps browser sessions, passkeys, and API keys under your control.</p><Link to="/signin" className="button">Sign in</Link></section></main>
   }
 
   return <main className="account-page">
@@ -984,8 +1031,15 @@ function AccountPage({
       <details className="add-security-item"><summary>Add another passkey</summary><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button small" disabled={submitting}>Add passkey</button></form></details>
     </section>}
     <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">API KEYS</p><h2>Programmatic access</h2></div></div>
+      <p className="section-intro">Use account API keys with <code>X-API-Key</code> or <code>Authorization: Bearer</code>. Every key shares this account’s queue identity.</p>
+      {createdApiToken && <div className="secret-once" role="status"><strong>Copy this key now—it will not be shown again.</strong><code>{createdApiToken}</code><div className="secret-actions"><button className="button secondary small" onClick={() => void navigator.clipboard.writeText(createdApiToken)}>Copy key</button><button className="text-button" onClick={() => setCreatedApiToken(null)}>I’ve saved it</button></div></div>}
+      <div className="session-list">{account.api_keys.map((key) => <div key={key.id}><div><strong>{key.name}</strong><span>{key.display_prefix} · {key.scopes.join(', ')}{key.last_used_at ? ` · last used ${new Date(key.last_used_at).toLocaleString()}` : ''}</span></div><button className="text-button" disabled={submitting} onClick={() => void removeApiKey(key.id)}>Revoke</button></div>)}</div>
+      <details className="add-security-item"><summary>Create an API key</summary><form className="api-key-form" onSubmit={addApiKey}><label>Key name<input value={apiKeyName} maxLength={80} required onChange={(event) => setApiKeyName(event.target.value)} /></label><fieldset><legend>Scopes</legend><label className="inline-check"><input type="checkbox" checked={apiKeyRead} onChange={(event) => setApiKeyRead(event.target.checked)} /> Read solve results</label><label className="inline-check"><input type="checkbox" checked={apiKeySubmit} onChange={(event) => setApiKeySubmit(event.target.checked)} /> Submit and re-solve images</label></fieldset><button className="button small" disabled={submitting || (!apiKeyRead && !apiKeySubmit)}>Create key</button></form></details>
+    </section>
+    <section className="panel account-section">
       <div className="section-heading"><div><p className="eyebrow">SECURITY</p><h2>Signed-in sessions</h2></div><button className="button secondary small" disabled={submitting} onClick={() => void signOut(true)}>Sign out everywhere</button></div>
-      <div className="session-list">{account.sessions.filter((session) => session.revoked_at == null).map((session) => <div key={session.id}><div><strong>{session.current ? 'This browser' : session.kind === 'browser' ? 'Browser session' : 'Astrometry session'}</strong><span>Last used {new Date(session.last_seen_at).toLocaleString()} · expires {new Date(session.expires_at).toLocaleString()}</span></div>{session.current && <button className="text-button" disabled={submitting} onClick={() => void signOut(false)}>Sign out</button>}</div>)}</div>
+      <div className="session-list">{account.sessions.filter((session) => session.revoked_at == null).map((session) => <div key={session.id}><div><strong>{session.current ? 'This browser' : session.kind === 'browser' ? 'Browser session' : 'Astrometry session'}</strong><span>Last used {new Date(session.last_seen_at).toLocaleString()} · expires {new Date(session.expires_at).toLocaleString()}</span></div><button className="text-button" disabled={submitting} onClick={() => session.current ? void signOut(false) : void removeSession(session.id)}>{session.current ? 'Sign out' : 'Revoke'}</button></div>)}</div>
       {error && <p className="error" role="alert">{error}</p>}
     </section>
   </main>

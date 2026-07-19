@@ -257,6 +257,18 @@ pub trait IdentityRepository: Send + Sync {
     async fn create_api_key(&self, api_key: ApiKey) -> Result<()>;
     async fn api_key(&self, account_id: AccountId, key_id: ApiKeyId) -> Result<Option<ApiKey>>;
     async fn list_api_keys(&self, account_id: AccountId) -> Result<Vec<ApiKey>>;
+    async fn touch_api_key(
+        &self,
+        account_id: AccountId,
+        key_id: ApiKeyId,
+        last_used_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    async fn revoke_api_key(
+        &self,
+        account_id: AccountId,
+        key_id: ApiKeyId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool>;
 }
 
 pub async fn identity_repository(

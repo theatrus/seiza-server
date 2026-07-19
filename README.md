@@ -37,9 +37,9 @@ disappears on a process restart.
   priority queue. An unseen/least-recently served client goes first; higher
   future API tiers can use a larger queue weight without changing the
   scheduler. Conditional leasing makes duplicate delivery safe across workers.
-- `public` and `stub-api-key` authentication modes. The latter requires a
-  nonempty key/session but deliberately does not validate it against a key
-  database yet.
+- `public`, legacy `stub-api-key`, and `accounts` authentication modes. Account
+  mode provides verified-email recovery, multi-session cookies, passkeys,
+  revocable scoped API keys, and persisted Astrometry-compatible sessions.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
@@ -315,12 +315,14 @@ curl -sS -X POST http://127.0.0.1:8080/api/upload \
 
 This is deliberately a focused interoperability surface, not a clone of every
 Astrometry.net endpoint. URL uploads are not exposed, avoiding an SSRF-capable
-server fetch path. Tags, generated FITS images, durable sessions, and API-key
-verification are future additions. The canonical native API already provides
-annotations and a downloadable WCS header.
+server fetch path. In `accounts` mode the login validates an account API key
+and returns a persisted, expiring Astrometry session; public/stub modes retain
+their compatibility behavior. Tags and generated FITS images are not exposed.
+The canonical native API already provides annotations and a downloadable WCS
+header.
 
-The implementation plan for verified-email accounts, passkeys, durable
-sessions, API keys, and SES/authenticated-SMTP delivery is in
+The implementation and rollout plan for verified-email accounts, passkeys,
+durable sessions, API keys, and SES/authenticated-SMTP delivery is in
 [docs/accounts-authentication.md](docs/accounts-authentication.md).
 
 The endpoint shapes and multipart encoding follow the

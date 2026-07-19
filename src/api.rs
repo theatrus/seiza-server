@@ -598,6 +598,18 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/account/passkeys/{passkey_id}",
             axum::routing::delete(revoke_passkey),
         )
+        .route(
+            "/api/v1/account/api-keys",
+            get(list_api_keys).post(create_api_key),
+        )
+        .route(
+            "/api/v1/account/api-keys/{key_id}",
+            axum::routing::delete(revoke_api_key),
+        )
+        .route(
+            "/api/v1/account/sessions/{session_id}",
+            axum::routing::delete(revoke_account_session),
+        )
         .route("/api/v1/catalog/objects", get(get_catalog_objects))
         .route(
             "/api/v1/catalog/objects/search",
@@ -849,11 +861,16 @@ async fn get_account(
         .list_passkeys(authenticated.account.id)
         .await
         .map_err(ApiError::internal)?;
+    let api_keys = identity
+        .list_api_keys(authenticated.account.id)
+        .await
+        .map_err(ApiError::internal)?;
     let mut response = Json(json!({
         "account": account_json(&authenticated.account),
         "csrf_token": authenticated.csrf_token,
         "passkey_setup_required": !passkeys.iter().any(|passkey| passkey.revoked_at.is_none()),
         "passkeys": passkeys.iter().filter(|passkey| passkey.revoked_at.is_none()).map(passkey_json).collect::<Vec<_>>(),
+        "api_keys": api_keys.iter().filter(|key| key.revoked_at.is_none()).map(api_key_json).collect::<Vec<_>>(),
         "sessions": sessions.into_iter().map(|session| json!({
             "id": session.id,
             "kind": session.kind,
@@ -995,6 +1012,110 @@ fn passkey_json(passkey: &crate::identity::PasskeyCredential) -> Value {
         "created_at": passkey.created_at,
         "last_used_at": passkey.last_used_at,
     })
+}
+
+async fn list_api_keys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser(&state, &headers).await?;
+    let keys = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository")
+        .list_api_keys(authenticated.account.id)
+        .await
+        .map_err(ApiError::internal)?;
+    no_store_json(json!({
+        "api_keys": keys.iter().filter(|key| key.revoked_at.is_none()).map(api_key_json).collect::<Vec<_>>(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct CreateApiKeyRequest {
+    name: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+async fn create_api_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateApiKeyRequest>,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    let created = auth_service(&state)?
+        .create_api_key(&authenticated, &request.name, &request.scopes)
+        .await
+        .map_err(auth_api_error)?;
+    no_store_json(json!({
+        "api_key": api_key_json(&created.api_key),
+        "token": created.token,
+    }))
+}
+
+async fn revoke_api_key(
+    State(state): State<AppState>,
+    Path(key_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    auth_service(&state)?
+        .require_recent_auth(&authenticated)
+        .map_err(auth_api_error)?;
+    let revoked = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository")
+        .revoke_api_key(authenticated.account.id, key_id, Utc::now())
+        .await
+        .map_err(ApiError::internal)?;
+    if !revoked {
+        return Err(ApiError::not_found_message("API key not found"));
+    }
+    no_store_json(json!({ "status": "success" }))
+}
+
+fn api_key_json(key: &crate::identity::ApiKey) -> Value {
+    json!({
+        "id": key.id,
+        "name": key.name,
+        "display_prefix": key.display_prefix,
+        "scopes": key.scopes,
+        "queue_weight": key.queue_weight,
+        "created_at": key.created_at,
+        "expires_at": key.expires_at,
+        "last_used_at": key.last_used_at,
+    })
+}
+
+async fn revoke_account_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    auth_service(&state)?
+        .require_recent_auth(&authenticated)
+        .map_err(auth_api_error)?;
+    if session_id == authenticated.session.id {
+        auth_service(&state)?
+            .logout(&authenticated)
+            .await
+            .map_err(auth_api_error)?;
+        return cleared_auth_response(&state, json!({ "status": "success" }));
+    }
+    let revoked = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository")
+        .revoke_session(authenticated.account.id, session_id, Utc::now())
+        .await
+        .map_err(ApiError::internal)?;
+    if !revoked {
+        return Err(ApiError::not_found_message("session not found"));
+    }
+    no_store_json(json!({ "status": "success" }))
 }
 
 fn no_store_json(value: impl Serialize) -> Result<Response, ApiError> {
@@ -1201,6 +1322,9 @@ fn auth_api_error(error: AuthError) -> ApiError {
         AuthError::InvalidPasskeyLabel => {
             ApiError::bad_request("passkey label must be between 1 and 80 characters")
         }
+        AuthError::InvalidApiKeyRequest => ApiError::bad_request(
+            "API key name must be 1-80 characters and scopes must be supported",
+        ),
         AuthError::Internal(source) => ApiError::internal(source),
     }
 }
@@ -2619,6 +2743,22 @@ async fn astrometry_login(
 ) -> Result<Json<Value>, ApiError> {
     let request: AstroLoginRequest = serde_json::from_str(&form.request_json)
         .map_err(|error| ApiError::bad_request(format!("invalid request-json: {error}")))?;
+    if state.config.auth_mode == AuthMode::Accounts {
+        let api_key = request
+            .apikey
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::unauthorized("an account API key is required"))?;
+        let session = auth_service(&state)?
+            .create_astrometry_session(api_key)
+            .await
+            .map_err(auth_api_error)?;
+        return Ok(Json(json!({
+            "status": "success",
+            "message": "authenticated by Seiza account API key",
+            "session": session.token,
+        })));
+    }
     if state.config.auth_mode == AuthMode::StubApiKey
         && request.apikey.as_deref().is_none_or(str::is_empty)
     {
@@ -2626,12 +2766,9 @@ async fn astrometry_login(
             "an API key is required while SEIZA_AUTH_MODE=stub-api-key",
         ));
     }
-    // Sessions intentionally are opaque-but-unvalidated until a real API-key
-    // store is introduced. Keeping this response shape lets existing clients
-    // integrate now without locking in that future auth implementation.
     Ok(Json(json!({
         "status": "success",
-        "message": "authenticated by Seiza server (authentication stub)",
+        "message": "authenticated by Seiza server (public/stub mode)",
         "session": format!("seiza-{}", Uuid::now_v7()),
     })))
 }
@@ -2863,13 +3000,36 @@ async fn client_from_headers(
     mutation: bool,
 ) -> Result<Client, ApiError> {
     if state.config.auth_mode == AuthMode::Accounts {
-        if astrometry_session.is_some()
-            || headers.contains_key("x-api-key")
-            || headers.contains_key(header::AUTHORIZATION)
-        {
+        let api_key = request_api_key(headers);
+        if astrometry_session.is_some() && api_key.is_some() {
             return Err(ApiError::unauthorized(
-                "account API keys and Astrometry sessions are not valid for this request",
+                "provide exactly one account credential",
             ));
+        }
+        if let Some(session) = astrometry_session {
+            let authenticated = auth_service(state)?
+                .authenticate_astrometry_session(session)
+                .await
+                .map_err(auth_api_error)?;
+            return Ok(Client {
+                id: format!("account:{}", authenticated.account.id),
+                queue_weight: 1.0,
+            });
+        }
+        if let Some(api_key) = api_key {
+            let scope = if mutation {
+                crate::auth::SCOPE_SOLVE_SUBMIT
+            } else {
+                crate::auth::SCOPE_SOLVE_READ
+            };
+            let authenticated = auth_service(state)?
+                .authenticate_api_key(api_key, scope)
+                .await
+                .map_err(auth_api_error)?;
+            return Ok(Client {
+                id: format!("account:{}", authenticated.account.id),
+                queue_weight: authenticated.api_key.queue_weight,
+            });
         }
         let authenticated = if mutation {
             authenticated_browser_for_mutation(state, headers).await?
@@ -2882,15 +3042,7 @@ async fn client_from_headers(
         });
     }
 
-    let api_key = headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-        })
+    let api_key = request_api_key(headers)
         .or(astrometry_session)
         .filter(|value| !value.trim().is_empty());
     let id = match (state.config.auth_mode, api_key) {
@@ -2915,6 +3067,19 @@ async fn client_from_headers(
         id,
         queue_weight: state.config.queue_weight_for_api_key(api_key),
     })
+}
+
+fn request_api_key(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+        })
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn public_client_id(source_ip: &str) -> String {
@@ -4327,12 +4492,74 @@ mod tests {
                 .await
                 .is_ok()
         );
-        let registration = start_passkey_registration(
+        let browser = authenticated_browser(&state, &mutation_headers)
+            .await
+            .unwrap();
+        let created_key = auth_service(&state)
+            .unwrap()
+            .create_api_key(
+                &browser,
+                "API test",
+                &[
+                    crate::auth::SCOPE_SOLVE_READ.into(),
+                    crate::auth::SCOPE_SOLVE_SUBMIT.into(),
+                ],
+            )
+            .await
+            .unwrap();
+        let mut api_headers = HeaderMap::new();
+        api_headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&created_key.token).unwrap(),
+        );
+        assert_eq!(
+            client_from_headers(&state, &api_headers, None, true)
+                .await
+                .unwrap()
+                .id,
+            format!("account:{}", browser.account.id)
+        );
+        let Json(astrometry_login) = astrometry_login(
             State(state.clone()),
-            mutation_headers.clone(),
+            Form(RequestJsonForm {
+                request_json: serde_json::to_string(&json!({
+                    "apikey": created_key.token,
+                }))
+                .unwrap(),
+            }),
         )
         .await
         .unwrap();
+        let astrometry_session = astrometry_login["session"].as_str().unwrap();
+        assert_eq!(
+            client_from_headers(&state, &HeaderMap::new(), Some(astrometry_session), true)
+                .await
+                .unwrap()
+                .id,
+            format!("account:{}", browser.account.id)
+        );
+        let (_, astrometry_session_id, _) =
+            crate::auth::parse_session_token(astrometry_session).unwrap();
+        assert_eq!(
+            revoke_account_session(
+                State(state.clone()),
+                Path(astrometry_session_id),
+                mutation_headers.clone(),
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::OK
+        );
+        assert!(
+            client_from_headers(&state, &HeaderMap::new(), Some(astrometry_session), true)
+                .await
+                .is_err()
+        );
+        let registration =
+            start_passkey_registration(State(state.clone()), mutation_headers.clone())
+                .await
+                .unwrap();
         assert_eq!(registration.status(), StatusCode::OK);
         let registration: Value = serde_json::from_slice(
             &to_bytes(registration.into_body(), usize::MAX)

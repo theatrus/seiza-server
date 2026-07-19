@@ -1,11 +1,11 @@
 # Accounts, passkeys, API keys, and email authentication
 
-Status: proposed implementation plan. None of the endpoints or configuration in
-this document are available yet.
+Status: implementation phases 1-4 are included in this PR. Production rollout,
+provider monitoring, and operational backup/restore exercises remain phase 5.
 
 ## Decision summary
 
-Seiza Server should add an `accounts` authentication mode built around a
+Seiza Server adds an `accounts` authentication mode built around a
 verified email address, passwordless email sign-in, passkeys, and account-owned
 API keys.
 
@@ -55,10 +55,11 @@ flowchart LR
 
 ## Current state and constraints
 
-The server currently has `public` and `stub-api-key` modes. Stub mode checks
-only that a nonempty value exists; `/api/login` returns a random session that
-is not persisted or validated. `SEIZA_PRIORITY_API_KEYS` is an operator-owned
-comma-separated allowlist rather than an API-key store.
+Before this implementation, the server only had `public` and `stub-api-key`
+modes. Stub mode still checks only that a nonempty value exists and
+`SEIZA_PRIORITY_API_KEYS` remains an operator-owned comma-separated allowlist.
+In `accounts` mode, `/api/login` now validates a scoped account key and returns
+a persisted, expiring Astrometry session.
 
 Jobs already persist an `owner` string and queue weight. This is the right seam
 for authenticated fairness: account submissions should use
@@ -67,7 +68,7 @@ multiple fair-queue identities. Result UUIDs remain unguessable capabilities in
 the first account release. Account-scoped job history can follow later without
 blocking authentication or requiring a new jobs-table index now.
 
-The first implementation should keep the identity backend aligned with the
+The implementation keeps the identity backend aligned with the
 deployment's durability:
 
 | Deployment | Identity persistence |
@@ -359,13 +360,12 @@ sessions, or API keys.
 API-key secrets are displayed exactly once. Names, prefixes, creation time,
 last use, scopes, and expiry remain visible. Initial scopes should be:
 
-- `solve:submit` for native and TUS submissions;
-- `solve:resolve` for re-solving retained inputs; and
-- `account:read` only if a nonbrowser client needs account metadata later.
+- `solve:submit` for native/TUS submissions and re-solving retained inputs; and
+- `solve:read` for retrieving solve state and results.
 
 Update API-key and passkey `last_used_at` as best-effort metadata, coalesced to
-at most once per credential per hour. Authentication success must not depend on
-that bookkeeping write.
+at most once per credential every 15 minutes. Authentication success must not
+depend on that bookkeeping write.
 
 Reading an unguessable result URL remains capability-based in the first phase.
 An account-created API key defaults to queue weight `1.0`; only an operator-side
@@ -404,6 +404,7 @@ cookie and return the CSRF token plus `passkey_setup_recommended`.
 | `GET /api/v1/account/api-keys` | List key metadata, never secrets |
 | `POST /api/v1/account/api-keys` | Create a named, scoped key and return its secret once |
 | `DELETE /api/v1/account/api-keys/{key_id}` | Revoke a key immediately |
+| `DELETE /api/v1/account/sessions/{session_id}` | Revoke one browser or Astrometry session |
 
 All mutating cookie-authenticated routes require the CSRF token. Responses use
 `Cache-Control: no-store` and must not include email, session tokens, passkey
@@ -411,8 +412,8 @@ ceremony state, or API-key secrets in structured logs.
 
 ### Existing API integration
 
-Add an `AuthenticatedPrincipal` extractor returning account ID, credential ID,
-scopes, queue weight, and authentication time. Authentication order is:
+Request authentication resolves an account ID, credential, scopes, queue
+weight, and authentication time. Authentication order is:
 
 1. account browser cookie for same-origin UI requests;
 2. account API key from `X-API-Key` or `Authorization: Bearer`;
@@ -564,8 +565,8 @@ The sign-in page presents:
 The first verified sign-in routes to passkey setup. Explain that the passkey is
 the preferred fast sign-in and the verified email remains recovery. The account
 page manages passkeys, API keys, and sessions. API-key creation requires a name,
-shows the secret once, and requires explicit confirmation that it has been
-copied before leaving.
+shows the secret once, and asks the user to acknowledge that it has been saved
+before dismissing it.
 
 TUS requests are same-origin and automatically carry the browser cookie. The
 API client must attach the CSRF header to mutating cookie-authenticated JSON
@@ -624,7 +625,7 @@ cookies.
 - Add the post-email passkey setup flow and explicit passkey-first sign-in.
 - Add virtual-authenticator browser tests.
 
-### Phase 4: API keys and compatibility
+### Phase 4: API keys and compatibility (implemented in this PR)
 
 - Implement API-key lifecycle/scopes and `AuthenticatedPrincipal`.
 - Attribute jobs and fairness to account IDs.

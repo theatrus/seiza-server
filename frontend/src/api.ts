@@ -181,11 +181,23 @@ export interface PasskeySummary {
   last_used_at: string | null
 }
 
+export interface ApiKeySummary {
+  id: string
+  name: string
+  display_prefix: string
+  scopes: string[]
+  queue_weight: number
+  created_at: string
+  expires_at: string | null
+  last_used_at: string | null
+}
+
 export interface AccountDetails {
   account: Account
   csrf_token: string | null
   passkey_setup_required: boolean
   passkeys: PasskeySummary[]
+  api_keys: ApiKeySummary[]
   sessions: AccountSession[]
 }
 
@@ -288,6 +300,26 @@ export async function registerPasskey(label: string): Promise<PasskeySummary> {
 
 export async function revokePasskey(passkeyId: string): Promise<void> {
   await expectJson(await sessionFetch(`/api/v1/account/passkeys/${passkeyId}`, {
+    method: 'DELETE',
+  }, true))
+}
+
+export async function createApiKey(name: string, scopes: string[]): Promise<{ api_key: ApiKeySummary; token: string }> {
+  return expectJson(await sessionFetch('/api/v1/account/api-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, scopes }),
+  }, true))
+}
+
+export async function revokeApiKey(keyId: string): Promise<void> {
+  await expectJson(await sessionFetch(`/api/v1/account/api-keys/${keyId}`, {
+    method: 'DELETE',
+  }, true))
+}
+
+export async function revokeSession(sessionId: string): Promise<void> {
+  await expectJson(await sessionFetch(`/api/v1/account/sessions/${sessionId}`, {
     method: 'DELETE',
   }, true))
 }

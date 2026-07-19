@@ -30,6 +30,7 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
 
   let signedIn = true
   let hasPasskey = false
+  let hasApiKey = false
   await page.route('**/api/v1/health', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
@@ -60,6 +61,16 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
           id: passkeyId,
           label: 'Observatory laptop',
           created_at: '2026-07-18T18:01:00Z',
+          last_used_at: null,
+        }] : [],
+        api_keys: hasApiKey ? [{
+          id: '019f7d31-8f00-7000-8000-000000000005',
+          name: 'Observatory',
+          display_prefix: 'seiza_key_account_key…',
+          scopes: ['solve:read', 'solve:submit'],
+          queue_weight: 1,
+          created_at: '2026-07-18T18:02:00Z',
+          expires_at: null,
           last_used_at: null,
         }] : [],
         sessions: [],
@@ -109,11 +120,30 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
       }),
     })
   })
+  await page.route('**/api/v1/account/api-keys', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue()
+    expect(route.request().headers()['x-csrf-token']).toBe('test-csrf')
+    const payload = route.request().postDataJSON()
+    expect(payload.name).toBe('Observatory')
+    expect(payload.scopes).toEqual(['solve:read', 'solve:submit'])
+    hasApiKey = true
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        api_key: { id: '019f7d31-8f00-7000-8000-000000000005', name: payload.name },
+        token: 'seiza_key_account_key_secret-shown-once',
+      }),
+    })
+  })
 
   await page.goto('http://localhost:4173/account')
   await page.getByLabel('Passkey name').fill('Observatory laptop')
   await page.getByRole('button', { name: 'Add a passkey' }).click()
   await expect(page.getByText('Observatory laptop')).toBeVisible()
+  await page.getByText('Create an API key').click()
+  await page.getByRole('button', { name: 'Create key' }).click()
+  await expect(page.getByText('Copy this key now—it will not be shown again.')).toBeVisible()
+  await expect(page.getByText('seiza_key_account_key_secret-shown-once')).toBeVisible()
 
   signedIn = false
   await page.goto('http://localhost:4173/signin')

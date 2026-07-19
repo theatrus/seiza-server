@@ -73,6 +73,16 @@ button:disabled { cursor: wait; opacity: .65; }
 .passkey-create-form .button { width: 100%; }
 .add-security-item { margin-top: 1.2rem; color: #8fdae7; font-size: .78rem; }
 .add-security-item .passkey-create-form { max-width: 420px; padding-top: 1rem; }
+.section-intro { color: #8fa9b1; font-size: .82rem; line-height: 1.65; }
+.section-intro code { color: #bcebee; }
+.secret-once { display: grid; gap: .75rem; margin: 1.2rem 0; padding: 1rem; border: 1px solid #826e3d; border-radius: 5px; background: rgb(39 38 26 / 72%); }
+.secret-once strong { color: #f0d17d; font-size: .8rem; }
+.secret-once code { padding: .75rem; overflow-wrap: anywhere; color: #c9f4f3; background: #071319; font-size: .75rem; }
+.secret-actions { display: flex; align-items: center; gap: 1rem; }
+.api-key-form { display: grid; max-width: 520px; gap: 1rem; padding-top: 1rem; }
+.api-key-form fieldset { display: grid; gap: .65rem; }
+.inline-check { display: grid; grid-template-columns: 1.1rem minmax(0, 1fr); align-items: center; gap: .6rem; }
+.inline-check input { width: 1rem; height: 1rem; margin: 0; padding: 0; accent-color: #75d7e2; }
 .solve-page { width: min(1040px, calc(100% - 2rem)); padding-top: 2.2rem; }
 .page-heading { max-width: 760px; margin-bottom: 2.4rem; }
 .solve-page .page-heading { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(380px, 1.2fr); gap: .6rem clamp(2.5rem, 6vw, 5rem); align-items: end; max-width: none; margin-bottom: 1.4rem; }
