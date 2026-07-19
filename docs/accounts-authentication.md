@@ -21,8 +21,8 @@ API keys.
   passkey is unavailable.
 - Browser sessions use a secure cookie. Programmatic clients use revocable,
   scoped API keys. In accounts mode, the Astrometry.net-compatible login
-  validates an account API key and returns an opaque persisted session instead
-  of accepting stub credentials.
+  validates an account API key when supplied and returns an opaque persisted
+  session; a login without a key returns a public session on the normal queue.
 - Identity persistence is separate from the job repository behind an
   `IdentityRepository` trait. SQLx uses normalized tables in the configured
   SQLite/PostgreSQL database. DynamoDB uses a new dedicated identity table,
@@ -60,14 +60,16 @@ flowchart LR
 Before this implementation, the server only had `public` and `stub-api-key`
 modes. Stub mode still checks only that a nonempty value exists and
 `SEIZA_PRIORITY_API_KEYS` remains an operator-owned comma-separated allowlist.
-In `accounts` mode, `/api/login` now validates a scoped account key and returns
-a persisted, expiring Astrometry session.
+In `accounts` mode, `/api/login` validates a scoped account key when one is
+supplied and returns a persisted, expiring Astrometry session. Without a key it
+returns a public compatibility session whose submissions use the normal queue.
 
 Jobs persist an `owner` string and queue weight. Account submissions use
 `account:<account-id>` as the owner so creating multiple API keys cannot create
 multiple fair-queue identities. Result UUIDs remain unguessable capabilities in
-the current account mode. Account-scoped job history can follow later without
-blocking authentication or requiring a new jobs-table index now.
+the current account mode. Signed-in account history is derived from this owner
+field: SQLx queries an `(owner, created_at)` index and DynamoDB queries the
+`job-owner-created-at` GSI, avoiding identity-table dual writes or scans.
 
 The implementation keeps the identity backend aligned with the
 deployment's durability:
@@ -399,6 +401,7 @@ cookie and return the CSRF token plus `passkey_setup_required`.
 | Method and path | Purpose |
 | --- | --- |
 | `GET /api/v1/account` | Verified email, session summary, and setup state |
+| `GET /api/v1/account/solves` | List the account's 100 most recent submitted solves |
 | `GET /api/v1/account/passkeys` | List labels and usage metadata |
 | `POST /api/v1/account/passkeys/registration/start` | Start registration after recent auth |
 | `POST /api/v1/account/passkeys/registration/complete` | Verify and persist a passkey |
@@ -420,26 +423,30 @@ weight, and authentication time. Authentication order is:
 1. account browser cookie for same-origin UI requests;
 2. account API key from `X-API-Key` or `Authorization: Bearer`;
 3. Astrometry session supplied in its existing request JSON; or
-4. public/stub behavior only when the configured mode allows it.
+4. public/stub behavior when the configured mode allows it; account mode also
+   permits anonymous public solves on the normal queue.
 
 The internal worker routes retain their separate `SEIZA_WORKER_TOKEN` contract;
 they must never accept account API keys. In `accounts` mode, `/api/login`
-validates the supplied account API key and creates a persisted
+validates a supplied account API key and creates a persisted
 `kind=astrometry` session that records the minting key's ID. Existing
 Astrometry clients then continue sending that opaque session in
-`request-json`. Every astrometry request re-validates the minting key, so
-revoking an API key immediately invalidates all sessions created from it (the
-sessions are also marked revoked for the account UI), and the key's queue
+`request-json`. Every account Astrometry request re-validates the minting key,
+so revoking an API key immediately invalidates all sessions created from it
+(the sessions are also marked revoked for the account UI), and the key's queue
 weight applies live. Because Astrometry clients commonly log in once per job,
 live sessions per key are capped; the oldest is recycled when a new login
-would exceed the cap.
+would exceed the cap. A login without an API key instead returns an unpersisted
+public session. Its submissions retain public ownership and queue weight 1, so
+they use the main queue rather than the account-priority queue.
 
 Submission persists `account:<uuid>` as owner and the server-controlled account
 tier as queue weight. `SEIZA_PRIORITY_API_KEYS` remains only for legacy stub
 mode and is deprecated once account keys are available. Public and historical
-result URLs continue to work without login. Account job history and private
-result ACLs are a later feature that would require owner-query support in both
-job repositories and a DynamoDB index.
+result URLs continue to work without login. The account page lists the 100 most
+recent jobs owned by that account through bounded owner queries. Public jobs
+submitted before sign-in are not retroactively attached, and image/preview
+retention is unchanged. Private result ACLs remain deferred.
 
 ## Email delivery
 
@@ -640,6 +647,8 @@ cookies.
 - Replace Astrometry stub sessions in accounts mode with persisted sessions.
 - Retain public/stub modes and deprecate `SEIZA_PRIORITY_API_KEYS` only for
   accounts deployments.
+- Keep public solves available in account mode on the normal queue and expose
+  bounded signed-in solve history through repository owner indexes.
 
 ### Phase 5: production rollout
 
@@ -678,9 +687,12 @@ The feature is ready to enable only when all of these hold:
   application reads reject them immediately after expiration;
 - browser cookies are secure/HttpOnly/SameSite, CSRF is enforced, and accounts
   mode rejects wildcard credentialed CORS;
-- `/api/login` rejects unknown keys in accounts mode and returns a persisted
-  Astrometry session for a valid key;
+- `/api/login` rejects unknown supplied keys in accounts mode, returns a
+  persisted Astrometry session for a valid key, and returns a public normal-
+  queue session when no key is supplied;
 - public and stub modes retain their existing compatibility;
+- signed-in jobs appear in newest-first account history without a table scan,
+  while anonymous jobs are not attached to a later sign-in;
 - SES works with normal credentials and at least one cross-account method, and
   SMTP works with required TLS and authentication;
 - bounce/complaint monitoring and production SES access are in place before
@@ -692,7 +704,7 @@ The feature is ready to enable only when all of these hold:
 
 These do not block the current account mode:
 
-- account-scoped solve history and private result ACLs;
+- private result ACLs and paginated history beyond the 100 most recent solves;
 - email-address change and account merge;
 - teams, service accounts, invitations, and delegated administration;
 - OAuth/OIDC/social login and SMTP OAuth;

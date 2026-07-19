@@ -203,6 +203,16 @@ export interface AccountDetails {
   sessions: AccountSession[]
 }
 
+export interface AccountSolve {
+  id: string
+  status: JobStatus
+  original_filename: string
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  solve_time_ms: number | null
+}
+
 export interface EmailSignInStart {
   challenge_id: string
   resend_at: string
@@ -261,6 +271,11 @@ export async function getAccount(): Promise<AccountDetails | null> {
   const response = await sessionFetch('/api/v1/account')
   if (response.status === 401 || response.status === 404) return null
   return expectJson<AccountDetails>(response)
+}
+
+export async function getAccountSolves(): Promise<AccountSolve[]> {
+  const response = await expectJson<{ solves: AccountSolve[] }>(await sessionFetch('/api/v1/account/solves'))
+  return response.solves
 }
 
 export async function logout(all = false): Promise<void> {

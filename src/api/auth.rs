@@ -8,6 +8,7 @@ use super::*;
 /// Auth and account requests are small JSON bodies; the largest are WebAuthn
 /// ceremony payloads at a few kilobytes.
 pub(super) const AUTH_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const ACCOUNT_SOLVE_HISTORY_LIMIT: usize = 100;
 
 #[derive(Deserialize)]
 pub(super) struct EmailStartRequest {
@@ -150,6 +151,30 @@ pub(super) async fn get_account(
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
+}
+
+pub(super) async fn list_account_solves(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser(&state, &headers).await?;
+    let owner = format!("account:{}", authenticated.account.id);
+    let solves = state
+        .repository
+        .list_by_owner(&owner, ACCOUNT_SOLVE_HISTORY_LIMIT)
+        .await
+        .map_err(ApiError::internal)?;
+    no_store_json(json!({
+        "solves": solves.into_iter().map(|job| json!({
+            "id": job.id,
+            "status": job.status,
+            "original_filename": job.original_filename,
+            "created_at": job.created_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "solve_time_ms": solve_time_ms(job.started_at, job.completed_at),
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 pub(super) async fn start_passkey_sign_in(

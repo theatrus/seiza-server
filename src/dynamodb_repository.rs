@@ -5,8 +5,8 @@ use crate::{
         required_string, required_uuid, string,
     },
     models::{
-        AstrometryId, JobId, JobLease, JobRecord, JobStatus, LegacyJobId, SolutionResponse,
-        ValidationDonation, astrometry_id_for_job,
+        AstrometryId, JobHistoryRecord, JobId, JobLease, JobRecord, JobStatus, LegacyJobId,
+        SolutionResponse, ValidationDonation, astrometry_id_for_job,
     },
     repository::JobRepository,
 };
@@ -21,6 +21,7 @@ use std::{cmp::Ordering, collections::HashMap};
 use uuid::Uuid;
 
 const JOB_STATUS_CREATED_AT_INDEX: &str = "job-status-created-at";
+const JOB_OWNER_CREATED_AT_INDEX: &str = "job-owner-created-at";
 
 #[derive(Clone, Copy)]
 enum ClaimEligibility {
@@ -30,9 +31,10 @@ enum ClaimEligibility {
 
 /// DynamoDB's single-table implementation. `JOB#…`, `ASTROMETRY#…`, and
 /// `CLIENT#…` records share the string `pk` partition key; job records are also
-/// indexed by `status` and `created_at` for bounded queue recovery. Leases are
-/// changed conditionally, so duplicate queue messages and multiple worker
-/// processes are safe. UUID job IDs require no counter item.
+/// indexed by `status`/`created_at` for bounded queue recovery and by
+/// `owner`/`created_at` for bounded account history. Leases are changed
+/// conditionally, so duplicate queue messages and multiple worker processes
+/// are safe. UUID job IDs require no counter item.
 pub struct DynamoDbJobRepository {
     client: Client,
     table: String,
@@ -416,6 +418,29 @@ impl JobRepository for DynamoDbJobRepository {
         .transpose()
     }
 
+    async fn list_by_owner(&self, owner: &str, limit: usize) -> Result<Vec<JobHistoryRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let output = self
+            .client
+            .query()
+            .table_name(&self.table)
+            .index_name(JOB_OWNER_CREATED_AT_INDEX)
+            .key_condition_expression("#owner = :owner")
+            .expression_attribute_names("#owner", "owner")
+            .expression_attribute_values(":owner", string(owner))
+            .scan_index_forward(false)
+            .limit(limit.min(i32::MAX as usize) as i32)
+            .send()
+            .await?;
+        output
+            .items()
+            .iter()
+            .map(history_record_from_item)
+            .collect()
+    }
+
     async fn queue_depth(&self) -> Result<usize> {
         Ok(self
             .job_ids_by_status(JobStatus::Queued, None, false, None)
@@ -727,6 +752,21 @@ fn record_from_item(item: &Item) -> Result<JobRecord> {
                     donated_at: decode_time(&required_string(item, "validation_donated_at")?)?,
                 })
             })
+            .transpose()?,
+    })
+}
+
+fn history_record_from_item(item: &Item) -> Result<JobHistoryRecord> {
+    Ok(JobHistoryRecord {
+        id: required_uuid(item, "id")?,
+        status: JobStatus::parse(&required_string(item, "status")?).map_err(anyhow::Error::msg)?,
+        original_filename: required_string(item, "original_filename")?,
+        created_at: decode_time(&required_string(item, "created_at")?)?,
+        started_at: optional_string(item, "started_at")
+            .map(|value| decode_time(&value))
+            .transpose()?,
+        completed_at: optional_string(item, "completed_at")
+            .map(|value| decode_time(&value))
             .transpose()?,
     })
 }

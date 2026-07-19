@@ -612,6 +612,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/logout-all", post(logout_all))
         .route("/api/v1/account", get(get_account))
+        .route("/api/v1/account/solves", get(list_account_solves))
         .route("/api/v1/account/passkeys", get(list_passkeys))
         .route(
             "/api/v1/account/passkeys/registration/start",
@@ -1393,19 +1394,21 @@ async fn astrometry_login(
     let request: AstroLoginRequest = serde_json::from_str(&form.request_json)
         .map_err(|error| ApiError::bad_request(format!("invalid request-json: {error}")))?;
     if state.config.auth_mode == AuthMode::Accounts {
-        let api_key = request
-            .apikey
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ApiError::unauthorized("an account API key is required"))?;
-        let session = auth_service(&state)?
-            .create_astrometry_session(api_key)
-            .await
-            .map_err(auth_api_error)?;
+        if let Some(api_key) = request.apikey.as_deref().filter(|value| !value.is_empty()) {
+            let session = auth_service(&state)?
+                .create_astrometry_session(api_key)
+                .await
+                .map_err(auth_api_error)?;
+            return Ok(Json(json!({
+                "status": "success",
+                "message": "authenticated by Seiza account API key",
+                "session": session.token,
+            })));
+        }
         return Ok(Json(json!({
             "status": "success",
-            "message": "authenticated by Seiza account API key",
-            "session": session.token,
+            "message": "public Seiza session",
+            "session": new_public_astrometry_session(),
         })));
     }
     if state.config.auth_mode == AuthMode::StubApiKey
@@ -1656,6 +1659,9 @@ async fn client_from_headers(
             ));
         }
         if let Some(session) = astrometry_session {
+            if is_public_astrometry_session(session) {
+                return Ok(public_client(headers));
+            }
             let authenticated = auth_service(state)?
                 .authenticate_astrometry_session(session)
                 .await
@@ -1680,6 +1686,9 @@ async fn client_from_headers(
                 queue_weight: authenticated.api_key.queue_weight,
             });
         }
+        if request_cookie(headers, session_cookie_name(state)).is_none() {
+            return Ok(public_client(headers));
+        }
         let authenticated = if mutation {
             authenticated_browser_for_mutation(state, headers).await?
         } else {
@@ -1702,20 +1711,39 @@ async fn client_from_headers(
             ));
         }
         (_, Some(key)) => format!("key:{:016x}", stable_hash(key)),
-        (AuthMode::Public, None) => {
-            let source_ip = headers
-                .get("x-forwarded-for")
-                .or_else(|| headers.get("x-real-ip"))
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(',').next())
-                .unwrap_or("anonymous");
-            public_client_id(source_ip)
-        }
+        (AuthMode::Public, None) => public_client(headers).id,
     };
     Ok(Client {
         id,
         queue_weight: state.config.queue_weight_for_api_key(api_key),
     })
+}
+
+fn public_client(headers: &HeaderMap) -> Client {
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .unwrap_or("anonymous");
+    Client {
+        id: public_client_id(source_ip),
+        // Public submissions always use the normal SQS queue. Priority is an
+        // authenticated account/API-key property in accounts mode.
+        queue_weight: 1.0,
+    }
+}
+
+const PUBLIC_ASTROMETRY_SESSION_PREFIX: &str = "seiza_public_";
+
+fn new_public_astrometry_session() -> String {
+    format!("{PUBLIC_ASTROMETRY_SESSION_PREFIX}{}", Uuid::now_v7())
+}
+
+fn is_public_astrometry_session(session: &str) -> bool {
+    session
+        .strip_prefix(PUBLIC_ASTROMETRY_SESSION_PREFIX)
+        .is_some_and(|id| Uuid::parse_str(id).is_ok())
 }
 
 fn request_api_key(headers: &HeaderMap) -> Option<&str> {
@@ -3042,6 +3070,30 @@ mod tests {
             vec![42; 32],
         )));
 
+        let mut anonymous_headers = HeaderMap::new();
+        anonymous_headers.insert("x-forwarded-for", HeaderValue::from_static("192.0.2.42"));
+        let anonymous = client_from_headers(&state, &anonymous_headers, None, true)
+            .await
+            .unwrap();
+        assert_eq!(anonymous.id, "public:192.0.2.42");
+        assert_eq!(anonymous.queue_weight, 1.0);
+        let Json(public_login) = astrometry_login(
+            State(state.clone()),
+            Form(RequestJsonForm {
+                request_json: "{}".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let public_session = public_login["session"].as_str().unwrap();
+        assert!(is_public_astrometry_session(public_session));
+        let anonymous_astrometry =
+            client_from_headers(&state, &anonymous_headers, Some(public_session), true)
+                .await
+                .unwrap();
+        assert_eq!(anonymous_astrometry.id, "public:192.0.2.42");
+        assert_eq!(anonymous_astrometry.queue_weight, 1.0);
+
         let start_response = start_email_sign_in(
             State(state.clone()),
             ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))),
@@ -3125,6 +3177,72 @@ mod tests {
                     .id
             )
         );
+
+        let account_id = state
+            .identity
+            .as_ref()
+            .unwrap()
+            .account_by_email_lookup("astronomer@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let account_job_id = Uuid::new_v4();
+        state
+            .repository
+            .enqueue(JobRecord {
+                id: account_job_id,
+                astrometry_id: 0,
+                owner: format!("account:{account_id}"),
+                queue_weight: 1.0,
+                object_key: format!("uploads/public-{account_job_id}/account.fits"),
+                original_filename: "account.fits".into(),
+                content_type: None,
+                options: SolveOptions::default(),
+                status: JobStatus::Queued,
+                created_at: Utc::now(),
+                started_at: None,
+                completed_at: None,
+                solution: None,
+                error: None,
+                validation_donation: None,
+            })
+            .await
+            .unwrap();
+        let public_job_id = Uuid::new_v4();
+        state
+            .repository
+            .enqueue(JobRecord {
+                id: public_job_id,
+                astrometry_id: 0,
+                owner: "public:192.0.2.42".into(),
+                queue_weight: 1.0,
+                object_key: format!("uploads/public-{public_job_id}/public.fits"),
+                original_filename: "public.fits".into(),
+                content_type: None,
+                options: SolveOptions::default(),
+                status: JobStatus::Queued,
+                created_at: Utc::now(),
+                started_at: None,
+                completed_at: None,
+                solution: None,
+                error: None,
+                validation_donation: None,
+            })
+            .await
+            .unwrap();
+        let history_response = list_account_solves(State(state.clone()), read_headers.clone())
+            .await
+            .unwrap();
+        let history: Value = serde_json::from_slice(
+            &to_bytes(history_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history["solves"].as_array().unwrap().len(), 1);
+        assert_eq!(history["solves"][0]["id"], account_job_id.to_string());
+        assert_eq!(history["solves"][0]["original_filename"], "account.fits");
 
         let missing_origin = client_from_headers(&state, &read_headers, None, true)
             .await

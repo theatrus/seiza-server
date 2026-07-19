@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { AccountDetails, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
+import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -186,7 +186,7 @@ export default function App() {
   return <div className="site-shell">
     <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} />
     {path === '/' && <HomePage />}
-    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} />}
+    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} />}
     {path === '/docs/api' && <ApiDocsPage />}
     {path === '/data-sources' && <DataSourcesPage />}
     {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} onAuthenticated={refreshAccount} />}
@@ -279,27 +279,13 @@ function HomePage() {
 function SolvePage({
   accountsEnabled,
   account,
-  accountChecked,
 }: {
   accountsEnabled: boolean
   account: AccountDetails | null
-  accountChecked: boolean
 }) {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
-
-  if (accountsEnabled && !account) {
-    if (!accountChecked) return <main className="narrow-page solve-page"><p className="intro">Loading account…</p></main>
-    return <main className="narrow-page solve-page">
-      <section className="empty-state">
-        <p className="eyebrow">PLATE SOLVER</p>
-        <h1>Sign in to solve.</h1>
-        <p className="intro">This Seiza deployment requires an account before uploading images. Sign in with your passkey or a verified email, then return here to start a solve.</p>
-        <Link to="/signin" className="button">Sign in</Link>
-      </section>
-    </main>
-  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -333,7 +319,9 @@ function SolvePage({
       <p className="eyebrow">PLATE SOLVER</p>
       <h1>Solve this image.</h1>
       <p className="intro">Choose an image to start. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
-      <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.</p>
+      <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.{accountsEnabled && (account
+        ? <><br />This solve will be added to your account history.</>
+        : <><br />Public solves remain available and use the normal queue. <Link to="/signin">Sign in</Link> first if you want this solve recorded in your account history.</>)}</p>
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -954,6 +942,26 @@ function AccountPage({
   const [apiKeyRead, setApiKeyRead] = useState(true)
   const [apiKeySubmit, setApiKeySubmit] = useState(true)
   const [createdApiToken, setCreatedApiToken] = useState<string | null>(null)
+  const [solveHistory, setSolveHistory] = useState<{
+    accountId: string
+    solves: AccountSolve[] | null
+    error: string | null
+  } | null>(null)
+  const accountId = account?.account.id
+  const currentHistory = solveHistory?.accountId === accountId ? solveHistory : null
+  const solves = currentHistory?.solves ?? null
+  const historyError = currentHistory?.error ?? null
+
+  useEffect(() => {
+    if (!accountsEnabled || !accountId) return
+    let active = true
+    getAccountSolves().then((history) => {
+      if (active) setSolveHistory({ accountId, solves: history, error: null })
+    }).catch((reason) => {
+      if (active) setSolveHistory({ accountId, solves: null, error: reason instanceof Error ? reason.message : 'Solve history failed to load' })
+    })
+    return () => { active = false }
+  }, [accountsEnabled, accountId])
 
   async function signOut(all: boolean) {
     setSubmitting(true)
@@ -1060,6 +1068,14 @@ function AccountPage({
   return <main className="account-page">
     <header className="page-heading"><p className="eyebrow">ACCOUNT</p><h1>{account.account.email}</h1><p className="intro">Verified {new Date(account.account.email_verified_at).toLocaleString()}.</p></header>
     {reauthRequired && <section className="account-callout" role="alert"><div><p className="eyebrow">RECENT SIGN-IN REQUIRED</p><h2>Sign in again to change security settings</h2><p>Adding or removing passkeys and API keys requires a session verified within the last ten minutes. Sign in again, then retry the change.</p></div><Link to="/signin" className="button">Sign in again</Link></section>}
+    <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">SOLVES</p><h2>Your recent fields</h2></div><Link to="/solve" className="button secondary small">Solve another image</Link></div>
+      <p className="section-intro">Signed-in browser, API-key, and Astrometry submissions appear here. Solve metadata remains in your account history; uploaded images and previews still follow the normal retention window.</p>
+      {solves === null && !historyError && <p className="section-intro">Loading solve history…</p>}
+      {historyError && <p className="error" role="alert">{historyError}</p>}
+      {solves?.length === 0 && <p className="section-intro">No signed-in solves yet. Public solves submitted before signing in are not attached retroactively.</p>}
+      {solves && solves.length > 0 && <div className="session-list">{solves.map((solve) => <div key={solve.id}><div><strong>{solve.original_filename}</strong><span>{solve.status.charAt(0).toUpperCase() + solve.status.slice(1)} · submitted {new Date(solve.created_at).toLocaleString()}{solve.solve_time_ms !== null ? ` · ${(solve.solve_time_ms / 1000).toFixed(1)} s` : ''}</span></div><Link to={`/solutions/${solve.id}`} className="text-button">{pending.has(solve.status) ? 'View progress' : 'View result'}</Link></div>)}</div>}
+    </section>
     {account.passkey_setup_required && <section className="account-callout"><div><p className="eyebrow">RECOMMENDED NEXT STEP</p><h2>Add a passkey</h2><p>Your email is verified. Add a phishing-resistant passkey for faster sign-in; email remains available for recovery.</p></div><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button" disabled={submitting}>{submitting ? 'Waiting for device…' : 'Add a passkey'}</button></form></section>}
     {!account.passkey_setup_required && <section className="panel account-section">
       <div className="section-heading"><div><p className="eyebrow">PASSKEYS</p><h2>Phishing-resistant sign-in</h2></div></div>

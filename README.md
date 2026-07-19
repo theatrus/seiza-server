@@ -39,7 +39,9 @@ disappears on a process restart.
   scheduler. Conditional leasing makes duplicate delivery safe across workers.
 - `public`, legacy `stub-api-key`, and `accounts` authentication modes. Account
   mode provides verified-email recovery, multi-session cookies, passkeys,
-  revocable scoped API keys, and persisted Astrometry-compatible sessions.
+  revocable scoped API keys, persisted Astrometry-compatible sessions, and
+  recent solve history. Anonymous solves remain available in account mode and
+  use the normal queue.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
@@ -322,9 +324,11 @@ curl -sS -X POST http://127.0.0.1:8080/api/upload \
 
 This is deliberately a focused interoperability surface, not a clone of every
 Astrometry.net endpoint. URL uploads are not exposed, avoiding an SSRF-capable
-server fetch path. In `accounts` mode the login validates an account API key
-and returns a persisted, expiring Astrometry session; public/stub modes retain
-their compatibility behavior. Tags and generated FITS images are not exposed.
+server fetch path. In `accounts` mode a login with an account API key returns a
+persisted, expiring account session. Omitting the key returns a public session
+whose submissions use the normal queue and do not enter account history.
+Public/stub modes retain their compatibility behavior. Tags and generated FITS
+images are not exposed.
 The canonical native API already provides annotations and a downloadable WCS
 header.
 
@@ -452,7 +456,8 @@ Run the API with `SEIZA_STORAGE_BACKEND=s3` and optionally
 - `SEIZA_JOB_BACKEND=dynamodb` and `SEIZA_DYNAMODB_TABLE=seiza-jobs` for a
   managed AWS job store. The supplied
   [DynamoDB template](infra/aws/seiza-jobs-dynamodb.yaml) creates the required
-  `pk` string partition key and `job-status-created-at` recovery GSI.
+  `pk` string partition key, `job-status-created-at` recovery GSI, and
+  `job-owner-created-at` account-history GSI.
 
 Both backends use one UUIDv4 for each job: it is the durable primary key, public
 result locator, worker handle, object-path identity, and SQS message body.
