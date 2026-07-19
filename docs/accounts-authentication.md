@@ -1,7 +1,8 @@
 # Accounts, passkeys, API keys, and email authentication
 
-Status: implementation phases 1-4 are included in this PR. Production rollout,
-provider monitoring, and operational backup/restore exercises remain phase 5.
+Status: implementation phases 1-4 are in the current server. Production
+rollout, provider monitoring, identity-store migration, and operational
+backup/restore exercises remain phase 5.
 
 ## Decision summary
 
@@ -19,8 +20,9 @@ API keys.
   typing their email. Email link/code sign-in remains available when the
   passkey is unavailable.
 - Browser sessions use a secure cookie. Programmatic clients use revocable,
-  scoped API keys. The Astrometry.net-compatible login validates an account API
-  key and returns an opaque session instead of the current unvalidated stub.
+  scoped API keys. In accounts mode, the Astrometry.net-compatible login
+  validates an account API key and returns an opaque persisted session instead
+  of accepting stub credentials.
 - Identity persistence is separate from the job repository behind an
   `IdentityRepository` trait. SQLx uses normalized tables in the configured
   SQLite/PostgreSQL database. DynamoDB uses a new dedicated identity table,
@@ -61,11 +63,10 @@ modes. Stub mode still checks only that a nonempty value exists and
 In `accounts` mode, `/api/login` now validates a scoped account key and returns
 a persisted, expiring Astrometry session.
 
-Jobs already persist an `owner` string and queue weight. This is the right seam
-for authenticated fairness: account submissions should use
+Jobs persist an `owner` string and queue weight. Account submissions use
 `account:<account-id>` as the owner so creating multiple API keys cannot create
 multiple fair-queue identities. Result UUIDs remain unguessable capabilities in
-the first account release. Account-scoped job history can follow later without
+the current account mode. Account-scoped job history can follow later without
 blocking authentication or requiring a new jobs-table index now.
 
 The implementation keeps the identity backend aligned with the
@@ -77,7 +78,7 @@ deployment's durability:
 | PostgreSQL | New SQLx tables in the identity SQL URL |
 | DynamoDB identity backend | New table from `SEIZA_IDENTITY_DYNAMODB_TABLE` |
 
-Expose `SEIZA_IDENTITY_BACKEND=sqlx|dynamodb`, defaulting to
+`SEIZA_IDENTITY_BACKEND=sqlx|dynamodb` defaults to
 `SEIZA_JOB_BACKEND`, so a job-store migration does not silently move or abandon
 accounts. Production should set both values explicitly. Do not overload the
 DynamoDB job table: a dedicated identity table gives identity data narrower
@@ -226,7 +227,7 @@ RFC 3339 UTC text timestamps as the existing repository does.
 
 `accounts`
 
-- `id TEXT PRIMARY KEY` (UUIDv4)
+- `id TEXT PRIMARY KEY` (UUIDv7)
 - `email TEXT NOT NULL`
 - `email_lookup TEXT NOT NULL UNIQUE`
 - `email_verified_at TEXT NOT NULL`
@@ -250,14 +251,15 @@ RFC 3339 UTC text timestamps as the existing repository does.
 - `token_digest TEXT NOT NULL`
 - `account_id TEXT NOT NULL`
 - `kind TEXT NOT NULL` (`browser`, `astrometry`)
-- `csrf_digest TEXT`, `created_at`, `last_seen_at`, `expires_at`,
+- nullable `csrf_digest` and `api_key_id`; `created_at`, `last_seen_at`, `expires_at`,
   `absolute_expires_at`, `revoked_at`
-- indexes on `account_id` and `expires_at`
+- indexes on `account_id`, `expires_at`, and `api_key_id`
 
 `passkey_credentials`
 
 - `id TEXT PRIMARY KEY` (server UUID used by management APIs)
-- `credential_id TEXT NOT NULL UNIQUE` (authenticator value, base64url)
+- `credential_id TEXT NOT NULL` (authenticator value, base64url; unique among
+  live credentials so a revoked authenticator can be registered again)
 - `account_id TEXT NOT NULL`
 - `credential_json TEXT NOT NULL`
 - `label TEXT NOT NULL`, `created_at`, `last_used_at`, `revoked_at`
@@ -373,7 +375,7 @@ tier/administration path may raise it. Client-supplied metadata must never set
 queue weight. All keys for one account share the account owner ID for rate
 limits and fair queueing.
 
-## HTTP API plan
+## HTTP API
 
 ### Authentication
 
@@ -554,7 +556,7 @@ secret and credential. ECS/Kubernetes deployments should mount secret files or
 use a secrets-injection mechanism rather than place credentials directly in a
 checked-in environment file.
 
-## Frontend plan
+## Frontend
 
 The React app provides `/signin` and `/account` routes and loads
 `GET /api/v1/account` on startup. The browser session remains in an HttpOnly
@@ -608,7 +610,7 @@ cookies.
 
 ## Delivery phases
 
-### Phase 1: identity repository and configuration (implemented in this PR)
+### Phase 1: identity repository and configuration (implemented)
 
 - Add logical account/session/challenge/passkey/API-key models and repository
   contract tests.
@@ -616,7 +618,7 @@ cookies.
 - Add configuration validation, secret redaction, and fake email sender.
 - Keep production behavior on `public`/`stub-api-key`.
 
-### Phase 2: verified email sessions (implemented in this PR)
+### Phase 2: verified email sessions (implemented)
 
 - Implement email start/complete, session cookies, CSRF, logout, rate limits,
   and generic anti-enumeration responses.
@@ -624,14 +626,14 @@ cookies.
 - Add sign-in/code UI and test delivery templates in plain text and HTML.
 - Enable `accounts` only in a nonproduction environment.
 
-### Phase 3: passkeys (implemented in this PR)
+### Phase 3: passkeys (implemented)
 
 - Integrate `webauthn-rs`, ceremony persistence, registration, discoverable
   authentication, recent-auth enforcement, and credential management.
 - Add the post-email passkey setup flow and explicit passkey-first sign-in.
 - Add virtual-authenticator browser tests.
 
-### Phase 4: API keys and compatibility (implemented in this PR)
+### Phase 4: API keys and compatibility (implemented)
 
 - Implement API-key lifecycle/scopes and `AuthenticatedPrincipal`.
 - Attribute jobs and fairness to account IDs.
@@ -688,7 +690,7 @@ The feature is ready to enable only when all of these hold:
 
 ## Deferred decisions
 
-These should not block the first account release:
+These do not block the current account mode:
 
 - account-scoped solve history and private result ACLs;
 - email-address change and account merge;

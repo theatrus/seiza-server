@@ -27,7 +27,7 @@ The package combines everything needed to run the service:
 The Seiza star and optional object catalogs are not packaged. They are larger
 and change on a different cadence than the server; install them on durable
 storage such as `/srv/seiza/catalog/` and make them readable by the systemd
-service. Seiza 0.8.0's shared library resolver reads the packaged
+service. Seiza 0.8.1's shared library resolver reads the packaged
 `SEIZA_CATALOG_DIR`, prefers `stars-deep-gaia17.bin`, and
 discovers its matching `blind-gaia16.idx`, with `stars-gaia.bin` and the lite
 catalog as fallbacks. It also discovers `objects.bin`,
@@ -92,7 +92,7 @@ sudo systemctl enable --now seiza-server
 sudo systemctl status seiza-server
 ```
 
-Download the prebuilt datasets with Seiza CLI 0.8.0 or newer before starting the
+Download the prebuilt datasets with Seiza CLI 0.8.1 or newer before starting the
 service:
 
 ```bash
@@ -102,14 +102,14 @@ sudo chgrp -R seiza-server /srv/seiza/catalog
 sudo chmod -R g+rX /srv/seiza/catalog
 ```
 
-The hosted prebuilt set supplies the star, stellar-identifier,
-deep-sky/named-star, and transient catalogs. The v4 object files are
+The hosted prebuilt set supplies the star, blind-index, stellar-identifier,
+deep-sky/named-star, transient, and minor-body catalogs. The v4 object files are
 memory-mapped and contain their spatial and
 name indices; downloading in place is safe because the CLI verifies a temporary
 file and atomically renames it into place. The server notices that replacement
-and reloads it without a restart. A minor-body catalog is built separately from
-current orbital elements. The default configuration uses a SQLite database and local
-uploaded-object storage
+and reloads it without a restart. Refreshing the prebuilt bundle also updates
+the changing-sky catalogs from their published builds. The default configuration
+uses a SQLite database and local uploaded-object storage
 under `/var/lib/seiza-server/`; systemd creates and owns that state directory
 for the restricted `seiza-server` system account. Keep that path on persistent
 local storage. The environment file is packaged as `root:seiza-server` mode

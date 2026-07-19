@@ -7,7 +7,7 @@ flowchart LR
     Browser["React / Vite UI"] --> Upload["TUS resumable upload\n32 MiB chunks"]
     Client["Native or Astrometry-compatible client"] --> API
     Upload --> API["Axum API"]
-    API --> Admission["Auth stub + token bucket"]
+    API --> Admission["Authentication + token bucket"]
     Admission --> Store["Object store\nlocal disk or S3"]
     Store --> Queue["Durable SQLx or DynamoDB\nweighted-LRU priority queue"]
     Queue --> Embedded["Embedded worker"]
@@ -36,9 +36,10 @@ the scheduler selects the client with the greatest:
 
 `time since the client was last served × client weight`
 
-The default public and stub-key weights are both `1.0`, so this is
-least-recently-served scheduling with FIFO ties. The weight exists for a future
-API-key tier table rather than an opaque priority feature. A single client
+The default public, stub-key, and account-key weights are `1.0`, so this is
+least-recently-served scheduling with FIFO ties. The weight supports
+operator-managed priority keys and future account tiers rather than a
+client-controlled priority field. A single client
 cannot keep a backlog ahead of a client that has not recently received service.
 
 The SQLx repository runs selection in a transaction (SQLite or PostgreSQL),
@@ -49,10 +50,10 @@ input, heartbeat, or complete. Expired leases return to `queued`; completion
 updates only apply to the current token.
 
 Embedded workers check the repository once at startup to recover durable queued
-work, registering an in-process wakeup before that claim. Enqueue and retry
-operations signal the wakeup after their durable update. Thereafter, an idle
-worker checks the repository only after one configured lease period as a
-recovery path for cross-process writes and expired leases.
+work, registering an in-process wakeup before that claim. Submissions and
+new jobs created by re-solving signal the wakeup after their durable update.
+Thereafter, an idle worker checks the repository only after one configured lease
+period as a recovery path for cross-process writes and expired leases.
 
 Admission is separate and uses a token bucket per client/IP. It returns HTTP
 429 with `Retry-After` before the upload is persisted when the bucket is empty.
@@ -68,7 +69,7 @@ Admission is separate and uses a token bucket per client/IP. It returns HTTP
 | Job record | SQLx SQLite file | DynamoDB or SQLx PostgreSQL | DynamoDB or SQLx PostgreSQL |
 | Scheduler | SQLx transaction | job store + SQS notification outbox | durable job store plus queue outbox |
 | Worker | Tokio tasks or HTTP worker | ECS/EC2 HTTP or direct SQS worker | dedicated worker service |
-| Authentication | public/stub | public/stub | API-key table, hash, revoke, tier/weight |
+| Authentication | public/stub/accounts | public/stub/accounts | SQLx or DynamoDB identity store, scoped API keys, passkeys, revoke, tier/weight |
 
 The account, verified-email, passkey, API-key, and pluggable email
 architecture is specified in
@@ -147,12 +148,13 @@ the jobs table enforces one row per private object key, and a lost completion
 response reuses that row rather than queueing the image twice. Partial sessions
 follow the same retention sweep as completed originals.
 
-A failed job can transition back to `queued` with replacement solve options
-while its input is still retained. The job ID, opaque public URL, object key,
-owner, queue weight, and original expiration do not change. SQLx performs the
-state change and durable-outbox reset in one transaction; DynamoDB uses a
-conditional failed-state update and clears its delivery marker. External queue
-notifications therefore behave the same as first submissions.
+A successful or failed job can be re-solved with replacement options while its
+input is retained. The object-store adapter copies the source into a fresh
+retention scope and the repository creates a new queued job with a new UUID and
+outbox entry. The original job, result URL, options, and artifacts remain
+unchanged. The historical `/retry` route is an alias for this immutable
+`/resolve` behavior; it no longer transitions the existing record back to
+`queued`.
 
 Preview PNGs are generated on demand rather than stored as additional durable
 objects. The web client renders the preview as the base image and places a
