@@ -59,6 +59,10 @@ const ninaExample = `# PowerShell: the MSI adds Seiza to PATH.
 # This is the same guided catalog setup opened by "Seiza Catalog Setup".
 seiza setup
 
+# Portable ZIP alternative: install the complete bundle into one directory.
+C:\\Seiza\\seiza.exe download-data prebuilt --output C:\\seiza-data
+setx SEIZA_CATALOG_DIR C:\\seiza-data
+
 # In N.I.N.A.: Options → Plate Solving
 # Plate Solver: ASTAP
 # ASTAP path: C:\\Program Files\\Seiza\\seiza.exe
@@ -124,10 +128,11 @@ export function ApiDocsPage() {
           <p>The pre-built Seiza packages include compatibility modes for N.I.N.A.’s ASTAP integration and Siril’s local Astrometry.net integration. Neither application needs a Seiza-specific plugin or a Rust toolchain.</p>
           <h3>Install Seiza and its catalogs</h3>
           <ol className="integration-steps">
-            <li><strong>Install the release.</strong><span>From the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.msi</code>. The portable ZIP and Linux packages work too, but the Windows installer supplies the PATH entry and catalog-setup shortcut used below.</span></li>
+            <li><strong>Install the release.</strong><span>From the <a href="https://github.com/theatrus/seiza/releases">Seiza releases page</a>, download the latest <code>seiza-cli-…-windows-x86_64.msi</code>. The portable ZIP and Linux packages work too; use the directory-based manual setup shown below when the installer does not provide the PATH entry and catalog-setup shortcut.</span></li>
             <li><strong>Run catalog setup.</strong><span>Leave <strong>Download and configure Seiza catalogs now</strong> selected on the installer’s final page, open <strong>Start → Seiza → Seiza Catalog Setup</strong> later, or run <code>seiza setup</code> in a new PowerShell window. All three start the same guided, SHA-256-verified setup.</span></li>
             <li><strong>Choose for your workload.</strong><span>The lightweight telescope-control preset is sufficient for ordinary hinted N.I.N.A. solves. Choose the denser Gaia preset for narrow or crowded fields, or <strong>Unknown sky position</strong> to install the deep Gaia catalog and maintained blind index required for reliable blind solving.</span></li>
           </ol>
+          <div className="api-note"><strong>One catalog directory</strong><span>For a portable or manual installation, run <code>seiza download-data prebuilt --output &lt;directory&gt;</code> and set <code>SEIZA_CATALOG_DIR</code> to that directory. ASTAP-compatible and solve-field-compatible modes select the appropriate available star catalog and blind index automatically. <code>SEIZA_STAR_DATA</code> and <code>SEIZA_BLIND_INDEX</code> remain advanced file-or-directory overrides.</span></div>
           <h3>N.I.N.A.: use Seiza in ASTAP-compatible mode</h3>
           <p>Under <strong>Options → Plate Solving</strong>, select <strong>ASTAP</strong> and point its executable path at the installed <code>seiza.exe</code> (normally <code>C:\Program Files\Seiza\seiza.exe</code> for an all-users install). Select ASTAP and the same executable in the blind-solver slot if you installed the blind preset. Do not add an <code>astap</code> subcommand: N.I.N.A. launches <code>seiza.exe</code> with ASTAP-style flags, and Seiza detects that contract automatically.</p>
           <CodeExample label="Set up the pre-built Seiza binary for N.I.N.A." code={ninaExample} />
