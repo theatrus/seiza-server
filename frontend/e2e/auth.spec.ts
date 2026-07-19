@@ -35,7 +35,7 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
     contentType: 'application/json',
     body: JSON.stringify({
       status: 'ready',
-      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      versions: { seiza_server: '0.3.0', seiza: '0.8.1' },
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',
@@ -201,7 +201,7 @@ test('accounts mode keeps anonymous solves available', async ({ page }) => {
     contentType: 'application/json',
     body: JSON.stringify({
       status: 'ready',
-      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      versions: { seiza_server: '0.3.0', seiza: '0.8.1' },
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',
@@ -228,7 +228,7 @@ test('email sign-in honors the server resend cooldown', async ({ page }) => {
     contentType: 'application/json',
     body: JSON.stringify({
       status: 'ready',
-      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      versions: { seiza_server: '0.3.0', seiza: '0.8.1' },
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',
@@ -270,7 +270,7 @@ test('public browser and API solve access are presented independently', async ({
     contentType: 'application/json',
     body: JSON.stringify({
       status: 'ready',
-      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      versions: { seiza_server: '0.3.0', seiza: '0.8.1' },
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',

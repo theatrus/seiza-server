@@ -123,5 +123,5 @@ test('links the author and both source repositories from the footer', async ({ p
   await expect(footer.getByRole('link', { name: 'Data sources' })).toHaveAttribute('href', '/data-sources')
   await expect(footer.getByRole('link', { name: 'Seiza GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza')
   await expect(footer.getByRole('link', { name: 'Server GitHub' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-server')
-  await expect(footer.getByLabel('Software versions')).toHaveText('Seiza Server v0.2.0 · Seiza v0.8.1')
+  await expect(footer.getByLabel('Software versions')).toHaveText('Seiza Server v0.3.0 · Seiza v0.8.1')
 })
