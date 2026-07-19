@@ -235,6 +235,12 @@ full resolution and composites the currently selected layers into a PNG in the
 browser. The exported image carries a small Seiza logo, “Solved with Seiza,”
 and `seiza.fyi` mark; it does not download an SVG.
 
+Minor-body annotations expose `motion_arcsec_per_hour` from Seiza 0.8.1. The
+interactive overlay and composite SVG scale the anti-solar comet tail and the
+asteroid motion arrow using a three-hour apparent-motion distance, clamped for
+legibility; the underlying unclamped angular speed remains available in
+annotation JSON.
+
 `GET /api/v1/solves/:public_id/overlay.svg` remains as an optional self-contained
 image output for API clients. Its query supports `objects`, `grid`,
 `deep_sky`, `named_stars`, `star_identifiers`, `field_stars`, `transients`,

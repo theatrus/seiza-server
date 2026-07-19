@@ -178,7 +178,7 @@ designation per stable stellar ID and builds a small sky-bin index. Annotation
 requests project only the matching bins through the WCS, while
 `/api/v1/catalog/stars/search` retains exact TYC/HIP and indexed textual lookup.
 
-Seiza 0.8.0 object catalogs are read-only memory maps with embedded spatial and
+Seiza 0.8.1 object catalogs are read-only memory maps with embedded spatial and
 designation indices. Overlay projection and `/api/v1/catalog/objects` cone
 queries therefore materialize only matching records, while
 `/api/v1/catalog/objects/search` uses the exact/prefix name index. Legacy v1

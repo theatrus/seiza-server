@@ -95,12 +95,12 @@ const baseObjects = [
   {
     name: 'C/2026 A1', common_name: 'V~9.2, 0.84 AU', kind: 'comet', mag: 9.2,
     x: 420, y: 210, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
-    source: 'minor_body', distance_au: 0.84, direction_pa_deg: 45, direction_angle_deg: 18,
+    source: 'minor_body', distance_au: 0.84, motion_arcsec_per_hour: 72, direction_pa_deg: 45, direction_angle_deg: 18,
   },
   {
     name: '(12345)', common_name: 'Test asteroid', kind: 'asteroid', mag: 14.1,
     x: 760, y: 700, semi_major_px: 0, semi_minor_px: 0, angle_deg: 0,
-    source: 'minor_body', distance_au: 1.42, direction_pa_deg: 122, direction_angle_deg: 136,
+    source: 'minor_body', distance_au: 1.42, motion_arcsec_per_hour: 36, direction_pa_deg: 122, direction_angle_deg: 136,
   },
 ]
 
@@ -325,8 +325,13 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   const asteroidTail = page.locator('[data-kind="asteroid"] .asteroid-tail')
   await expect(cometTail).toHaveAttribute('data-direction-angle', '18')
   await expect(asteroidTail).toHaveAttribute('data-direction-angle', '136')
-  expect(await cometTail.evaluate((tail) => (tail as SVGPathElement).getTotalLength())).toBeGreaterThan(100)
-  expect(await asteroidTail.evaluate((tail) => (tail as SVGPathElement).getTotalLength())).toBeGreaterThan(75)
+  await expect(cometTail).toHaveAttribute('data-motion-arcsec-per-hour', '72')
+  await expect(cometTail).toHaveAttribute('data-motion-vector-length', '60')
+  await expect(asteroidTail).toHaveAttribute('data-motion-arcsec-per-hour', '36')
+  await expect(asteroidTail).toHaveAttribute('data-motion-vector-length', '42')
+  const cometTailLength = await cometTail.evaluate((tail) => (tail as SVGPathElement).getTotalLength())
+  const asteroidTailLength = await asteroidTail.evaluate((tail) => (tail as SVGPathElement).getTotalLength())
+  expect(cometTailLength).toBeGreaterThan(asteroidTailLength)
   await expect(page.locator('.field-stars circle')).toHaveCount(0)
   await expect(page.getByText('SN 2020abc · type II', { exact: false })).toHaveCount(0)
 
