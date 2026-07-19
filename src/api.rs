@@ -62,6 +62,7 @@ use self::auth::*;
 
 const VALIDATION_LICENSE_VERSION: &str = "seiza-validation-image-grant-v2";
 const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
+const WEB_CLIENT_HEADER: &str = "x-seiza-client";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -757,6 +758,7 @@ fn cors_layer(state: &AppState) -> CorsLayer {
             header::IF_NONE_MATCH,
             http::HeaderName::from_static("x-api-key"),
             http::HeaderName::from_static("x-csrf-token"),
+            http::HeaderName::from_static(WEB_CLIENT_HEADER),
             http::HeaderName::from_static("tus-resumable"),
             http::HeaderName::from_static("upload-length"),
             http::HeaderName::from_static("upload-offset"),
@@ -797,6 +799,10 @@ async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
         "solver_ready": state.solver.is_ready(),
         "queue_depth": state.repository.queue_depth().await.map_err(ApiError::internal)?,
         "auth_mode": match state.config.auth_mode { AuthMode::Public => "public", AuthMode::StubApiKey => "stub-api-key", AuthMode::Accounts => "accounts" },
+        "public_solve_access": {
+            "ui": state.config.public_ui_solves,
+            "api": state.config.public_api_solves,
+        },
         "job_backend": match state.config.job_backend { crate::config::JobBackend::Sqlx => "sqlx", crate::config::JobBackend::DynamoDb => "dynamodb" },
         "queue_transport": match state.config.queue_transport { crate::config::QueueDelivery::Local => "local", crate::config::QueueDelivery::Sqs => "sqs" },
         "embedded_workers": state.config.embedded_workers,
@@ -808,7 +814,14 @@ async fn post_solve(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
-    let client = client_from_headers(&state, &headers, None, true).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        true,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let (upload, options_json, _) =
         read_multipart(multipart, state.config.max_upload_bytes).await?;
     let options = options_json
@@ -844,7 +857,14 @@ async fn resolve_solve(
     headers: HeaderMap,
     Json(mut options): Json<SolveOptions>,
 ) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
-    let client = client_from_headers(&state, &headers, None, true).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        true,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let job = state
         .public_job(&public_id)
         .await?
@@ -935,7 +955,7 @@ async fn donate_validation_image(
     headers: HeaderMap,
     Json(request): Json<ValidationDonationRequest>,
 ) -> Result<Json<JobResponse>, ApiError> {
-    let _client = client_from_headers(&state, &headers, None, true).await?;
+    let _client = client_from_headers(&state, &headers, None, true, None).await?;
     if !request.license_agreed {
         return Err(ApiError::bad_request(
             "license_agreed must be true to contribute an image",
@@ -1405,6 +1425,7 @@ async fn astrometry_login(
                 "session": session.token,
             })));
         }
+        ensure_public_solve_allowed(&state.config, PublicSolveSurface::Api)?;
         return Ok(Json(json!({
             "status": "success",
             "message": "public Seiza session",
@@ -1417,6 +1438,9 @@ async fn astrometry_login(
         return Err(ApiError::unauthorized(
             "an API key is required while SEIZA_AUTH_MODE=stub-api-key",
         ));
+    }
+    if state.config.auth_mode == AuthMode::Public {
+        ensure_public_solve_allowed(&state.config, PublicSolveSurface::Api)?;
     }
     Ok(Json(json!({
         "status": "success",
@@ -1436,7 +1460,14 @@ async fn astrometry_upload(
         request_json.ok_or_else(|| ApiError::bad_request("missing request-json field"))?;
     let request: AstroUploadRequest = serde_json::from_str(&request_json)
         .map_err(|error| ApiError::bad_request(format!("invalid request-json: {error}")))?;
-    let client = client_from_headers(&state, &headers, request.session.as_deref(), true).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        request.session.as_deref(),
+        true,
+        Some(PublicSolveSurface::Api),
+    )
+    .await?;
     let dimensions =
         dimensions_from_bytes(&upload.data, &upload.filename).map_err(ApiError::bad_request)?;
     let options = request.into_options(dimensions)?;
@@ -1645,11 +1676,18 @@ struct Client {
     queue_weight: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicSolveSurface {
+    Ui,
+    Api,
+}
+
 async fn client_from_headers(
     state: &AppState,
     headers: &HeaderMap,
     astrometry_session: Option<&str>,
     mutation: bool,
+    public_solve_surface: Option<PublicSolveSurface>,
 ) -> Result<Client, ApiError> {
     if state.config.auth_mode == AuthMode::Accounts {
         let api_key = request_api_key(headers);
@@ -1660,7 +1698,7 @@ async fn client_from_headers(
         }
         if let Some(session) = astrometry_session {
             if is_public_astrometry_session(session) {
-                return Ok(public_client(headers));
+                return public_client_for_request(state, headers, public_solve_surface);
             }
             let authenticated = auth_service(state)?
                 .authenticate_astrometry_session(session)
@@ -1687,7 +1725,7 @@ async fn client_from_headers(
             });
         }
         if request_cookie(headers, session_cookie_name(state)).is_none() {
-            return Ok(public_client(headers));
+            return public_client_for_request(state, headers, public_solve_surface);
         }
         let authenticated = if mutation {
             authenticated_browser_for_mutation(state, headers).await?
@@ -1710,13 +1748,65 @@ async fn client_from_headers(
                 "provide X-API-Key, Bearer token, or Astrometry session",
             ));
         }
-        (_, Some(key)) => format!("key:{:016x}", stable_hash(key)),
-        (AuthMode::Public, None) => public_client(headers).id,
+        (AuthMode::StubApiKey, Some(key)) => format!("key:{:016x}", stable_hash(key)),
+        (AuthMode::Public, Some(key)) => {
+            if let Some(surface) = public_solve_surface {
+                ensure_public_solve_allowed(&state.config, surface)?;
+            }
+            format!("key:{:016x}", stable_hash(key))
+        }
+        (AuthMode::Public, None) => {
+            return public_client_for_request(state, headers, public_solve_surface);
+        }
     };
     Ok(Client {
         id,
         queue_weight: state.config.queue_weight_for_api_key(api_key),
     })
+}
+
+fn public_client_for_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    surface: Option<PublicSolveSurface>,
+) -> Result<Client, ApiError> {
+    if let Some(surface) = surface {
+        ensure_public_solve_allowed(&state.config, surface)?;
+    }
+    Ok(public_client(headers))
+}
+
+fn public_solve_surface(headers: &HeaderMap) -> PublicSolveSurface {
+    if headers
+        .get(WEB_CLIENT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        == Some("web")
+    {
+        PublicSolveSurface::Ui
+    } else {
+        PublicSolveSurface::Api
+    }
+}
+
+fn ensure_public_solve_allowed(
+    config: &Config,
+    surface: PublicSolveSurface,
+) -> Result<(), ApiError> {
+    let (allowed, setting, label) = match surface {
+        PublicSolveSurface::Ui => (
+            config.public_ui_solves,
+            "SEIZA_PUBLIC_UI_SOLVES",
+            "browser UI",
+        ),
+        PublicSolveSurface::Api => (config.public_api_solves, "SEIZA_PUBLIC_API_SOLVES", "API"),
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(format!(
+            "public {label} solves are disabled by {setting}"
+        )))
+    }
 }
 
 fn public_client(headers: &HeaderMap) -> Client {
@@ -2372,8 +2462,35 @@ mod tests {
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(health["versions"]["seiza"], env!("SEIZA_DEP_VERSION"));
+        assert_eq!(health["public_solve_access"]["ui"], true);
+        assert_eq!(health["public_solve_access"]["api"], true);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_ui_and_api_solve_admission_are_independent() {
+        let root = std::env::temp_dir().join(format!("seiza-public-surfaces-{}", Uuid::now_v7()));
+        let mut config = test_config(&root);
+        config.public_ui_solves = true;
+        config.public_api_solves = false;
+
+        assert!(ensure_public_solve_allowed(&config, PublicSolveSurface::Ui).is_ok());
+        let api_error = ensure_public_solve_allowed(&config, PublicSolveSurface::Api).unwrap_err();
+        assert_eq!(api_error.status, StatusCode::FORBIDDEN);
+        assert!(api_error.message.contains("SEIZA_PUBLIC_API_SOLVES"));
+
+        config.public_ui_solves = false;
+        config.public_api_solves = true;
+        let ui_error = ensure_public_solve_allowed(&config, PublicSolveSurface::Ui).unwrap_err();
+        assert_eq!(ui_error.status, StatusCode::FORBIDDEN);
+        assert!(ui_error.message.contains("SEIZA_PUBLIC_UI_SOLVES"));
+        assert!(ensure_public_solve_allowed(&config, PublicSolveSurface::Api).is_ok());
+
+        let mut headers = HeaderMap::new();
+        assert_eq!(public_solve_surface(&headers), PublicSolveSurface::Api);
+        headers.insert(WEB_CLIENT_HEADER, HeaderValue::from_static("web"));
+        assert_eq!(public_solve_surface(&headers), PublicSolveSurface::Ui);
     }
 
     #[tokio::test]
@@ -3072,9 +3189,15 @@ mod tests {
 
         let mut anonymous_headers = HeaderMap::new();
         anonymous_headers.insert("x-forwarded-for", HeaderValue::from_static("192.0.2.42"));
-        let anonymous = client_from_headers(&state, &anonymous_headers, None, true)
-            .await
-            .unwrap();
+        let anonymous = client_from_headers(
+            &state,
+            &anonymous_headers,
+            None,
+            true,
+            Some(PublicSolveSurface::Api),
+        )
+        .await
+        .unwrap();
         assert_eq!(anonymous.id, "public:192.0.2.42");
         assert_eq!(anonymous.queue_weight, 1.0);
         let Json(public_login) = astrometry_login(
@@ -3087,10 +3210,15 @@ mod tests {
         .unwrap();
         let public_session = public_login["session"].as_str().unwrap();
         assert!(is_public_astrometry_session(public_session));
-        let anonymous_astrometry =
-            client_from_headers(&state, &anonymous_headers, Some(public_session), true)
-                .await
-                .unwrap();
+        let anonymous_astrometry = client_from_headers(
+            &state,
+            &anonymous_headers,
+            Some(public_session),
+            true,
+            Some(PublicSolveSurface::Api),
+        )
+        .await
+        .unwrap();
         assert_eq!(anonymous_astrometry.id, "public:192.0.2.42");
         assert_eq!(anonymous_astrometry.queue_weight, 1.0);
 
@@ -3160,7 +3288,7 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            client_from_headers(&state, &read_headers, None, false)
+            client_from_headers(&state, &read_headers, None, false, None)
                 .await
                 .unwrap()
                 .id,
@@ -3244,7 +3372,7 @@ mod tests {
         assert_eq!(history["solves"][0]["id"], account_job_id.to_string());
         assert_eq!(history["solves"][0]["original_filename"], "account.fits");
 
-        let missing_origin = client_from_headers(&state, &read_headers, None, true)
+        let missing_origin = client_from_headers(&state, &read_headers, None, true, None)
             .await
             .unwrap_err();
         assert_eq!(missing_origin.status, StatusCode::UNAUTHORIZED);
@@ -3256,7 +3384,7 @@ mod tests {
         );
         mutation_headers.insert("x-csrf-token", HeaderValue::from_str(csrf.value()).unwrap());
         assert!(
-            client_from_headers(&state, &mutation_headers, None, true)
+            client_from_headers(&state, &mutation_headers, None, true, None)
                 .await
                 .is_ok()
         );
@@ -3281,7 +3409,7 @@ mod tests {
             HeaderValue::from_str(&created_key.token).unwrap(),
         );
         assert_eq!(
-            client_from_headers(&state, &api_headers, None, true)
+            client_from_headers(&state, &api_headers, None, true, None)
                 .await
                 .unwrap()
                 .id,
@@ -3300,10 +3428,16 @@ mod tests {
         .unwrap();
         let astrometry_session = astrometry_login["session"].as_str().unwrap();
         assert_eq!(
-            client_from_headers(&state, &HeaderMap::new(), Some(astrometry_session), true)
-                .await
-                .unwrap()
-                .id,
+            client_from_headers(
+                &state,
+                &HeaderMap::new(),
+                Some(astrometry_session),
+                true,
+                None,
+            )
+            .await
+            .unwrap()
+            .id,
             format!("account:{}", browser.account.id)
         );
         let (_, astrometry_session_id, _) =
@@ -3320,9 +3454,15 @@ mod tests {
             StatusCode::OK
         );
         assert!(
-            client_from_headers(&state, &HeaderMap::new(), Some(astrometry_session), true)
-                .await
-                .is_err()
+            client_from_headers(
+                &state,
+                &HeaderMap::new(),
+                Some(astrometry_session),
+                true,
+                None,
+            )
+            .await
+            .is_err()
         );
         let registration =
             start_passkey_registration(State(state.clone()), mutation_headers.clone())
@@ -3391,14 +3531,14 @@ mod tests {
 
         let mut priority_headers = HeaderMap::new();
         priority_headers.insert("x-api-key", HeaderValue::from_static("operator-secret"));
-        let priority = client_from_headers(&state, &priority_headers, None, false)
+        let priority = client_from_headers(&state, &priority_headers, None, false, None)
             .await
             .unwrap();
         assert_eq!(priority.queue_weight, 2.0);
 
         let mut ordinary_headers = HeaderMap::new();
         ordinary_headers.insert("x-api-key", HeaderValue::from_static("unconfigured-key"));
-        let ordinary = client_from_headers(&state, &ordinary_headers, None, false)
+        let ordinary = client_from_headers(&state, &ordinary_headers, None, false, None)
             .await
             .unwrap();
         assert_eq!(ordinary.queue_weight, 1.0);
@@ -3443,6 +3583,8 @@ mod tests {
             rate_limit_burst: 10.0,
             trusted_proxy_hops: 0,
             auth_mode: AuthMode::Public,
+            public_ui_solves: true,
+            public_api_solves: true,
             public_base_url: None,
             auth_code_pepper_file: None,
             email_provider: None,

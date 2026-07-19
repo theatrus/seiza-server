@@ -372,6 +372,8 @@ are currently supported:
 | `SEIZA_RATE_LIMIT_BURST` | `3` | Per-client initial burst size |
 | `SEIZA_TRUSTED_PROXY_HOPS` | `0` | Reverse proxies that append to `X-Forwarded-For`; `0` rate-limits sign-in by peer address and ignores forwarded headers |
 | `SEIZA_AUTH_MODE` | `public` | `public`, `stub-api-key`, or verified-email `accounts` |
+| `SEIZA_PUBLIC_UI_SOLVES` | `true` | Allow anonymous submissions from the bundled browser UI; authenticated accounts are unaffected |
+| `SEIZA_PUBLIC_API_SOLVES` | `true` | Allow anonymous native and Astrometry-compatible API submissions; authenticated account keys/sessions are unaffected |
 | `SEIZA_IDENTITY_BACKEND` | job backend | Identity storage for accounts: `sqlx` or `dynamodb` |
 | `SEIZA_IDENTITY_SQL_DATABASE_URL` | job SQL URL | SQLx identity database URL |
 | `SEIZA_IDENTITY_DYNAMODB_TABLE` | unset | Required for DynamoDB identity storage; composite string keys `pk` and `sk`, with `ttl_epoch` TTL |
@@ -394,6 +396,13 @@ are currently supported:
 | `SEIZA_SQS_PRIORITY_QUEUE_URL` | unset | Optional second standard queue for jobs whose durable queue weight is above `1.0` |
 | `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged (`2`–`100`); also becomes the configured priority client's durable queue weight |
 | `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
+
+The bundled frontend marks its solve requests with `X-Seiza-Client: web`, while
+unmarked native requests and all Astrometry-compatible submissions use the API
+setting. These independent switches control supported product surfaces and UI
+presentation; they are not a security boundary because a custom public client
+can reproduce browser HTTP headers. Require an account or another verified
+credential when adversarial access control is required.
 
 `X-Forwarded-For`/`X-Real-IP` are used for anonymous queue fairness. Sign-in
 rate limiting only honors them when `SEIZA_TRUSTED_PROXY_HOPS` declares the

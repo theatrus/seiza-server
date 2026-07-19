@@ -16,7 +16,14 @@ pub(super) async fn create_resumable_upload(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None, true).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        true,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let upload_concat = headers
         .get("upload-concat")
         .and_then(|value| value.to_str().ok());
@@ -204,7 +211,14 @@ pub(super) async fn head_resumable_upload(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None, false).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        false,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
         .await
         .map_err(resumable_api_error)?;
@@ -252,7 +266,14 @@ pub(super) async fn patch_resumable_upload(
             "chunk Content-Type must be application/offset+octet-stream",
         ));
     }
-    let client = client_from_headers(&state, &headers, None, true).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        true,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let offset = required_u64_header(&headers, "upload-offset")?;
     let lock = state.upload_lock(&upload_id).await;
     let _guard = lock.lock().await;
@@ -278,7 +299,14 @@ pub(super) async fn delete_resumable_upload(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None, true).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        true,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let lock = state.upload_lock(&upload_id).await;
     let _guard = lock.lock().await;
     let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
@@ -301,7 +329,14 @@ pub(super) async fn get_resumable_upload_result(
     Path(upload_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<JobResponse>, ApiError> {
-    let client = client_from_headers(&state, &headers, None, false).await?;
+    let client = client_from_headers(
+        &state,
+        &headers,
+        None,
+        false,
+        Some(public_solve_surface(&headers)),
+    )
+    .await?;
     let lock = state.upload_lock(&upload_id).await;
     let _guard = lock.lock().await;
     let mut upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
@@ -318,7 +353,14 @@ pub(super) async fn get_resumable_upload_result(
     // submit scope for that; browser and Astrometry sessions already carry
     // submission authority.
     if upload.job_id.is_none() && request_api_key(&headers).is_some() {
-        client_from_headers(&state, &headers, None, true).await?;
+        client_from_headers(
+            &state,
+            &headers,
+            None,
+            true,
+            Some(public_solve_surface(&headers)),
+        )
+        .await?;
     }
     let job = state.finalize_resumable(&mut upload).await?;
     Ok(Json(state.job_response(&job)?))

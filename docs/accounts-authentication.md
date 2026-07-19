@@ -541,6 +541,8 @@ inconsistent.
 | Variable | Purpose |
 | --- | --- |
 | `SEIZA_AUTH_MODE=accounts` | Enable real account/session/API-key validation |
+| `SEIZA_PUBLIC_UI_SOLVES` | Allow anonymous bundled-browser submissions independently; defaults to `true` |
+| `SEIZA_PUBLIC_API_SOLVES` | Allow anonymous native/Astrometry submissions independently; defaults to `true` |
 | `SEIZA_IDENTITY_BACKEND` | `sqlx` or `dynamodb`; defaults to job backend |
 | `SEIZA_IDENTITY_SQL_DATABASE_URL` | Identity SQL URL; defaults to job SQL URL |
 | `SEIZA_IDENTITY_DYNAMODB_TABLE` | Dedicated identity table name |
@@ -556,6 +558,13 @@ inconsistent.
 | `SEIZA_SMTP_PASSWORD_FILE` | Mounted relay secret |
 | `SEIZA_SMTP_TLS` | `starttls` or `implicit`; no plaintext value |
 | `SEIZA_SMTP_TIMEOUT_SECONDS` | SMTP connection and request timeout |
+
+The maintained web client sends `X-Seiza-Client: web`; otherwise solve
+submissions are treated as API traffic, and Astrometry compatibility is always
+API traffic. This is an operational surface distinction rather than an
+authentication mechanism: public clients can imitate browser headers. Set the
+appropriate switch to `false` to remove an advertised/supported surface, and
+require an account credential when the distinction must be security-enforced.
 
 SES uses the standard AWS region and credential configuration. The SES and
 SMTP settings are mutually exclusive. Debug output redacts every

@@ -39,6 +39,7 @@ test('registers and signs in with a discoverable virtual passkey', async ({ page
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',
+      public_solve_access: { ui: true, api: true },
       job_backend: 'sqlx',
       queue_transport: 'local',
       embedded_workers: 1,
@@ -204,6 +205,7 @@ test('accounts mode keeps anonymous solves available', async ({ page }) => {
       solver_ready: true,
       queue_depth: 0,
       auth_mode: 'accounts',
+      public_solve_access: { ui: true, api: false },
       job_backend: 'dynamodb',
       queue_transport: 'sqs',
       embedded_workers: 0,
@@ -219,4 +221,33 @@ test('accounts mode keeps anonymous solves available', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
   await expect(page.getByText('Public solves remain available and use the normal queue.')).toBeVisible()
   await expect(page.getByLabel('FITS or image file')).toBeVisible()
+})
+
+test('public browser and API solve access are presented independently', async ({ page }) => {
+  await page.route('**/api/v1/health', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'ready',
+      versions: { seiza_server: '0.2.0', seiza: '0.8.1' },
+      solver_ready: true,
+      queue_depth: 0,
+      auth_mode: 'accounts',
+      public_solve_access: { ui: false, api: true },
+      job_backend: 'dynamodb',
+      queue_transport: 'sqs',
+      embedded_workers: 0,
+    }),
+  }))
+  await page.route('**/api/v1/account', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: '{}',
+  }))
+
+  await page.goto('http://localhost:4173/solve')
+  await expect(page.getByRole('heading', { name: 'Public browser solves are disabled.' })).toBeVisible()
+  await expect(page.getByText('This deployment still accepts public API submissions.')).toBeVisible()
+  await expect(page.getByRole('main').getByRole('link', { name: 'Sign in' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Use the API' })).toBeVisible()
+  await expect(page.getByLabel('FITS or image file')).toHaveCount(0)
 })

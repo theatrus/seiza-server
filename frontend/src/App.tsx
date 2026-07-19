@@ -155,6 +155,7 @@ function Link({ to, children, className }: { to: string; children: ReactNode; cl
 export default function App() {
   const [path, setPath] = useState(window.location.pathname)
   const [authMode, setAuthMode] = useState<Health['auth_mode'] | null>(null)
+  const [publicSolveAccess, setPublicSolveAccess] = useState<Health['public_solve_access'] | null>(null)
   const [account, setAccount] = useState<AccountDetails | null>(null)
   const [accountChecked, setAccountChecked] = useState(false)
   useEffect(() => {
@@ -173,31 +174,40 @@ export default function App() {
     getHealth().then(async (health) => {
       if (!active) return
       setAuthMode(health.auth_mode)
+      setPublicSolveAccess(health.public_solve_access)
       if (health.auth_mode === 'accounts') {
         const current = await getAccount()
         if (active) setAccount(current)
       }
       if (active) setAccountChecked(true)
-    }).catch(() => { if (active) setAccountChecked(true) })
+    }).catch(() => {
+      if (active) {
+        setPublicSolveAccess({ ui: true, api: true })
+        setAccountChecked(true)
+      }
+    })
     return () => { active = false }
   }, [])
   const solutionMatch = path.match(/^\/solutions\/((?:\d+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
+  const publicUiSolves = authMode !== 'stub-api-key' && publicSolveAccess?.ui === true
+  const publicApiSolves = authMode !== 'stub-api-key' && publicSolveAccess?.api === true
+  const solveUiEnabled = account !== null || publicUiSolves
 
   return <div className="site-shell">
-    <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} />
-    {path === '/' && <HomePage />}
-    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} />}
+    <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} solveEnabled={solveUiEnabled} />
+    {path === '/' && <HomePage solveEnabled={solveUiEnabled} />}
+    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accessChecked={publicSolveAccess !== null} publicUiSolves={publicUiSolves} publicApiSolves={publicApiSolves} />}
     {path === '/docs/api' && <ApiDocsPage />}
     {path === '/data-sources' && <DataSourcesPage />}
-    {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} onAuthenticated={refreshAccount} />}
+    {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} solveEnabled={solveUiEnabled} publicApiSolves={publicApiSolves} onAuthenticated={refreshAccount} />}
     {path === '/account' && <AccountPage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} onAccountChanged={refreshAccount} />}
     {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
-    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage />}
+    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage solveEnabled={solveUiEnabled} />}
     <SiteFooter />
   </div>
 }
 
-function SiteHeader({ accountsEnabled, account }: { accountsEnabled: boolean; account: AccountDetails | null }) {
+function SiteHeader({ accountsEnabled, account, solveEnabled }: { accountsEnabled: boolean; account: AccountDetails | null; solveEnabled: boolean }) {
   return <nav className="site-nav" aria-label="Primary navigation">
     <Link to="/" className="brand-link">
       <img src="/seiza-mark.png" alt="" width="38" height="38" />
@@ -207,12 +217,12 @@ function SiteHeader({ accountsEnabled, account }: { accountsEnabled: boolean; ac
       <Link to="/">About</Link>
       <Link to="/docs/api">API</Link>
       {accountsEnabled && <Link to={account ? '/account' : '/signin'}>{account ? 'Account' : 'Sign in'}</Link>}
-      <Link to="/solve" className="button small">Solve an image</Link>
+      {solveEnabled && <Link to="/solve" className="button small">Solve an image</Link>}
     </div>
   </nav>
 }
 
-function HomePage() {
+function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
   return <main>
     <section className="hero">
       <div>
@@ -220,7 +230,7 @@ function HomePage() {
         <h1>Find exactly where your image meets the sky.</h1>
         <p className="intro">Seiza is a fast plate-solving library written in Rust. It recognizes star patterns, determines an image’s celestial coordinates, and returns a complete, standards-friendly WCS solution.</p>
         <div className="actions">
-          <Link to="/solve" className="button">Solve an image</Link>
+          {solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
           <Link to="/data-sources">See our data sources <span aria-hidden="true">→</span></Link>
         </div>
@@ -279,13 +289,40 @@ function HomePage() {
 function SolvePage({
   accountsEnabled,
   account,
+  accessChecked,
+  publicUiSolves,
+  publicApiSolves,
 }: {
   accountsEnabled: boolean
   account: AccountDetails | null
+  accessChecked: boolean
+  publicUiSolves: boolean
+  publicApiSolves: boolean
 }) {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+
+  if (!account && !accessChecked) {
+    return <main className="narrow-page solve-page"><p className="intro">Loading solve access…</p></main>
+  }
+  if (!account && !publicUiSolves) {
+    return <main className="narrow-page solve-page">
+      <section className="empty-state">
+        <p className="eyebrow">PLATE SOLVER</p>
+        <h1>Public browser solves are disabled.</h1>
+        <p className="intro">{accountsEnabled
+          ? publicApiSolves
+            ? 'Sign in to submit from the browser and keep the solve in your account history. This deployment still accepts public API submissions.'
+            : 'Sign in to submit from the browser and keep the solve in your account history.'
+          : publicApiSolves
+            ? 'This deployment accepts public API submissions, but its browser upload form is disabled.'
+            : 'This deployment is not accepting public solve submissions.'}</p>
+        {accountsEnabled && <Link to="/signin" className="button">Sign in</Link>}
+        {publicApiSolves && <Link to="/docs/api" className="button secondary">Use the API</Link>}
+      </section>
+    </main>
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -824,10 +861,14 @@ function DataPair({ label, value }: { label: string; value: string }) { return <
 function SignInPage({
   accountsEnabled,
   account,
+  solveEnabled,
+  publicApiSolves,
   onAuthenticated,
 }: {
   accountsEnabled: boolean
   account: AccountDetails | null
+  solveEnabled: boolean
+  publicApiSolves: boolean
   onAuthenticated: () => Promise<AccountDetails | null>
 }) {
   const linkToken = new URLSearchParams(window.location.search).get('token')
@@ -888,7 +929,7 @@ function SignInPage({
   }
 
   if (!accountsEnabled) {
-    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">This Seiza deployment currently accepts solves without an account.</p><Link to="/solve" className="button">Solve an image</Link></section></main>
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">{solveEnabled ? 'This Seiza deployment currently accepts browser solves without an account.' : publicApiSolves ? 'This Seiza deployment accepts public API solves, but not browser uploads.' : 'This Seiza deployment is not accepting public solve submissions.'}</p>{solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}{publicApiSolves && !solveEnabled && <Link to="/docs/api" className="button">Use the API</Link>}</section></main>
   }
   if (account) {
     return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">SIGNED IN</p><h1>You are already aboard.</h1><p className="intro">Signed in as {account.account.email}.</p><Link to="/account" className="button">Open your account</Link></section></main>
@@ -1097,8 +1138,8 @@ function AccountPage({
   </main>
 }
 
-function NotFoundPage() {
-  return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist, but the solver is ready for another field.</p><Link to="/solve" className="button">Solve an image</Link></section></main>
+function NotFoundPage({ solveEnabled }: { solveEnabled: boolean }) {
+  return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist{solveEnabled ? ', but the solver is ready for another field.' : '.'}</p>{solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}</section></main>
 }
 
 function SiteFooter() {

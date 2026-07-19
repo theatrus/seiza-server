@@ -280,6 +280,7 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
     expect(request.method()).toBe('POST')
     totalSize = Number(request.headers()['upload-length'])
     expect(request.headers()['tus-resumable']).toBe('1.0.0')
+    expect(request.headers()['x-seiza-client']).toBe('web')
     expect(request.headers()['upload-metadata']).toContain('filename ')
     await route.fulfill({
       status: 201,
@@ -306,6 +307,7 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
     expect(request.method()).toBe('PATCH')
     expect(Number(request.headers()['upload-offset'])).toBe(offset)
     expect(request.headers()['content-type']).toBe('application/offset+octet-stream')
+    expect(request.headers()['x-seiza-client']).toBe('web')
     const interceptedSize = request.postDataBuffer()?.length ?? 0
     // Playwright WebKit exposes Blob-backed routed PATCH bodies as empty.
     // Chromium still verifies their exact bytes; WebKit verifies the request
@@ -323,10 +325,13 @@ test('uploads large images in resumable TUS chunks before queueing', async ({ pa
     })
   })
   const job = queuedJob(publicId, 'large-field.fits')
-  await page.route(`**/api/v1/uploads/${uploadId}/result`, async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify(job),
-  }))
+  await page.route(`**/api/v1/uploads/${uploadId}/result`, async (route) => {
+    expect(route.request().headers()['x-seiza-client']).toBe('web')
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(job),
+    })
+  })
   await page.route(`**/api/v1/solves/${publicId}`, async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify(job),
