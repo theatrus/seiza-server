@@ -14,6 +14,7 @@ Provides:        group(seiza-server)
 BuildRequires:   /usr/bin/cargo
 BuildRequires:   /usr/bin/npm
 BuildRequires:   /usr/bin/rpmbuild
+BuildRequires:   pkgconfig(openssl)
 Requires:        systemd
 Requires(pre):   shadow-utils
 

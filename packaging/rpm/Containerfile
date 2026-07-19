@@ -13,6 +13,7 @@ RUN dnf install -y \
         git \
         gzip \
         make \
+        openssl-devel \
         perl \
         pkgconf-pkg-config \
         rpm-build \
