@@ -5,7 +5,7 @@ use crate::{
         Account, AccountStatus, ApiKey, AuthChallenge, AuthSession, ChallengeId, ChallengePurpose,
         CompletedEmailSignIn, IdentityRepository, PasskeyCredential, SessionKind,
     },
-    rate_limit::RateLimiter,
+    rate_limit::{EmailSendRateLimiter, RateLimiter},
 };
 use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -147,11 +147,12 @@ pub struct AuthService {
     public_base_url: Url,
     public_origin: String,
     code_pepper: Vec<u8>,
+    /// Email delivery has stricter, multi-dimensional abuse controls than
+    /// other unauthenticated challenge creation.
+    email_send_limiter: EmailSendRateLimiter,
+    /// Passkey authentication creates persistent challenges but cannot send
+    /// mail, so it retains the general per-source token bucket.
     source_limiter: RateLimiter,
-    email_limiter: RateLimiter,
-    /// Long-horizon cap on messages to one address; the per-minute limiter
-    /// alone would still allow thousands of messages a day to a victim inbox.
-    email_daily_limiter: RateLimiter,
     webauthn: Webauthn,
 }
 
@@ -208,9 +209,8 @@ impl AuthService {
             public_base_url,
             public_origin,
             code_pepper,
+            email_send_limiter: EmailSendRateLimiter::default(),
             source_limiter: RateLimiter::new(10.0, 5.0),
-            email_limiter: RateLimiter::new(5.0, 3.0),
-            email_daily_limiter: RateLimiter::new(20.0 / (24.0 * 60.0), 10.0),
             webauthn,
         })
     }
@@ -231,25 +231,10 @@ impl AuthService {
 
     pub async fn start_email(&self, email: &str, source: &str) -> Result<EmailStart, AuthError> {
         let email = normalize_email(email).map_err(|_| AuthError::InvalidEmail)?;
-        let source_retry = self.source_limiter.check(source).await.err();
-        let email_retry = self
-            .email_limiter
-            .check(&format!("email:{email}"))
+        self.email_send_limiter
+            .check(source, &email)
             .await
-            .err();
-        let email_daily_retry = self
-            .email_daily_limiter
-            .check(&format!("email:{email}"))
-            .await
-            .err();
-        if let Some(retry_after) = source_retry
-            .into_iter()
-            .chain(email_retry)
-            .chain(email_daily_retry)
-            .max()
-        {
-            return Err(AuthError::RateLimited(retry_after));
-        }
+            .map_err(AuthError::RateLimited)?;
 
         let now = Utc::now();
         let challenge_id = Uuid::now_v7();
@@ -1100,7 +1085,10 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{email::SignInEmail, sqlx_identity::SqlxIdentityRepository};
+    use crate::{
+        email::SignInEmail, rate_limit::EmailSendRateLimits, sqlx_identity::SqlxIdentityRepository,
+    };
+    use std::time::Duration as StdDuration;
     use tokio::sync::Mutex;
 
     #[derive(Default)]
@@ -1121,15 +1109,27 @@ mod tests {
                 .unwrap(),
         );
         let sender = Arc::new(CapturingSender::default());
-        (
-            AuthService::new(
-                repository,
-                sender.clone(),
-                Url::parse("https://solve.example.com").unwrap(),
-                vec![42; 32],
-            ),
-            sender,
-        )
+        let mut service = AuthService::new(
+            repository,
+            sender.clone(),
+            Url::parse("https://solve.example.com").unwrap(),
+            vec![42; 32],
+        );
+        // Authentication behavior tests intentionally do not share the
+        // production mail-send cooldown; limiter behavior is covered in the
+        // rate_limit module with a controllable monotonic clock.
+        let limits = EmailSendRateLimits {
+            source_budget: u32::MAX,
+            source_daily_budget: u32::MAX,
+            recipient_cooldown: StdDuration::ZERO,
+            recipient_hour_limit: usize::MAX,
+            recipient_daily_limit: usize::MAX,
+            global_hour_limit: usize::MAX,
+            global_daily_limit: usize::MAX,
+            ..EmailSendRateLimits::default()
+        };
+        service.email_send_limiter = EmailSendRateLimiter::new(limits);
+        (service, sender)
     }
 
     #[tokio::test]

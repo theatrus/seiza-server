@@ -408,6 +408,14 @@ credential when adversarial access control is required.
 rate limiting only honors them when `SEIZA_TRUSTED_PROXY_HOPS` declares the
 trusted proxy chain; otherwise the connected peer address is used.
 
+Authentication email has stricter per-network, distinct-recipient,
+per-recipient, and process-wide rolling limits described in
+[`docs/accounts-authentication.md`](docs/accounts-authentication.md). These
+counters are currently in memory: a process restart clears them and API
+replicas do not coordinate them. Use a single API process until the counters
+are moved to durable identity-store TTL records, and retain provider
+bounce/complaint suppression plus an edge rate limit as independent controls.
+
 Catalog paths are resolved by `seiza::data_paths`. Each explicit per-catalog
 variable may name either a file or a directory and fails startup when it does
 not resolve. Without an explicit path, the server checks `SEIZA_CATALOG_DIR`,

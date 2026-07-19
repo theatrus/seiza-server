@@ -877,6 +877,19 @@ function SignInPage({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [resendAt, setResendAt] = useState<number | null>(null)
+  const [resendClock, setResendClock] = useState(() => Date.now())
+  const resendSeconds = resendAt === null ? 0 : Math.max(0, Math.ceil((resendAt - resendClock) / 1_000))
+
+  useEffect(() => {
+    if (resendAt === null || resendAt <= Date.now()) return
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      setResendClock(now)
+      if (now >= resendAt) window.clearInterval(timer)
+    }, 1_000)
+    return () => window.clearInterval(timer)
+  }, [resendAt])
 
   async function finish(request: Parameters<typeof completeEmailSignIn>[0]) {
     setSubmitting(true)
@@ -899,6 +912,9 @@ function SignInPage({
     try {
       const started = await startEmailSignIn(email)
       setChallengeId(started.challenge_id)
+      const parsedResendAt = Date.parse(started.resend_at)
+      setResendAt(Number.isNaN(parsedResendAt) ? Date.now() + 60_000 : parsedResendAt)
+      setResendClock(Date.now())
       setNotice('Check your email for a sign-in link or enter the eight-digit code below.')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Email sign-in is unavailable')
@@ -951,7 +967,7 @@ function SignInPage({
         <p className="eyebrow">EMAIL VERIFICATION</p><h2>Send a link and code</h2>
         <form onSubmit={requestEmail}>
           <label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-          <button className="button secondary" disabled={submitting}>{submitting ? 'Sending…' : challengeId ? 'Send another email' : 'Email me a sign-in link'}</button>
+          <button className="button secondary" disabled={submitting || resendSeconds > 0}>{submitting ? 'Sending…' : resendSeconds > 0 ? `Send another email (${resendSeconds}s)` : challengeId ? 'Send another email' : 'Email me a sign-in link'}</button>
         </form>
         {notice && <p className="success-note" role="status">{notice}</p>}
         {challengeId && <form className="code-form" onSubmit={submitCode}>

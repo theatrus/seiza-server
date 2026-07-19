@@ -117,6 +117,24 @@ backup or access policy requires that boundary.
    The user can continue without one, but the account page retains a prominent
    setup prompt.
 
+Email delivery uses rolling abuse limits rather than relying on the UI resend
+button. One IPv4 address or IPv6 `/64` has a weighted budget of 3 per 15 minutes
+and 10 per 24 hours. Reusing the first recipient costs one unit; introducing a
+different normalized address costs two, so one network cannot spray many
+addresses. Independently, each normalized recipient is limited across all
+sources to one message per minute, 3 per hour, and 10 per 24 hours. A
+process-wide circuit breaker admits at most 100 messages per hour and 1,000 per
+24 hours. All applicable budgets are charged atomically only after every check
+passes.
+
+These controls are currently **in process and not durable**. Restarting the
+server clears them, and multiple API replicas do not share their counters, so
+the process-wide limits are not deployment-wide in a horizontally scaled
+service. Before scaling the API or treating these limits as the sole abuse
+boundary, move the source and recipient windows into conditional TTL records in
+the identity store and add an edge limit for the email-start route. SES
+bounce/complaint monitoring and suppression remain separate required controls.
+
 Email syntax validation is only an early error check. Receipt and successful
 challenge completion are the ownership proof. Do not use DNS or MX lookup as a
 substitute for ownership. Preserve the address as entered for display and
