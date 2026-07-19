@@ -138,9 +138,10 @@ Use the passkey flow from
 [`webauthn-rs`](https://docs.rs/webauthn-rs/latest/webauthn_rs/) instead of
 implementing WebAuthn verification. Registration policy should be:
 
-- an explicit production RP ID, RP name, and exact HTTPS origin;
-- a random, stable 64-byte WebAuthn user handle, never an email address or an
-  email hash;
+- an RP ID derived from the canonical production host, the `Seiza` RP name,
+  and the exact HTTPS origin;
+- the random account UUID as the stable WebAuthn user handle, never an email
+  address or email hash;
 - discoverable credentials required, so email-free passkey sign-in works;
 - user verification required;
 - attestation preference `none` unless a future enterprise policy needs
@@ -616,7 +617,7 @@ cookies.
 - Add sign-in/code UI and test delivery templates in plain text and HTML.
 - Enable `accounts` only in a nonproduction environment.
 
-### Phase 3: passkeys (next validation boundary)
+### Phase 3: passkeys (implemented in this PR)
 
 - Integrate `webauthn-rs`, ceremony persistence, registration, discoverable
   authentication, recent-auth enforcement, and credential management.

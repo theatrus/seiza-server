@@ -2,8 +2,8 @@ use crate::{
     config::Config,
     identity::{
         Account, AccountId, AccountStatus, ApiKey, ApiKeyId, AuthChallenge, AuthSession,
-        ChallengeId, ChallengePurpose, CompletedEmailSignIn, IdentityRepository, PasskeyCredential,
-        SessionId, SessionKind,
+        ChallengeId, ChallengePurpose, CompletedEmailSignIn, CompletedPasskeySignIn,
+        IdentityRepository, PasskeyCredential, SessionId, SessionKind,
     },
 };
 use anyhow::{Context, Result};
@@ -633,6 +633,148 @@ impl IdentityRepository for DynamoDbIdentityRepository {
         Ok(())
     }
 
+    async fn complete_passkey_registration(
+        &self,
+        challenge_id: ChallengeId,
+        passkey: PasskeyCredential,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let consume = Update::builder()
+            .table_name(&self.table)
+            .key("pk", string(challenge_key(challenge_id)))
+            .key("sk", string("CHALLENGE"))
+            .condition_expression("purpose = :purpose AND account_id = :account_id AND attribute_not_exists(consumed_at) AND expires_at > :now")
+            .update_expression("SET consumed_at = :now")
+            .expression_attribute_values(":purpose", string(ChallengePurpose::PasskeyRegistration.as_str()))
+            .expression_attribute_values(":account_id", string(passkey.account_id))
+            .expression_attribute_values(":now", string(encode_time(now)))
+            .build()?;
+        let passkey_put = Put::builder()
+            .table_name(&self.table)
+            .set_item(Some(passkey_item(&passkey)))
+            .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
+            .build()?;
+        let credential_put = Put::builder()
+            .table_name(&self.table)
+            .set_item(Some(HashMap::from([
+                ("pk".into(), string(credential_key(&passkey.credential_id))),
+                ("sk".into(), string("ACCOUNT")),
+                ("entity".into(), string("passkey_lookup")),
+                ("account_id".into(), string(passkey.account_id)),
+                ("passkey_id".into(), string(passkey.id)),
+            ])))
+            .condition_expression("attribute_not_exists(pk)")
+            .build()?;
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(consume).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .condition_check(self.active_account_check(passkey.account_id)?)
+                    .build(),
+            )
+            .transact_items(TransactWriteItem::builder().put(passkey_put).build())
+            .transact_items(TransactWriteItem::builder().put(credential_put).build())
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn complete_passkey_sign_in(
+        &self,
+        challenge_id: ChallengeId,
+        passkey: PasskeyCredential,
+        session: AuthSession,
+        now: DateTime<Utc>,
+    ) -> Result<Option<CompletedPasskeySignIn>> {
+        if passkey.account_id != session.account_id {
+            anyhow::bail!("passkey and session account IDs differ");
+        }
+        let consume = Update::builder()
+            .table_name(&self.table)
+            .key("pk", string(challenge_key(challenge_id)))
+            .key("sk", string("CHALLENGE"))
+            .condition_expression(
+                "purpose = :purpose AND attribute_not_exists(consumed_at) AND expires_at > :now",
+            )
+            .update_expression("SET consumed_at = :now")
+            .expression_attribute_values(
+                ":purpose",
+                string(ChallengePurpose::PasskeyAuthentication.as_str()),
+            )
+            .expression_attribute_values(":now", string(encode_time(now)))
+            .build()?;
+        let update_passkey = Update::builder()
+            .table_name(&self.table)
+            .key("pk", string(account_key(passkey.account_id)))
+            .key("sk", string(passkey_key(passkey.id)))
+            .condition_expression(
+                "attribute_not_exists(revoked_at) AND credential_id = :credential_id",
+            )
+            .update_expression("SET credential_json = :credential_json, last_used_at = :now")
+            .expression_attribute_values(":credential_id", string(&passkey.credential_id))
+            .expression_attribute_values(":credential_json", string(&passkey.credential_json))
+            .expression_attribute_values(":now", string(encode_time(now)))
+            .build()?;
+        let session_put = Put::builder()
+            .table_name(&self.table)
+            .set_item(Some(session_item(&session)))
+            .condition_expression("attribute_not_exists(pk) AND attribute_not_exists(sk)")
+            .build()?;
+        let update_account = Update::builder()
+            .table_name(&self.table)
+            .key("pk", string(account_key(passkey.account_id)))
+            .key("sk", string("PROFILE"))
+            .condition_expression("#status = :active")
+            .update_expression("SET updated_at = :now, last_authenticated_at = :now")
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_values(":active", string(AccountStatus::Active.as_str()))
+            .expression_attribute_values(":now", string(encode_time(now)))
+            .build()?;
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(consume).build())
+            .transact_items(TransactWriteItem::builder().update(update_passkey).build())
+            .transact_items(TransactWriteItem::builder().put(session_put).build())
+            .transact_items(TransactWriteItem::builder().update(update_account).build())
+            .send()
+            .await;
+        match result {
+            Ok(_) => {
+                let Some(account) = self.account_by_id(passkey.account_id).await? else {
+                    anyhow::bail!("passkey account disappeared after successful authentication");
+                };
+                let mut passkey = passkey;
+                passkey.last_used_at = Some(now);
+                Ok(Some(CompletedPasskeySignIn {
+                    account,
+                    session,
+                    passkey,
+                }))
+            }
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_transaction_canceled_exception()) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn passkey_by_credential_id(
         &self,
         credential_id: &str,
@@ -665,6 +807,36 @@ impl IdentityRepository for DynamoDbIdentityRepository {
             .iter()
             .map(passkey_from_item)
             .collect()
+    }
+
+    async fn revoke_passkey(
+        &self,
+        account_id: AccountId,
+        passkey_id: crate::identity::PasskeyId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", string(account_key(account_id)))
+            .key("sk", string(passkey_key(passkey_id)))
+            .condition_expression("attribute_not_exists(revoked_at)")
+            .update_expression("SET revoked_at = :revoked_at")
+            .expression_attribute_values(":revoked_at", string(encode_time(revoked_at)))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn create_api_key(&self, api_key: ApiKey) -> Result<()> {

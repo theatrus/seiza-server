@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { AccountDetails, Annotations, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, resolveSolve, startEmailSignIn, submitSolve } from './api'
+import { AccountDetails, Annotations, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokePasskey, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -865,6 +865,20 @@ function SignInPage({
     await finish({ email, challenge_id: challengeId, code })
   }
 
+  async function authenticateWithPasskey() {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await signInWithPasskey()
+      await onAuthenticated()
+      window.history.replaceState({}, '', '/account')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Passkey sign-in failed')
+      setSubmitting(false)
+    }
+  }
+
   if (!accountsEnabled) {
     return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">This Seiza deployment currently accepts solves without an account.</p><Link to="/solve" className="button">Solve an image</Link></section></main>
   }
@@ -880,8 +894,9 @@ function SignInPage({
     <div className="auth-grid">
       <section className="panel auth-panel passkey-first">
         <p className="eyebrow">RECOMMENDED</p><h2>Use a passkey</h2>
-        <p>Passkeys are phishing-resistant and do not require a password. Passkey sign-in lands in the next validated phase of this PR.</p>
-        <button className="button" disabled title="Passkey sign-in is being added in the next implementation phase">Use a passkey</button>
+        <p>Passkeys are phishing-resistant and do not require a password. Your device can offer a passkey already connected to this Seiza account.</p>
+        <button className="button" disabled={submitting} onClick={() => void authenticateWithPasskey()}>{submitting ? 'Waiting for passkey…' : 'Use a passkey'}</button>
+        {error && <p className="error" role="alert">{error}</p>}
       </section>
       <section className="panel auth-panel">
         <p className="eyebrow">EMAIL VERIFICATION</p><h2>Send a link and code</h2>
@@ -913,6 +928,7 @@ function AccountPage({
 }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [passkeyLabel, setPasskeyLabel] = useState('This device')
 
   async function signOut(all: boolean) {
     setSubmitting(true)
@@ -927,6 +943,33 @@ function AccountPage({
     }
   }
 
+  async function addPasskey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      await registerPasskey(passkeyLabel)
+      await onAccountChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Passkey setup failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removePasskey(passkeyId: string) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await revokePasskey(passkeyId)
+      await onAccountChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Passkey removal failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   if (!accountChecked) return <main className="narrow-page auth-page"><p className="intro">Loading account…</p></main>
   if (!accountsEnabled || !account) {
     return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNT</p><h1>Sign in to continue.</h1><p className="intro">Your account keeps browser sessions and, in the next phases, passkeys and API keys under your control.</p><Link to="/signin" className="button">Sign in</Link></section></main>
@@ -934,7 +977,12 @@ function AccountPage({
 
   return <main className="account-page">
     <header className="page-heading"><p className="eyebrow">ACCOUNT</p><h1>{account.account.email}</h1><p className="intro">Verified {new Date(account.account.email_verified_at).toLocaleString()}.</p></header>
-    {account.passkey_setup_required && <section className="account-callout"><div><p className="eyebrow">RECOMMENDED NEXT STEP</p><h2>Add a passkey</h2><p>Your email is verified. Passkey setup will become available in the next validated phase of this PR.</p></div><button className="button" disabled>Add a passkey</button></section>}
+    {account.passkey_setup_required && <section className="account-callout"><div><p className="eyebrow">RECOMMENDED NEXT STEP</p><h2>Add a passkey</h2><p>Your email is verified. Add a phishing-resistant passkey for faster sign-in; email remains available for recovery.</p></div><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button" disabled={submitting}>{submitting ? 'Waiting for device…' : 'Add a passkey'}</button></form></section>}
+    {!account.passkey_setup_required && <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">PASSKEYS</p><h2>Phishing-resistant sign-in</h2></div></div>
+      <div className="session-list">{account.passkeys.map((passkey) => <div key={passkey.id}><div><strong>{passkey.label}</strong><span>Added {new Date(passkey.created_at).toLocaleString()}{passkey.last_used_at ? ` · last used ${new Date(passkey.last_used_at).toLocaleString()}` : ''}</span></div><button className="text-button" disabled={submitting} onClick={() => void removePasskey(passkey.id)}>Remove</button></div>)}</div>
+      <details className="add-security-item"><summary>Add another passkey</summary><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button small" disabled={submitting}>Add passkey</button></form></details>
+    </section>}
     <section className="panel account-section">
       <div className="section-heading"><div><p className="eyebrow">SECURITY</p><h2>Signed-in sessions</h2></div><button className="button secondary small" disabled={submitting} onClick={() => void signOut(true)}>Sign out everywhere</button></div>
       <div className="session-list">{account.sessions.filter((session) => session.revoked_at == null).map((session) => <div key={session.id}><div><strong>{session.current ? 'This browser' : session.kind === 'browser' ? 'Browser session' : 'Astrometry session'}</strong><span>Last used {new Date(session.last_seen_at).toLocaleString()} · expires {new Date(session.expires_at).toLocaleString()}</span></div>{session.current && <button className="text-button" disabled={submitting} onClick={() => void signOut(false)}>Sign out</button>}</div>)}</div>

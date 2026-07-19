@@ -1,7 +1,7 @@
 use crate::identity::{
     Account, AccountId, AccountStatus, ApiKey, ApiKeyId, AuthChallenge, AuthSession, ChallengeId,
-    ChallengePurpose, CompletedEmailSignIn, IdentityRepository, PasskeyCredential, SessionId,
-    SessionKind,
+    ChallengePurpose, CompletedEmailSignIn, CompletedPasskeySignIn, IdentityRepository,
+    PasskeyCredential, SessionId, SessionKind,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -411,6 +411,110 @@ impl IdentityRepository for SqlxIdentityRepository {
         Ok(())
     }
 
+    async fn complete_passkey_registration(
+        &self,
+        challenge_id: ChallengeId,
+        passkey: PasskeyCredential,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        let consumed = sqlx::query("UPDATE auth_challenges SET consumed_at = $1 WHERE id = $2 AND purpose = 'passkey-registration' AND account_id = $3 AND consumed_at IS NULL AND expires_at > $1 AND EXISTS (SELECT 1 FROM accounts WHERE id = $3 AND status = 'active')")
+            .bind(encode_time(now))
+            .bind(challenge_id.to_string())
+            .bind(passkey.account_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        if consumed.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("INSERT INTO passkey_credentials (id, credential_id, account_id, credential_json, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+            .bind(passkey.id.to_string())
+            .bind(passkey.credential_id)
+            .bind(passkey.account_id.to_string())
+            .bind(passkey.credential_json)
+            .bind(passkey.label)
+            .bind(encode_time(passkey.created_at))
+            .bind(passkey.last_used_at.map(encode_time))
+            .bind(passkey.revoked_at.map(encode_time))
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(true)
+    }
+
+    async fn complete_passkey_sign_in(
+        &self,
+        challenge_id: ChallengeId,
+        passkey: PasskeyCredential,
+        session: AuthSession,
+        now: DateTime<Utc>,
+    ) -> Result<Option<CompletedPasskeySignIn>> {
+        if passkey.account_id != session.account_id {
+            bail!("passkey and session account IDs differ");
+        }
+        let mut transaction = self.pool.begin().await?;
+        let account = sqlx::query("SELECT * FROM accounts WHERE id = $1 AND status = 'active'")
+            .bind(passkey.account_id.to_string())
+            .fetch_optional(&mut *transaction)
+            .await?
+            .map(account_from_row)
+            .transpose()?;
+        let Some(mut account) = account else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        let consumed = sqlx::query("UPDATE auth_challenges SET consumed_at = $1 WHERE id = $2 AND purpose = 'passkey-authentication' AND consumed_at IS NULL AND expires_at > $1")
+            .bind(encode_time(now))
+            .bind(challenge_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        if consumed.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        let updated = sqlx::query("UPDATE passkey_credentials SET credential_json = $1, last_used_at = $2 WHERE id = $3 AND credential_id = $4 AND account_id = $5 AND revoked_at IS NULL")
+            .bind(&passkey.credential_json)
+            .bind(encode_time(now))
+            .bind(passkey.id.to_string())
+            .bind(&passkey.credential_id)
+            .bind(passkey.account_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        if updated.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        sqlx::query("INSERT INTO auth_sessions (id, token_digest, account_id, kind, csrf_digest, created_at, last_seen_at, expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+            .bind(session.id.to_string())
+            .bind(&session.token_digest)
+            .bind(session.account_id.to_string())
+            .bind(session.kind.as_str())
+            .bind(&session.csrf_digest)
+            .bind(encode_time(session.created_at))
+            .bind(encode_time(session.last_seen_at))
+            .bind(encode_time(session.expires_at))
+            .bind(encode_time(session.absolute_expires_at))
+            .bind(session.revoked_at.map(encode_time))
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("UPDATE accounts SET updated_at = $1, last_authenticated_at = $1 WHERE id = $2 AND status = 'active'")
+            .bind(encode_time(now))
+            .bind(passkey.account_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        account.updated_at = now;
+        account.last_authenticated_at = now;
+        let mut passkey = passkey;
+        passkey.last_used_at = Some(now);
+        Ok(Some(CompletedPasskeySignIn {
+            account,
+            session,
+            passkey,
+        }))
+    }
+
     async fn passkey_by_credential_id(
         &self,
         credential_id: &str,
@@ -433,6 +537,22 @@ impl IdentityRepository for SqlxIdentityRepository {
         .into_iter()
         .map(passkey_from_row)
         .collect()
+    }
+
+    async fn revoke_passkey(
+        &self,
+        account_id: AccountId,
+        passkey_id: crate::identity::PasskeyId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(sqlx::query("UPDATE passkey_credentials SET revoked_at = $1 WHERE id = $2 AND account_id = $3 AND revoked_at IS NULL")
+            .bind(encode_time(revoked_at))
+            .bind(passkey_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
     }
 
     async fn create_api_key(&self, api_key: ApiKey) -> Result<()> {
@@ -765,5 +885,120 @@ mod tests {
         let mut duplicate = passkey;
         duplicate.id = Uuid::now_v7();
         assert!(repository.create_passkey(duplicate).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn sqlite_passkey_ceremonies_consume_challenges_atomically() {
+        let repository = SqlxIdentityRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let account = account(now);
+        repository.create_account(account.clone()).await.unwrap();
+        let registration = AuthChallenge {
+            id: Uuid::now_v7(),
+            purpose: ChallengePurpose::PasskeyRegistration,
+            account_id: Some(account.id),
+            email_lookup: None,
+            link_token_digest: None,
+            code_digest: None,
+            webauthn_state_json: Some("registration-state".into()),
+            attempts: 0,
+            created_at: now,
+            expires_at: now + Duration::minutes(10),
+            consumed_at: None,
+        };
+        repository
+            .create_challenge(registration.clone())
+            .await
+            .unwrap();
+        let passkey = PasskeyCredential {
+            id: Uuid::now_v7(),
+            credential_id: "atomic-credential".into(),
+            account_id: account.id,
+            credential_json: "credential-v1".into(),
+            label: "Laptop".into(),
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+        };
+        assert!(
+            repository
+                .complete_passkey_registration(registration.id, passkey.clone(), now)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .complete_passkey_registration(registration.id, passkey.clone(), now)
+                .await
+                .unwrap()
+        );
+
+        let authentication = AuthChallenge {
+            id: Uuid::now_v7(),
+            purpose: ChallengePurpose::PasskeyAuthentication,
+            account_id: None,
+            email_lookup: None,
+            link_token_digest: None,
+            code_digest: None,
+            webauthn_state_json: Some("authentication-state".into()),
+            attempts: 0,
+            created_at: now,
+            expires_at: now + Duration::minutes(10),
+            consumed_at: None,
+        };
+        repository
+            .create_challenge(authentication.clone())
+            .await
+            .unwrap();
+        let mut updated_passkey = passkey.clone();
+        updated_passkey.credential_json = "credential-v2".into();
+        let session = AuthSession {
+            id: Uuid::now_v7(),
+            token_digest: "passkey-session".into(),
+            account_id: account.id,
+            kind: SessionKind::Browser,
+            csrf_digest: Some("passkey-csrf".into()),
+            created_at: now,
+            last_seen_at: now,
+            expires_at: now + Duration::days(30),
+            absolute_expires_at: now + Duration::days(90),
+            revoked_at: None,
+        };
+        let completed = repository
+            .complete_passkey_sign_in(authentication.id, updated_passkey, session.clone(), now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.session, session);
+        assert_eq!(completed.passkey.last_used_at, Some(now));
+        assert!(
+            repository
+                .complete_passkey_sign_in(
+                    authentication.id,
+                    passkey.clone(),
+                    completed.session,
+                    now,
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .revoke_passkey(account.id, passkey.id, now)
+                .await
+                .unwrap()
+        );
+        assert!(
+            repository
+                .passkey_by_credential_id(&passkey.credential_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_some()
+        );
     }
 }

@@ -174,10 +174,18 @@ export interface AccountSession {
   current: boolean
 }
 
+export interface PasskeySummary {
+  id: string
+  label: string
+  created_at: string
+  last_used_at: string | null
+}
+
 export interface AccountDetails {
   account: Account
   csrf_token: string | null
   passkey_setup_required: boolean
+  passkeys: PasskeySummary[]
   sessions: AccountSession[]
 }
 
@@ -234,6 +242,53 @@ export async function getAccount(): Promise<AccountDetails | null> {
 export async function logout(all = false): Promise<void> {
   await expectJson(await sessionFetch(all ? '/api/v1/auth/logout-all' : '/api/v1/auth/logout', {
     method: 'POST',
+  }, true))
+}
+
+export async function signInWithPasskey(): Promise<void> {
+  ensureWebAuthn()
+  const started = await expectJson<WebAuthnStart>(await sessionFetch('/api/v1/auth/passkeys/authentication/start', {
+    method: 'POST',
+  }))
+  const publicKey = authenticationOptions(started.options.publicKey)
+  const credential = await navigator.credentials.get({
+    publicKey,
+    // This is an explicit user action, so open the authenticator chooser. The
+    // server's discoverable challenge is also compatible with conditional UI.
+    mediation: 'optional',
+  })
+  if (!(credential instanceof PublicKeyCredential)) throw new Error('Passkey sign-in was cancelled')
+  await expectJson(await sessionFetch('/api/v1/auth/passkeys/authentication/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: started.challenge_id, credential: authenticationCredentialJson(credential) }),
+  }))
+}
+
+export async function registerPasskey(label: string): Promise<PasskeySummary> {
+  ensureWebAuthn()
+  const started = await expectJson<WebAuthnStart>(await sessionFetch('/api/v1/account/passkeys/registration/start', {
+    method: 'POST',
+  }, true))
+  const credential = await navigator.credentials.create({
+    publicKey: registrationOptions(started.options.publicKey),
+  })
+  if (!(credential instanceof PublicKeyCredential)) throw new Error('Passkey setup was cancelled')
+  const result = await expectJson<{ passkey: PasskeySummary }>(await sessionFetch('/api/v1/account/passkeys/registration/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challenge_id: started.challenge_id,
+      label,
+      credential: registrationCredentialJson(credential),
+    }),
+  }, true))
+  return result.passkey
+}
+
+export async function revokePasskey(passkeyId: string): Promise<void> {
+  await expectJson(await sessionFetch(`/api/v1/account/passkeys/${passkeyId}`, {
+    method: 'DELETE',
   }, true))
 }
 
@@ -390,6 +445,102 @@ function csrfToken(): string | null {
     }
   }
   return null
+}
+
+interface WebAuthnStart {
+  challenge_id: string
+  options: {
+    publicKey: Record<string, unknown>
+    mediation?: string
+  }
+}
+
+function ensureWebAuthn() {
+  if (!window.isSecureContext || !('PublicKeyCredential' in window) || !navigator.credentials) {
+    throw new Error('Passkeys require a supported browser on a secure connection')
+  }
+}
+
+function registrationOptions(value: Record<string, unknown>): PublicKeyCredentialCreationOptions {
+  const options = value as unknown as PublicKeyCredentialCreationOptionsJSON
+  return {
+    ...options,
+    challenge: decodeBase64Url(options.challenge),
+    user: { ...options.user, id: decodeBase64Url(options.user.id) },
+    authenticatorSelection: {
+      ...options.authenticatorSelection,
+      residentKey: 'required',
+      requireResidentKey: true,
+    },
+    excludeCredentials: options.excludeCredentials?.map((credential) => ({
+      ...credential,
+      type: 'public-key' as const,
+      id: decodeBase64Url(credential.id),
+      transports: credential.transports as AuthenticatorTransport[] | undefined,
+    })),
+  } as unknown as PublicKeyCredentialCreationOptions
+}
+
+function authenticationOptions(value: Record<string, unknown>): PublicKeyCredentialRequestOptions {
+  const options = value as unknown as PublicKeyCredentialRequestOptionsJSON
+  return {
+    ...options,
+    challenge: decodeBase64Url(options.challenge),
+    allowCredentials: options.allowCredentials?.map((credential) => ({
+      ...credential,
+      type: 'public-key' as const,
+      id: decodeBase64Url(credential.id),
+      transports: credential.transports as AuthenticatorTransport[] | undefined,
+    })),
+  } as unknown as PublicKeyCredentialRequestOptions
+}
+
+function registrationCredentialJson(credential: PublicKeyCredential) {
+  const response = credential.response as AuthenticatorAttestationResponse
+  return {
+    id: credential.id,
+    rawId: encodeBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      attestationObject: encodeBase64Url(response.attestationObject),
+      clientDataJSON: encodeBase64Url(response.clientDataJSON),
+      transports: response.getTransports?.() ?? [],
+    },
+    clientExtensionResults: credential.getClientExtensionResults(),
+    authenticatorAttachment: credential.authenticatorAttachment,
+  }
+}
+
+function authenticationCredentialJson(credential: PublicKeyCredential) {
+  const response = credential.response as AuthenticatorAssertionResponse
+  return {
+    id: credential.id,
+    rawId: encodeBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      authenticatorData: encodeBase64Url(response.authenticatorData),
+      clientDataJSON: encodeBase64Url(response.clientDataJSON),
+      signature: encodeBase64Url(response.signature),
+      userHandle: response.userHandle ? encodeBase64Url(response.userHandle) : null,
+    },
+    clientExtensionResults: credential.getClientExtensionResults(),
+    authenticatorAttachment: credential.authenticatorAttachment,
+  }
+}
+
+function decodeBase64Url(value: string): ArrayBuffer {
+  const padded = value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - value.length % 4) % 4)
+  const binary = atob(padded)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer
+}
+
+function encodeBase64Url(value: ArrayBuffer): string {
+  const bytes = new Uint8Array(value)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 8_192) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8_192))
+  }
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
 }
 
 async function sessionFetch(

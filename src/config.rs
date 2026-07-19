@@ -464,12 +464,8 @@ fn validate_public_base_url(value: &str) -> Result<Url> {
 }
 
 fn is_loopback_url(url: &Url) -> bool {
-    url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    })
+    url.host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
 }
 
 fn optional_catalog_from_env(
@@ -621,7 +617,7 @@ mod tests {
     fn account_base_urls_require_https_except_for_loopback() {
         assert!(validate_public_base_url("https://solve.example.com").is_ok());
         assert!(validate_public_base_url("http://localhost:8080").is_ok());
-        assert!(validate_public_base_url("http://127.0.0.1:8080").is_ok());
+        assert!(validate_public_base_url("http://127.0.0.1:8080").is_err());
         assert!(validate_public_base_url("http://solve.example.com").is_err());
         assert!(validate_public_base_url("https://solve.example.com/path").is_err());
         assert!(validate_public_base_url("https://user@solve.example.com").is_err());

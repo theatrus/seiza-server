@@ -41,8 +41,7 @@ pub struct Account {
     pub email: String,
     pub email_lookup: String,
     pub email_verified_at: DateTime<Utc>,
-    /// Base64url-encoded random WebAuthn user handle. It is not derived from
-    /// the email address or account UUID.
+    /// Stable random WebAuthn UUID. It is never derived from the email address.
     pub webauthn_user_handle: String,
     pub status: AccountStatus,
     pub created_at: DateTime<Utc>,
@@ -164,6 +163,13 @@ pub struct CompletedEmailSignIn {
     pub account_created: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedPasskeySignIn {
+    pub account: Account,
+    pub session: AuthSession,
+    pub passkey: PasskeyCredential,
+}
+
 /// Persistent identity boundary shared by SQLx and DynamoDB deployments.
 ///
 /// Session and API-key authentication always supplies both the account ID and
@@ -223,11 +229,30 @@ pub trait IdentityRepository: Send + Sync {
     ) -> Result<u64>;
 
     async fn create_passkey(&self, passkey: PasskeyCredential) -> Result<()>;
+    async fn complete_passkey_registration(
+        &self,
+        challenge_id: ChallengeId,
+        passkey: PasskeyCredential,
+        now: DateTime<Utc>,
+    ) -> Result<bool>;
+    async fn complete_passkey_sign_in(
+        &self,
+        challenge_id: ChallengeId,
+        passkey: PasskeyCredential,
+        session: AuthSession,
+        now: DateTime<Utc>,
+    ) -> Result<Option<CompletedPasskeySignIn>>;
     async fn passkey_by_credential_id(
         &self,
         credential_id: &str,
     ) -> Result<Option<PasskeyCredential>>;
     async fn list_passkeys(&self, account_id: AccountId) -> Result<Vec<PasskeyCredential>>;
+    async fn revoke_passkey(
+        &self,
+        account_id: AccountId,
+        passkey_id: PasskeyId,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<bool>;
 
     async fn create_api_key(&self, api_key: ApiKey) -> Result<()>;
     async fn api_key(&self, account_id: AccountId, key_id: ApiKeyId) -> Result<Option<ApiKey>>;

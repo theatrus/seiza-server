@@ -3,7 +3,7 @@ use crate::{
     email::{EmailSender, SignInEmail, email_sender},
     identity::{
         Account, AccountStatus, AuthChallenge, AuthSession, ChallengeId, ChallengePurpose,
-        CompletedEmailSignIn, IdentityRepository, SessionKind,
+        CompletedEmailSignIn, IdentityRepository, PasskeyCredential, SessionKind,
     },
     rate_limit::RateLimiter,
 };
@@ -19,6 +19,11 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, DiscoverableAuthentication, DiscoverableKey, Passkey,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse, Webauthn, WebauthnBuilder,
+};
 
 const CHALLENGE_LIFETIME: Duration = Duration::minutes(10);
 const CHALLENGE_RESEND_DELAY: Duration = Duration::minutes(1);
@@ -27,6 +32,7 @@ const MAX_CHALLENGE_ATTEMPTS: u32 = 5;
 const SESSION_IDLE_LIFETIME: Duration = Duration::days(30);
 const SESSION_ABSOLUTE_LIFETIME: Duration = Duration::days(90);
 const SESSION_TOUCH_INTERVAL: Duration = Duration::minutes(15);
+const RECENT_AUTH_LIFETIME: Duration = Duration::minutes(10);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -42,6 +48,10 @@ pub enum AuthError {
     Delivery(#[source] anyhow::Error),
     #[error("authentication storage failed")]
     Internal(#[source] anyhow::Error),
+    #[error("sign in again before changing account security")]
+    RecentAuthenticationRequired,
+    #[error("passkey label must be between 1 and 80 characters")]
+    InvalidPasskeyLabel,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +77,27 @@ pub struct CompletedBrowserSignIn {
     pub csrf_token: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PasskeyRegistrationStart {
+    pub challenge_id: ChallengeId,
+    pub options: CreationChallengeResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PasskeyAuthenticationStart {
+    pub challenge_id: ChallengeId,
+    pub options: RequestChallengeResponse,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedPasskeyBrowserSignIn {
+    pub account: Account,
+    pub session: AuthSession,
+    pub passkey: PasskeyCredential,
+    pub session_token: String,
+    pub csrf_token: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthenticatedBrowserSession {
     pub account: Account,
@@ -82,6 +113,7 @@ pub struct AuthService {
     code_pepper: Vec<u8>,
     source_limiter: RateLimiter,
     email_limiter: RateLimiter,
+    webauthn: Webauthn,
 }
 
 impl AuthService {
@@ -109,22 +141,29 @@ impl AuthService {
             .public_base_url
             .clone()
             .context("SEIZA_PUBLIC_BASE_URL is required")?;
-        Ok(Self::new(
+        Self::try_new(
             repository,
             email_sender(config).await?,
             public_base_url,
             pepper,
-        ))
+        )
     }
 
-    pub fn new(
+    fn try_new(
         repository: Arc<dyn IdentityRepository>,
         sender: Arc<dyn EmailSender>,
         public_base_url: Url,
         code_pepper: Vec<u8>,
-    ) -> Self {
+    ) -> Result<Self> {
         let public_origin = public_base_url.origin().ascii_serialization();
-        Self {
+        let rp_id = public_base_url
+            .host_str()
+            .context("validated public base URL has no host")?;
+        let webauthn = WebauthnBuilder::new(rp_id, &public_base_url)
+            .and_then(|builder| builder.rp_name("Seiza").build())
+            .map_err(anyhow::Error::from)
+            .context("SEIZA_PUBLIC_BASE_URL is not a valid WebAuthn relying party")?;
+        Ok(Self {
             repository,
             sender,
             public_base_url,
@@ -132,7 +171,18 @@ impl AuthService {
             code_pepper,
             source_limiter: RateLimiter::new(10.0, 5.0),
             email_limiter: RateLimiter::new(5.0, 3.0),
-        }
+            webauthn,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(
+        repository: Arc<dyn IdentityRepository>,
+        sender: Arc<dyn EmailSender>,
+        public_base_url: Url,
+        code_pepper: Vec<u8>,
+    ) -> Self {
+        Self::try_new(repository, sender, public_base_url, code_pepper).unwrap()
     }
 
     pub fn public_origin(&self) -> &str {
@@ -258,13 +308,12 @@ impl AuthService {
         }
 
         let account_id = Uuid::now_v7();
-        let user_handle = random_secret(64).map_err(AuthError::Internal)?;
         let account = Account {
             id: account_id,
             email: email_lookup.to_owned(),
             email_lookup: email_lookup.to_owned(),
             email_verified_at: now,
-            webauthn_user_handle: user_handle,
+            webauthn_user_handle: account_id.to_string(),
             status: AccountStatus::Active,
             created_at: now,
             updated_at: now,
@@ -391,11 +440,281 @@ impl AuthService {
             .await
             .map_err(AuthError::Internal)
     }
+
+    pub fn require_recent_auth(
+        &self,
+        authenticated: &AuthenticatedBrowserSession,
+    ) -> Result<(), AuthError> {
+        if Utc::now() - authenticated.session.created_at <= RECENT_AUTH_LIFETIME {
+            Ok(())
+        } else {
+            Err(AuthError::RecentAuthenticationRequired)
+        }
+    }
+
+    pub async fn start_passkey_registration(
+        &self,
+        authenticated: &AuthenticatedBrowserSession,
+    ) -> Result<PasskeyRegistrationStart, AuthError> {
+        self.require_recent_auth(authenticated)?;
+        let existing = self
+            .repository
+            .list_passkeys(authenticated.account.id)
+            .await
+            .map_err(AuthError::Internal)?
+            .into_iter()
+            .filter(|credential| credential.revoked_at.is_none())
+            .map(|credential| {
+                serde_json::from_str::<Passkey>(&credential.credential_json)
+                    .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<Vec<_>>>()
+            .map_err(AuthError::Internal)?;
+        let exclude = (!existing.is_empty()).then(|| {
+            existing
+                .iter()
+                .map(|passkey| passkey.cred_id().clone())
+                .collect()
+        });
+        let (options, state) = self
+            .webauthn
+            .start_passkey_registration(
+                authenticated.account.id,
+                &authenticated.account.email,
+                &authenticated.account.email,
+                exclude,
+            )
+            .map_err(|error| AuthError::Internal(error.into()))?;
+        let now = Utc::now();
+        let challenge_id = Uuid::now_v7();
+        self.repository
+            .create_challenge(AuthChallenge {
+                id: challenge_id,
+                purpose: ChallengePurpose::PasskeyRegistration,
+                account_id: Some(authenticated.account.id),
+                email_lookup: None,
+                link_token_digest: None,
+                code_digest: None,
+                webauthn_state_json: Some(
+                    serde_json::to_string(&state)
+                        .map_err(|error| AuthError::Internal(error.into()))?,
+                ),
+                attempts: 0,
+                created_at: now,
+                expires_at: now + CHALLENGE_LIFETIME,
+                consumed_at: None,
+            })
+            .await
+            .map_err(AuthError::Internal)?;
+        Ok(PasskeyRegistrationStart {
+            challenge_id,
+            options,
+        })
+    }
+
+    pub async fn complete_passkey_registration(
+        &self,
+        authenticated: &AuthenticatedBrowserSession,
+        challenge_id: ChallengeId,
+        label: &str,
+        credential: RegisterPublicKeyCredential,
+    ) -> Result<PasskeyCredential, AuthError> {
+        self.require_recent_auth(authenticated)?;
+        let label = normalize_passkey_label(label)?;
+        let challenge = self
+            .valid_webauthn_challenge(
+                challenge_id,
+                ChallengePurpose::PasskeyRegistration,
+                Some(authenticated.account.id),
+            )
+            .await?;
+        let state = serde_json::from_str::<PasskeyRegistration>(
+            challenge
+                .webauthn_state_json
+                .as_deref()
+                .ok_or(AuthError::InvalidCredential)?,
+        )
+        .map_err(|error| AuthError::Internal(error.into()))?;
+        let passkey = self
+            .webauthn
+            .finish_passkey_registration(&credential, &state)
+            .map_err(|_| AuthError::InvalidCredential)?;
+        let now = Utc::now();
+        let persisted = PasskeyCredential {
+            id: Uuid::now_v7(),
+            credential_id: URL_SAFE_NO_PAD.encode(passkey.cred_id()),
+            account_id: authenticated.account.id,
+            credential_json: serde_json::to_string(&passkey)
+                .map_err(|error| AuthError::Internal(error.into()))?,
+            label,
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+        };
+        if !self
+            .repository
+            .complete_passkey_registration(challenge_id, persisted.clone(), now)
+            .await
+            .map_err(AuthError::Internal)?
+        {
+            return Err(AuthError::InvalidCredential);
+        }
+        Ok(persisted)
+    }
+
+    pub async fn start_passkey_authentication(
+        &self,
+    ) -> Result<PasskeyAuthenticationStart, AuthError> {
+        let (options, state) = self
+            .webauthn
+            .start_discoverable_authentication()
+            .map_err(|error| AuthError::Internal(error.into()))?;
+        let now = Utc::now();
+        let challenge_id = Uuid::now_v7();
+        self.repository
+            .create_challenge(AuthChallenge {
+                id: challenge_id,
+                purpose: ChallengePurpose::PasskeyAuthentication,
+                account_id: None,
+                email_lookup: None,
+                link_token_digest: None,
+                code_digest: None,
+                webauthn_state_json: Some(
+                    serde_json::to_string(&state)
+                        .map_err(|error| AuthError::Internal(error.into()))?,
+                ),
+                attempts: 0,
+                created_at: now,
+                expires_at: now + CHALLENGE_LIFETIME,
+                consumed_at: None,
+            })
+            .await
+            .map_err(AuthError::Internal)?;
+        Ok(PasskeyAuthenticationStart {
+            challenge_id,
+            options,
+        })
+    }
+
+    pub async fn complete_passkey_authentication(
+        &self,
+        challenge_id: ChallengeId,
+        credential: PublicKeyCredential,
+    ) -> Result<CompletedPasskeyBrowserSignIn, AuthError> {
+        let challenge = self
+            .valid_webauthn_challenge(challenge_id, ChallengePurpose::PasskeyAuthentication, None)
+            .await?;
+        let state = serde_json::from_str::<DiscoverableAuthentication>(
+            challenge
+                .webauthn_state_json
+                .as_deref()
+                .ok_or(AuthError::InvalidCredential)?,
+        )
+        .map_err(|error| AuthError::Internal(error.into()))?;
+        let (account_id, credential_id) = self
+            .webauthn
+            .identify_discoverable_authentication(&credential)
+            .map_err(|_| AuthError::InvalidCredential)?;
+        let credential_id = URL_SAFE_NO_PAD.encode(credential_id);
+        let mut persisted = self
+            .repository
+            .passkey_by_credential_id(&credential_id)
+            .await
+            .map_err(AuthError::Internal)?
+            .filter(|passkey| passkey.account_id == account_id && passkey.revoked_at.is_none())
+            .ok_or(AuthError::InvalidCredential)?;
+        let mut passkey = serde_json::from_str::<Passkey>(&persisted.credential_json)
+            .map_err(|error| AuthError::Internal(error.into()))?;
+        let result = self
+            .webauthn
+            .finish_discoverable_authentication(
+                &credential,
+                state,
+                &[DiscoverableKey::from(&passkey)],
+            )
+            .map_err(|_| AuthError::InvalidCredential)?;
+        if !result.user_verified() || passkey.update_credential(&result).is_none() {
+            return Err(AuthError::InvalidCredential);
+        }
+        persisted.credential_json =
+            serde_json::to_string(&passkey).map_err(|error| AuthError::Internal(error.into()))?;
+        let now = Utc::now();
+        let (session, session_secret, csrf_token) =
+            new_browser_session(account_id, now).map_err(AuthError::Internal)?;
+        let completed = self
+            .repository
+            .complete_passkey_sign_in(challenge_id, persisted, session, now)
+            .await
+            .map_err(AuthError::Internal)?
+            .ok_or(AuthError::InvalidCredential)?;
+        Ok(CompletedPasskeyBrowserSignIn {
+            session_token: format!(
+                "seiza_session_{}_{}_{}",
+                completed.account.id, completed.session.id, session_secret
+            ),
+            csrf_token,
+            account: completed.account,
+            session: completed.session,
+            passkey: completed.passkey,
+        })
+    }
+
+    async fn valid_webauthn_challenge(
+        &self,
+        challenge_id: ChallengeId,
+        purpose: ChallengePurpose,
+        account_id: Option<Uuid>,
+    ) -> Result<AuthChallenge, AuthError> {
+        let now = Utc::now();
+        self.repository
+            .challenge_by_id(challenge_id)
+            .await
+            .map_err(AuthError::Internal)?
+            .filter(|challenge| {
+                challenge.purpose == purpose
+                    && challenge.account_id == account_id
+                    && challenge.consumed_at.is_none()
+                    && challenge.expires_at > now
+            })
+            .ok_or(AuthError::InvalidCredential)
+    }
 }
 
 enum CandidateCredential {
     Link(String),
     Code { email: String, code: String },
+}
+
+fn normalize_passkey_label(label: &str) -> Result<String, AuthError> {
+    let label = label.trim();
+    if label.is_empty() || label.chars().count() > 80 {
+        return Err(AuthError::InvalidPasskeyLabel);
+    }
+    Ok(label.to_owned())
+}
+
+fn new_browser_session(
+    account_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(AuthSession, String, String)> {
+    let session_secret = random_secret(32)?;
+    let csrf_token = random_secret(32)?;
+    Ok((
+        AuthSession {
+            id: Uuid::now_v7(),
+            token_digest: secret_digest(&session_secret),
+            account_id,
+            kind: SessionKind::Browser,
+            csrf_digest: Some(secret_digest(&csrf_token)),
+            created_at: now,
+            last_seen_at: now,
+            expires_at: now + SESSION_IDLE_LIFETIME,
+            absolute_expires_at: now + SESSION_ABSOLUTE_LIFETIME,
+            revoked_at: None,
+        },
+        session_secret,
+        csrf_token,
+    ))
 }
 
 pub fn normalize_email(value: &str) -> Result<String> {

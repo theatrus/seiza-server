@@ -574,9 +574,30 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/auth/email/start", post(start_email_sign_in))
         .route("/api/v1/auth/email/complete", post(complete_email_sign_in))
+        .route(
+            "/api/v1/auth/passkeys/authentication/start",
+            post(start_passkey_sign_in),
+        )
+        .route(
+            "/api/v1/auth/passkeys/authentication/complete",
+            post(complete_passkey_sign_in),
+        )
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/logout-all", post(logout_all))
         .route("/api/v1/account", get(get_account))
+        .route("/api/v1/account/passkeys", get(list_passkeys))
+        .route(
+            "/api/v1/account/passkeys/registration/start",
+            post(start_passkey_registration),
+        )
+        .route(
+            "/api/v1/account/passkeys/registration/complete",
+            post(complete_passkey_registration),
+        )
+        .route(
+            "/api/v1/account/passkeys/{passkey_id}",
+            axum::routing::delete(revoke_passkey),
+        )
         .route("/api/v1/catalog/objects", get(get_catalog_objects))
         .route(
             "/api/v1/catalog/objects/search",
@@ -832,6 +853,7 @@ async fn get_account(
         "account": account_json(&authenticated.account),
         "csrf_token": authenticated.csrf_token,
         "passkey_setup_required": !passkeys.iter().any(|passkey| passkey.revoked_at.is_none()),
+        "passkeys": passkeys.iter().filter(|passkey| passkey.revoked_at.is_none()).map(passkey_json).collect::<Vec<_>>(),
         "sessions": sessions.into_iter().map(|session| json!({
             "id": session.id,
             "kind": session.kind,
@@ -843,6 +865,140 @@ async fn get_account(
         })).collect::<Vec<_>>(),
     }))
     .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+async fn start_passkey_sign_in(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let started = auth_service(&state)?
+        .start_passkey_authentication()
+        .await
+        .map_err(auth_api_error)?;
+    no_store_json(started)
+}
+
+#[derive(Deserialize)]
+struct PasskeyAuthenticationCompleteRequest {
+    challenge_id: Uuid,
+    credential: webauthn_rs::prelude::PublicKeyCredential,
+}
+
+async fn complete_passkey_sign_in(
+    State(state): State<AppState>,
+    Json(request): Json<PasskeyAuthenticationCompleteRequest>,
+) -> Result<Response, ApiError> {
+    let signed_in = auth_service(&state)?
+        .complete_passkey_authentication(request.challenge_id, request.credential)
+        .await
+        .map_err(auth_api_error)?;
+    let mut response = Json(json!({
+        "status": "success",
+        "account": account_json(&signed_in.account),
+        "csrf_token": signed_in.csrf_token,
+        "passkey": passkey_json(&signed_in.passkey),
+    }))
+    .into_response();
+    append_auth_cookies(
+        &mut response,
+        &state,
+        &signed_in.session_token,
+        &signed_in.csrf_token,
+    )?;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+async fn list_passkeys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser(&state, &headers).await?;
+    let passkeys = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository")
+        .list_passkeys(authenticated.account.id)
+        .await
+        .map_err(ApiError::internal)?;
+    no_store_json(json!({
+        "passkeys": passkeys.iter().filter(|passkey| passkey.revoked_at.is_none()).map(passkey_json).collect::<Vec<_>>(),
+    }))
+}
+
+async fn start_passkey_registration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    let started = auth_service(&state)?
+        .start_passkey_registration(&authenticated)
+        .await
+        .map_err(auth_api_error)?;
+    no_store_json(started)
+}
+
+#[derive(Deserialize)]
+struct PasskeyRegistrationCompleteRequest {
+    challenge_id: Uuid,
+    label: String,
+    credential: webauthn_rs::prelude::RegisterPublicKeyCredential,
+}
+
+async fn complete_passkey_registration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PasskeyRegistrationCompleteRequest>,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    let passkey = auth_service(&state)?
+        .complete_passkey_registration(
+            &authenticated,
+            request.challenge_id,
+            &request.label,
+            request.credential,
+        )
+        .await
+        .map_err(auth_api_error)?;
+    no_store_json(json!({ "passkey": passkey_json(&passkey) }))
+}
+
+async fn revoke_passkey(
+    State(state): State<AppState>,
+    Path(passkey_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let authenticated = authenticated_browser_for_mutation(&state, &headers).await?;
+    auth_service(&state)?
+        .require_recent_auth(&authenticated)
+        .map_err(auth_api_error)?;
+    let revoked = state
+        .identity
+        .as_ref()
+        .expect("auth service requires identity repository")
+        .revoke_passkey(authenticated.account.id, passkey_id, Utc::now())
+        .await
+        .map_err(ApiError::internal)?;
+    if !revoked {
+        return Err(ApiError::not_found_message("passkey not found"));
+    }
+    no_store_json(json!({ "status": "success" }))
+}
+
+fn passkey_json(passkey: &crate::identity::PasskeyCredential) -> Value {
+    json!({
+        "id": passkey.id,
+        "label": passkey.label,
+        "created_at": passkey.created_at,
+        "last_used_at": passkey.last_used_at,
+    })
+}
+
+fn no_store_json(value: impl Serialize) -> Result<Response, ApiError> {
+    let mut response = Json(value).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -1022,7 +1178,7 @@ fn auth_api_error(error: AuthError) -> ApiError {
     match error {
         AuthError::InvalidEmail => ApiError::bad_request("enter a valid email address"),
         AuthError::InvalidCredential => {
-            ApiError::unauthorized("the sign-in link, code, or session is invalid or expired")
+            ApiError::unauthorized("the sign-in credential is invalid or expired")
         }
         AuthError::RateLimited(retry_after) => ApiError {
             status: StatusCode::TOO_MANY_REQUESTS,
@@ -1038,6 +1194,12 @@ fn auth_api_error(error: AuthError) -> ApiError {
                 message: "email delivery is temporarily unavailable".into(),
                 retry_after: Some(30),
             }
+        }
+        AuthError::RecentAuthenticationRequired => {
+            ApiError::forbidden("sign in again before changing account security")
+        }
+        AuthError::InvalidPasskeyLabel => {
+            ApiError::bad_request("passkey label must be between 1 and 80 characters")
         }
         AuthError::Internal(source) => ApiError::internal(source),
     }
@@ -2987,6 +3149,14 @@ impl ApiError {
             retry_after: None,
         }
     }
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
     fn not_found() -> Self {
         Self::not_found_message("solve job not found")
     }
@@ -4157,6 +4327,30 @@ mod tests {
                 .await
                 .is_ok()
         );
+        let registration = start_passkey_registration(
+            State(state.clone()),
+            mutation_headers.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(registration.status(), StatusCode::OK);
+        let registration: Value = serde_json::from_slice(
+            &to_bytes(registration.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(registration["challenge_id"].is_string());
+        assert!(registration["options"]["publicKey"].is_object());
+        let authentication = start_passkey_sign_in(State(state.clone())).await.unwrap();
+        assert_eq!(authentication.status(), StatusCode::OK);
+        let authentication: Value = serde_json::from_slice(
+            &to_bytes(authentication.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(authentication["options"]["mediation"], "conditional");
         assert_eq!(
             logout(State(state.clone()), mutation_headers)
                 .await

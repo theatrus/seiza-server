@@ -57,7 +57,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .success-note { margin: 1rem 0 0; padding: .85rem 1rem; border: 1px solid #376853; border-radius: 5px; color: #c7ebd9; background: rgb(10 39 31 / 78%); font-size: .82rem; line-height: 1.55; }
 .account-page { width: min(980px, calc(100% - 2rem)); }
 .account-page .page-heading h1 { font-size: clamp(2.3rem, 5vw, 4rem); overflow-wrap: anywhere; }
-.account-callout { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2rem; margin-bottom: 1rem; padding: clamp(1.25rem, 4vw, 2rem); border: 1px solid #826e3d; border-radius: 8px; background: linear-gradient(135deg, rgb(39 38 26 / 92%), rgb(10 28 34 / 82%)); }
+.account-callout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .55fr); align-items: center; gap: 2rem; margin-bottom: 1rem; padding: clamp(1.25rem, 4vw, 2rem); border: 1px solid #826e3d; border-radius: 8px; background: linear-gradient(135deg, rgb(39 38 26 / 92%), rgb(10 28 34 / 82%)); }
 .account-callout h2 { margin-bottom: .5rem; font-size: clamp(1.7rem, 3vw, 2.4rem); }
 .account-callout p:last-child { margin: 0; color: #a7a78e; line-height: 1.6; }
 .account-section { margin-top: 1rem; }
@@ -69,6 +69,10 @@ button:disabled { cursor: wait; opacity: .65; }
 .session-list span { color: #829da5; font-size: .76rem; line-height: 1.5; }
 .text-button { padding: .35rem 0; border: 0; color: #8fdae7; background: transparent; font: inherit; font-size: .76rem; font-weight: 800; cursor: pointer; }
 .text-button:hover { color: #d5f6f9; }
+.passkey-create-form { display: grid; gap: .8rem; }
+.passkey-create-form .button { width: 100%; }
+.add-security-item { margin-top: 1.2rem; color: #8fdae7; font-size: .78rem; }
+.add-security-item .passkey-create-form { max-width: 420px; padding-top: 1rem; }
 .solve-page { width: min(1040px, calc(100% - 2rem)); padding-top: 2.2rem; }
 .page-heading { max-width: 760px; margin-bottom: 2.4rem; }
 .solve-page .page-heading { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(380px, 1.2fr); gap: .6rem clamp(2.5rem, 6vw, 5rem); align-items: end; max-width: none; margin-bottom: 1.4rem; }
