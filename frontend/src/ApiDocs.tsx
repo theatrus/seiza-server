@@ -95,6 +95,7 @@ export function ApiDocsPage() {
         <a href="#solve-options">Solve options</a>
         <a href="#resumable-uploads">Large uploads</a>
         <a href="#catalog-api">Catalog API</a>
+        <a href="#account-api">Accounts and API keys</a>
         <a href="#astrometry-api">Astrometry compatibility</a>
         <a href="#worker-api">Worker API</a>
         <a href="#errors">Errors and limits</a>
@@ -105,7 +106,7 @@ export function ApiDocsPage() {
           <p>The simplest client sends one <code>file</code> part and an optional JSON <code>options</code> part. The server responds with <code>202 Accepted</code>; CPU-heavy solving happens later in a worker.</p>
           <CodeExample label="Submit an image" code={multipartExample} />
           <CodeExample label="Poll the opaque result URL" code={pollExample} />
-          <div className="api-note"><strong>Authentication modes</strong><span>Public installations need no credential. When stub-key mode is enabled, add <code>X-API-Key: …</code> or <code>Authorization: Bearer …</code> to submission and TUS requests.</span></div>
+          <div className="api-note"><strong>Authentication modes</strong><span>Public installations need no credential. Stub-key mode accepts any nonempty <code>X-API-Key</code> or Bearer token. Account mode validates a revocable account API key with <code>solve:submit</code> for submissions and <code>solve:read</code> for reads; the same headers work for native and TUS requests.</span></div>
           <div className="api-note"><strong>Result URLs are capabilities.</strong><span>The returned <code>id</code> is an unguessable UUID. Preserve it to revisit the result; the same UUID identifies the durable job to workers and queue transports.</span></div>
           <div className="api-note"><strong>Your images remain yours.</strong><span>Ordinary uploads are stored only temporarily to provide the solve. Seiza does not claim ownership and does not retain the image long-term unless the user explicitly contributes it.</span></div>
         </DocSection>
@@ -205,8 +206,29 @@ export function ApiDocsPage() {
           <CodeExample label="Catalog queries" code={catalogExample} />
         </DocSection>
 
+        <DocSection id="account-api" eyebrow="IDENTITY API" title="Verified accounts and revocable credentials.">
+          <p>Account mode supports passwordless email verification, passkey-first sign-in, multiple browser sessions, and scoped API keys. Browser mutations require the session-bound <code>X-CSRF-Token</code>; API-key requests do not use browser cookies or CSRF. A newly created API-key secret is returned once and cannot be retrieved later.</p>
+          <div className="endpoint-list compact">
+            <Endpoint method="POST" path="/api/v1/auth/email/start">Send a single-use email link and code.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/auth/email/complete">Verify the link or code and create a browser session.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/auth/passkeys/authentication/start">Start discoverable passkey sign-in.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/auth/passkeys/authentication/complete">Verify a passkey assertion and create a browser session.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/account">Read the signed-in account, live sessions, passkeys, and API-key metadata.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/account/passkeys">List the signed-in account’s registered passkeys.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/account/passkeys/registration/start">Begin registering a new passkey for the signed-in account.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/account/passkeys/registration/complete">Verify the attestation and store the labeled passkey.</Endpoint>
+            <Endpoint method="DELETE" path="/api/v1/account/passkeys/{passkey_id}">Remove a registered passkey.</Endpoint>
+            <Endpoint method="POST" path="/api/v1/account/api-keys">Create a named key with explicit <code>solve:read</code> and/or <code>solve:submit</code> scopes.</Endpoint>
+            <Endpoint method="DELETE" path="/api/v1/account/api-keys/{key_id}">Immediately revoke an account API key and any Astrometry sessions created from it.</Endpoint>
+            <Endpoint method="DELETE" path="/api/v1/account/sessions/{session_id}">Revoke a browser or Astrometry session.</Endpoint>
+          </div>
+          <div className="api-note"><strong>Recent sign-in required</strong><span>Adding or removing passkeys and API keys requires a browser session verified within the last ten minutes. Older sessions receive <code>403</code> and must sign in again first.</span></div>
+          <div className="api-note"><strong>Account-level fairness</strong><span>All credentials belonging to one account submit as the same durable owner. API-key names and scopes cannot select queue priority.</span></div>
+          <div className="api-note"><strong>Result capabilities</strong><span>In this release, an unguessable result URL remains sufficient to read that result. Account-scoped job history and private result ACLs are intentionally deferred.</span></div>
+        </DocSection>
+
         <DocSection id="astrometry-api" eyebrow="COMPATIBILITY API" title="A practical Astrometry.net subset.">
-          <p>Existing clients can use the familiar <code>request-json</code> form field. Login returns an opaque stub session; upload returns a numeric compatibility ID while the native queue remains UUID-based. Upload accepts <code>ul</code> and <code>ev</code> scale types with <code>degwidth</code>, <code>arcminwidth</code>, or <code>arcsecperpix</code> units.</p>
+          <p>Existing clients can use the familiar <code>request-json</code> form field. In account mode, login validates an account API key with <code>solve:submit</code> and returns a persisted, expiring session; public and stub-key modes retain their compatibility behavior. Upload returns a numeric compatibility ID while the native queue remains UUID-based. Upload accepts <code>ul</code> and <code>ev</code> scale types with <code>degwidth</code>, <code>arcminwidth</code>, or <code>arcsecperpix</code> units.</p>
           <div className="endpoint-list compact">
             <Endpoint method="POST" path="/api/login">Create an Astrometry-style session.</Endpoint>
             <Endpoint method="POST" path="/api/upload">Submit <code>request-json</code> plus one file.</Endpoint>
@@ -216,7 +238,7 @@ export function ApiDocsPage() {
             <Endpoint method="GET" path="/api/jobs/{job_id}/info">Read filename, calibration, and objects in the field.</Endpoint>
           </div>
           <CodeExample label="Login and upload" code={astrometryExample} />
-          <div className="api-note"><strong>Compatibility boundary</strong><span><code>downsample_factor &gt; 1</code> is not implemented; resize before uploading. The session and API-key store is intentionally a stub today.</span></div>
+          <div className="api-note"><strong>Compatibility boundary</strong><span><code>downsample_factor &gt; 1</code> is not implemented; resize before uploading. URL uploads and the remainder of the Astrometry.net API are not exposed.</span></div>
         </DocSection>
 
         <DocSection id="worker-api" eyebrow="OPERATORS" title="Authenticated, lease-safe remote workers.">
@@ -236,7 +258,7 @@ export function ApiDocsPage() {
           <div className="api-facts">
             <div><strong>100 MB</strong><span>Default complete-image limit, configurable by the operator.</span></div>
             <div><strong>24 hours</strong><span>Default original and preview retention. WCS and job metadata persist.</span></div>
-            <div><strong>Public or stub key</strong><span>Native submissions accept <code>X-API-Key</code> or a Bearer token when key mode is enabled.</span></div>
+            <div><strong>Three auth modes</strong><span>Native requests support public, legacy stub-key, or verified account credentials as configured by the operator.</span></div>
           </div>
         </DocSection>
       </div>

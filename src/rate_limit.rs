@@ -1,6 +1,12 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::Mutex;
 
+/// Identities are attacker-controlled (source addresses, email addresses), so
+/// once the map reaches this size, fully-refilled buckets are swept before a
+/// new identity is inserted. Only identities still inside their refill window
+/// carry state worth keeping, which bounds memory to the actively limited set.
+const SWEEP_THRESHOLD_BUCKETS: usize = 10_000;
+
 #[derive(Clone)]
 pub struct RateLimiter {
     inner: Arc<Mutex<HashMap<String, Bucket>>>,
@@ -25,6 +31,15 @@ impl RateLimiter {
     pub async fn check(&self, identity: &str) -> Result<(), u64> {
         let mut buckets = self.inner.lock().await;
         let now = Instant::now();
+        if buckets.len() >= SWEEP_THRESHOLD_BUCKETS && !buckets.contains_key(identity) {
+            let capacity = self.capacity;
+            let refill_per_second = self.refill_per_second;
+            buckets.retain(|_, bucket| {
+                bucket.tokens
+                    + now.duration_since(bucket.updated_at).as_secs_f64() * refill_per_second
+                    < capacity
+            });
+        }
         let bucket = buckets.entry(identity.to_owned()).or_insert(Bucket {
             tokens: self.capacity,
             updated_at: now,

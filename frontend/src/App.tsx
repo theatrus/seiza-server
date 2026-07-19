@@ -1,6 +1,6 @@
-import { FormEvent, ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { Annotations, Health, Job, OverlayObject, SolveOptions, donateValidationImage, getAnnotations, getHealth, getSolve, resolveSolve, submitSolve } from './api'
+import { AccountDetails, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -154,26 +154,50 @@ function Link({ to, children, className }: { to: string; children: ReactNode; cl
 
 export default function App() {
   const [path, setPath] = useState(window.location.pathname)
+  const [authMode, setAuthMode] = useState<Health['auth_mode'] | null>(null)
+  const [account, setAccount] = useState<AccountDetails | null>(null)
+  const [accountChecked, setAccountChecked] = useState(false)
   useEffect(() => {
     const updatePath = () => setPath(window.location.pathname)
     window.addEventListener('popstate', updatePath)
     return () => window.removeEventListener('popstate', updatePath)
   }, [])
+  const refreshAccount = useCallback(async () => {
+    const current = await getAccount()
+    setAccount(current)
+    setAccountChecked(true)
+    return current
+  }, [])
+  useEffect(() => {
+    let active = true
+    getHealth().then(async (health) => {
+      if (!active) return
+      setAuthMode(health.auth_mode)
+      if (health.auth_mode === 'accounts') {
+        const current = await getAccount()
+        if (active) setAccount(current)
+      }
+      if (active) setAccountChecked(true)
+    }).catch(() => { if (active) setAccountChecked(true) })
+    return () => { active = false }
+  }, [])
   const solutionMatch = path.match(/^\/solutions\/((?:\d+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/)
 
   return <div className="site-shell">
-    <SiteHeader />
+    <SiteHeader accountsEnabled={authMode === 'accounts'} account={account} />
     {path === '/' && <HomePage />}
-    {path === '/solve' && <SolvePage />}
+    {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} />}
     {path === '/docs/api' && <ApiDocsPage />}
     {path === '/data-sources' && <DataSourcesPage />}
+    {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} onAuthenticated={refreshAccount} />}
+    {path === '/account' && <AccountPage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} onAccountChanged={refreshAccount} />}
     {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
-    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && !solutionMatch && <NotFoundPage />}
+    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage />}
     <SiteFooter />
   </div>
 }
 
-function SiteHeader() {
+function SiteHeader({ accountsEnabled, account }: { accountsEnabled: boolean; account: AccountDetails | null }) {
   return <nav className="site-nav" aria-label="Primary navigation">
     <Link to="/" className="brand-link">
       <img src="/seiza-mark.png" alt="" width="38" height="38" />
@@ -182,6 +206,7 @@ function SiteHeader() {
     <div className="nav-links">
       <Link to="/">About</Link>
       <Link to="/docs/api">API</Link>
+      {accountsEnabled && <Link to={account ? '/account' : '/signin'}>{account ? 'Account' : 'Sign in'}</Link>}
       <Link to="/solve" className="button small">Solve an image</Link>
     </div>
   </nav>
@@ -251,10 +276,30 @@ function HomePage() {
   </main>
 }
 
-function SolvePage() {
+function SolvePage({
+  accountsEnabled,
+  account,
+  accountChecked,
+}: {
+  accountsEnabled: boolean
+  account: AccountDetails | null
+  accountChecked: boolean
+}) {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+
+  if (accountsEnabled && !account) {
+    if (!accountChecked) return <main className="narrow-page solve-page"><p className="intro">Loading account…</p></main>
+    return <main className="narrow-page solve-page">
+      <section className="empty-state">
+        <p className="eyebrow">PLATE SOLVER</p>
+        <h1>Sign in to solve.</h1>
+        <p className="intro">This Seiza deployment requires an account before uploading images. Sign in with your passkey or a verified email, then return here to start a solve.</p>
+        <Link to="/signin" className="button">Sign in</Link>
+      </section>
+    </main>
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -787,6 +832,254 @@ function formatDurationMs(value: number) {
 }
 function Metric({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><strong>{value}</strong></div> }
 function DataPair({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div> }
+
+function SignInPage({
+  accountsEnabled,
+  account,
+  onAuthenticated,
+}: {
+  accountsEnabled: boolean
+  account: AccountDetails | null
+  onAuthenticated: () => Promise<AccountDetails | null>
+}) {
+  const linkToken = new URLSearchParams(window.location.search).get('token')
+  const [email, setEmail] = useState('')
+  const [challengeId, setChallengeId] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  async function finish(request: Parameters<typeof completeEmailSignIn>[0]) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await completeEmailSignIn(request)
+      await onAuthenticated()
+      window.history.replaceState({}, '', '/account')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Sign-in failed')
+      setSubmitting(false)
+    }
+  }
+
+  async function requestEmail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const started = await startEmailSignIn(email)
+      setChallengeId(started.challenge_id)
+      setNotice('Check your email for a sign-in link or enter the eight-digit code below.')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Email sign-in is unavailable')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function submitCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const code = String(new FormData(event.currentTarget).get('code') ?? '').replaceAll(' ', '')
+    if (!challengeId) return
+    await finish({ email, challenge_id: challengeId, code })
+  }
+
+  async function authenticateWithPasskey() {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await signInWithPasskey()
+      await onAuthenticated()
+      window.history.replaceState({}, '', '/account')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Passkey sign-in failed')
+      setSubmitting(false)
+    }
+  }
+
+  if (!accountsEnabled) {
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">This Seiza deployment currently accepts solves without an account.</p><Link to="/solve" className="button">Solve an image</Link></section></main>
+  }
+  if (account) {
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">SIGNED IN</p><h1>You are already aboard.</h1><p className="intro">Signed in as {account.account.email}.</p><Link to="/account" className="button">Open your account</Link></section></main>
+  }
+  if (linkToken) {
+    return <main className="narrow-page auth-page"><header className="page-heading"><p className="eyebrow">EMAIL VERIFIED</p><h1>Finish signing in.</h1><p className="intro">The link is valid for one sign-in. Continue only if you requested it.</p></header><section className="panel auth-panel"><button className="button" disabled={submitting} onClick={() => void finish({ link_token: linkToken })}>{submitting ? 'Signing in…' : 'Continue sign-in'}</button>{error && <p className="error" role="alert">{error}</p>}</section></main>
+  }
+
+  return <main className="narrow-page auth-page">
+    <header className="page-heading"><p className="eyebrow">YOUR SEIZA ACCOUNT</p><h1>Sign in to your sky.</h1><p className="intro">Use a passkey when one is already connected to your account, or verify your email to sign in and set one up.</p></header>
+    <div className="auth-grid">
+      <section className="panel auth-panel passkey-first">
+        <p className="eyebrow">RECOMMENDED</p><h2>Use a passkey</h2>
+        <p>Passkeys are phishing-resistant and do not require a password. Your device can offer a passkey already connected to this Seiza account.</p>
+        <button className="button" disabled={submitting} onClick={() => void authenticateWithPasskey()}>{submitting ? 'Waiting for passkey…' : 'Use a passkey'}</button>
+        {error && <p className="error" role="alert">{error}</p>}
+      </section>
+      <section className="panel auth-panel">
+        <p className="eyebrow">EMAIL VERIFICATION</p><h2>Send a link and code</h2>
+        <form onSubmit={requestEmail}>
+          <label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+          <button className="button secondary" disabled={submitting}>{submitting ? 'Sending…' : challengeId ? 'Send another email' : 'Email me a sign-in link'}</button>
+        </form>
+        {notice && <p className="success-note" role="status">{notice}</p>}
+        {challengeId && <form className="code-form" onSubmit={submitCode}>
+          <label>Eight-digit code<input name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]{8,15}" required placeholder="12345678" /></label>
+          <button className="button" disabled={submitting}>{submitting ? 'Verifying…' : 'Verify and sign in'}</button>
+        </form>}
+        {error && <p className="error" role="alert">{error}</p>}
+      </section>
+    </div>
+  </main>
+}
+
+function AccountPage({
+  accountsEnabled,
+  account,
+  accountChecked,
+  onAccountChanged,
+}: {
+  accountsEnabled: boolean
+  account: AccountDetails | null
+  accountChecked: boolean
+  onAccountChanged: () => Promise<AccountDetails | null>
+}) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reauthRequired, setReauthRequired] = useState(false)
+  const [passkeyLabel, setPasskeyLabel] = useState('This device')
+  const [apiKeyName, setApiKeyName] = useState('Observatory')
+  const [apiKeyRead, setApiKeyRead] = useState(true)
+  const [apiKeySubmit, setApiKeySubmit] = useState(true)
+  const [createdApiToken, setCreatedApiToken] = useState<string | null>(null)
+
+  async function signOut(all: boolean) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await logout(all)
+      await onAccountChanged()
+      navigate('/signin')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Sign-out failed')
+      setSubmitting(false)
+    }
+  }
+
+  // Passkey and API-key changes require a session verified within the last
+  // ten minutes; the server refuses older sessions with 403.
+  function reportSecurityError(reason: unknown, fallback: string) {
+    if (reason instanceof ApiError && reason.status === 403) {
+      setReauthRequired(true)
+      return
+    }
+    setError(reason instanceof Error ? reason.message : fallback)
+  }
+
+  async function addPasskey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    setReauthRequired(false)
+    try {
+      await registerPasskey(passkeyLabel)
+      await onAccountChanged()
+    } catch (reason) {
+      reportSecurityError(reason, 'Passkey setup failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removePasskey(passkeyId: string) {
+    setSubmitting(true)
+    setError(null)
+    setReauthRequired(false)
+    try {
+      await revokePasskey(passkeyId)
+      await onAccountChanged()
+    } catch (reason) {
+      reportSecurityError(reason, 'Passkey removal failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function addApiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    setReauthRequired(false)
+    setCreatedApiToken(null)
+    try {
+      const scopes = [apiKeyRead && 'solve:read', apiKeySubmit && 'solve:submit'].filter((scope): scope is string => Boolean(scope))
+      const created = await createApiKey(apiKeyName, scopes)
+      setCreatedApiToken(created.token)
+      await onAccountChanged()
+    } catch (reason) {
+      reportSecurityError(reason, 'API key creation failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeApiKey(keyId: string) {
+    setSubmitting(true)
+    setError(null)
+    setReauthRequired(false)
+    try {
+      await revokeApiKey(keyId)
+      await onAccountChanged()
+    } catch (reason) {
+      reportSecurityError(reason, 'API key revocation failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeSession(sessionId: string) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await revokeSession(sessionId)
+      await onAccountChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Session revocation failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (!accountChecked) return <main className="narrow-page auth-page"><p className="intro">Loading account…</p></main>
+  if (!accountsEnabled || !account) {
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNT</p><h1>Sign in to continue.</h1><p className="intro">Your account keeps browser sessions, passkeys, and API keys under your control.</p><Link to="/signin" className="button">Sign in</Link></section></main>
+  }
+
+  return <main className="account-page">
+    <header className="page-heading"><p className="eyebrow">ACCOUNT</p><h1>{account.account.email}</h1><p className="intro">Verified {new Date(account.account.email_verified_at).toLocaleString()}.</p></header>
+    {reauthRequired && <section className="account-callout" role="alert"><div><p className="eyebrow">RECENT SIGN-IN REQUIRED</p><h2>Sign in again to change security settings</h2><p>Adding or removing passkeys and API keys requires a session verified within the last ten minutes. Sign in again, then retry the change.</p></div><Link to="/signin" className="button">Sign in again</Link></section>}
+    {account.passkey_setup_required && <section className="account-callout"><div><p className="eyebrow">RECOMMENDED NEXT STEP</p><h2>Add a passkey</h2><p>Your email is verified. Add a phishing-resistant passkey for faster sign-in; email remains available for recovery.</p></div><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button" disabled={submitting}>{submitting ? 'Waiting for device…' : 'Add a passkey'}</button></form></section>}
+    {!account.passkey_setup_required && <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">PASSKEYS</p><h2>Phishing-resistant sign-in</h2></div></div>
+      <div className="session-list">{account.passkeys.map((passkey) => <div key={passkey.id}><div><strong>{passkey.label}</strong><span>Added {new Date(passkey.created_at).toLocaleString()}{passkey.last_used_at ? ` · last used ${new Date(passkey.last_used_at).toLocaleString()}` : ''}</span></div><button className="text-button" disabled={submitting} onClick={() => void removePasskey(passkey.id)}>Remove</button></div>)}</div>
+      <details className="add-security-item"><summary>Add another passkey</summary><form className="passkey-create-form" onSubmit={addPasskey}><label>Passkey name<input value={passkeyLabel} maxLength={80} required onChange={(event) => setPasskeyLabel(event.target.value)} /></label><button className="button small" disabled={submitting}>Add passkey</button></form></details>
+    </section>}
+    <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">API KEYS</p><h2>Programmatic access</h2></div></div>
+      <p className="section-intro">Use account API keys with <code>X-API-Key</code> or <code>Authorization: Bearer</code>. Every key shares this account’s queue identity.</p>
+      {createdApiToken && <div className="secret-once" role="status"><strong>Copy this key now—it will not be shown again.</strong><code>{createdApiToken}</code><div className="secret-actions"><button className="button secondary small" onClick={() => void navigator.clipboard.writeText(createdApiToken)}>Copy key</button><button className="text-button" onClick={() => setCreatedApiToken(null)}>I’ve saved it</button></div></div>}
+      <div className="session-list">{account.api_keys.map((key) => <div key={key.id}><div><strong>{key.name}</strong><span>{key.display_prefix} · {key.scopes.join(', ')}{key.last_used_at ? ` · last used ${new Date(key.last_used_at).toLocaleString()}` : ''}</span></div><button className="text-button" disabled={submitting} onClick={() => void removeApiKey(key.id)}>Revoke</button></div>)}</div>
+      <details className="add-security-item"><summary>Create an API key</summary><form className="api-key-form" onSubmit={addApiKey}><label>Key name<input value={apiKeyName} maxLength={80} required onChange={(event) => setApiKeyName(event.target.value)} /></label><fieldset><legend>Scopes</legend><label className="inline-check"><input type="checkbox" checked={apiKeyRead} onChange={(event) => setApiKeyRead(event.target.checked)} /> Read solve results</label><label className="inline-check"><input type="checkbox" checked={apiKeySubmit} onChange={(event) => setApiKeySubmit(event.target.checked)} /> Submit and re-solve images</label></fieldset><button className="button small" disabled={submitting || (!apiKeyRead && !apiKeySubmit)}>Create key</button></form></details>
+    </section>
+    <section className="panel account-section">
+      <div className="section-heading"><div><p className="eyebrow">SECURITY</p><h2>Signed-in sessions</h2></div><button className="button secondary small" disabled={submitting} onClick={() => void signOut(true)}>Sign out everywhere</button></div>
+      <div className="session-list">{account.sessions.map((session) => <div key={session.id}><div><strong>{session.current ? 'This browser' : session.kind === 'browser' ? 'Browser session' : session.api_key_id ? 'Astrometry (API key)' : 'Astrometry session'}</strong><span>Last used {new Date(session.last_seen_at).toLocaleString()} · expires {new Date(session.expires_at).toLocaleString()}</span></div><button className="text-button" disabled={submitting} onClick={() => session.current ? void signOut(false) : void removeSession(session.id)}>{session.current ? 'Sign out' : 'Revoke'}</button></div>)}</div>
+      {error && <p className="error" role="alert">{error}</p>}
+    </section>
+  </main>
+}
 
 function NotFoundPage() {
   return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist, but the solver is ready for another field.</p><Link to="/solve" className="button">Solve an image</Link></section></main>

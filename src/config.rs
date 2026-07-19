@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
+use url::Url;
 
 #[derive(Clone, Default)]
 pub(crate) struct PriorityApiKeys(Vec<String>);
@@ -53,6 +54,7 @@ impl fmt::Debug for PriorityApiKeys {
 pub enum AuthMode {
     Public,
     StubApiKey,
+    Accounts,
 }
 
 impl FromStr for AuthMode {
@@ -62,7 +64,44 @@ impl FromStr for AuthMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "public" => Ok(Self::Public),
             "stub-api-key" | "stub_api_key" => Ok(Self::StubApiKey),
-            _ => bail!("SEIZA_AUTH_MODE must be `public` or `stub-api-key`"),
+            "accounts" => Ok(Self::Accounts),
+            _ => bail!("SEIZA_AUTH_MODE must be `public`, `stub-api-key`, or `accounts`"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailProvider {
+    Ses,
+    Smtp,
+}
+
+impl FromStr for EmailProvider {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ses" => Ok(Self::Ses),
+            "smtp" => Ok(Self::Smtp),
+            _ => bail!("SEIZA_EMAIL_PROVIDER must be `ses` or `smtp`"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTls {
+    StartTls,
+    Implicit,
+}
+
+impl FromStr for SmtpTls {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "starttls" => Ok(Self::StartTls),
+            "implicit" => Ok(Self::Implicit),
+            _ => bail!("SEIZA_SMTP_TLS must be `starttls` or `implicit`"),
         }
     }
 }
@@ -135,6 +174,9 @@ pub struct Config {
     pub job_backend: JobBackend,
     pub sql_database_url: String,
     pub dynamodb_table: Option<String>,
+    pub identity_backend: JobBackend,
+    pub identity_sql_database_url: String,
+    pub identity_dynamodb_table: Option<String>,
     pub queue_transport: QueueDelivery,
     pub sqs_queue_url: Option<String>,
     pub sqs_priority_queue_url: Option<String>,
@@ -149,7 +191,25 @@ pub struct Config {
     pub upload_cleanup_interval_seconds: u64,
     pub rate_limit_per_minute: f64,
     pub rate_limit_burst: f64,
+    /// Number of reverse proxies in front of the server that append to
+    /// `X-Forwarded-For`. Zero (the default) ignores forwarded headers and
+    /// rate-limits by peer address, so a direct client cannot spoof its
+    /// identity.
+    pub trusted_proxy_hops: usize,
     pub auth_mode: AuthMode,
+    pub public_base_url: Option<Url>,
+    pub auth_code_pepper_file: Option<PathBuf>,
+    pub email_provider: Option<EmailProvider>,
+    pub email_from: Option<String>,
+    pub ses_from_identity_arn: Option<String>,
+    pub ses_role_arn: Option<String>,
+    pub ses_role_external_id_file: Option<PathBuf>,
+    pub smtp_host: Option<String>,
+    pub smtp_port: Option<u16>,
+    pub smtp_username: Option<String>,
+    pub smtp_password_file: Option<PathBuf>,
+    pub smtp_tls: SmtpTls,
+    pub smtp_timeout_seconds: u64,
     pub storage_backend: StorageBackend,
     pub s3_bucket: Option<String>,
     pub s3_prefix: String,
@@ -171,6 +231,7 @@ impl Config {
             parse_env("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS", 3_600u64)?;
         let rate_limit_per_minute = parse_env("SEIZA_RATE_LIMIT_PER_MINUTE", 6.0f64)?;
         let rate_limit_burst = parse_env("SEIZA_RATE_LIMIT_BURST", 3.0f64)?;
+        let trusted_proxy_hops = parse_env("SEIZA_TRUSTED_PROXY_HOPS", 0usize)?;
         let embedded_workers = parse_env("SEIZA_EMBEDDED_WORKERS", true)?;
         let lease_seconds = parse_env("SEIZA_LEASE_SECONDS", 900u64)?;
         let sqs_priority_weight = parse_env("SEIZA_SQS_PRIORITY_WEIGHT", 2usize)?;
@@ -205,6 +266,93 @@ impl Config {
             .unwrap_or_else(|| data_dir.join("jobs.sqlite3"));
         let sql_database_url = env::var("SEIZA_SQL_DATABASE_URL")
             .unwrap_or_else(|_| format!("sqlite://{}?mode=rwc", queue_database.display()));
+        let job_backend: JobBackend = env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?;
+        let identity_backend = env::var("SEIZA_IDENTITY_BACKEND")
+            .map(|value| value.parse())
+            .unwrap_or(Ok(job_backend))?;
+        let identity_sql_database_url = env::var("SEIZA_IDENTITY_SQL_DATABASE_URL")
+            .unwrap_or_else(|_| sql_database_url.clone());
+        let identity_dynamodb_table = env::var("SEIZA_IDENTITY_DYNAMODB_TABLE")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let auth_mode: AuthMode = env_or("SEIZA_AUTH_MODE", "public").parse()?;
+        if auth_mode == AuthMode::Accounts
+            && identity_backend == JobBackend::DynamoDb
+            && identity_dynamodb_table.is_none()
+        {
+            bail!(
+                "SEIZA_IDENTITY_DYNAMODB_TABLE is required when accounts use the DynamoDB identity backend"
+            );
+        }
+        let public_base_url = env::var("SEIZA_PUBLIC_BASE_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| validate_public_base_url(&value))
+            .transpose()?;
+        let auth_code_pepper_file = env::var_os("SEIZA_AUTH_CODE_PEPPER_FILE")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let email_provider = env::var("SEIZA_EMAIL_PROVIDER")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse())
+            .transpose()?;
+        let email_from = env::var("SEIZA_EMAIL_FROM")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let ses_from_identity_arn = env::var("SEIZA_SES_FROM_IDENTITY_ARN")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let ses_role_arn = env::var("SEIZA_SES_ROLE_ARN")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let ses_role_external_id_file = env::var_os("SEIZA_SES_ROLE_EXTERNAL_ID_FILE")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let smtp_host = env::var("SEIZA_SMTP_HOST")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let smtp_port = env::var("SEIZA_SMTP_PORT")
+            .ok()
+            .map(|value| value.parse().context("invalid SEIZA_SMTP_PORT"))
+            .transpose()?;
+        let smtp_username = env::var("SEIZA_SMTP_USERNAME")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let smtp_password_file = env::var_os("SEIZA_SMTP_PASSWORD_FILE")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let smtp_tls: SmtpTls = env_or("SEIZA_SMTP_TLS", "starttls").parse()?;
+        let smtp_timeout_seconds = parse_env("SEIZA_SMTP_TIMEOUT_SECONDS", 30u64)?;
+        if smtp_timeout_seconds == 0 {
+            bail!("SEIZA_SMTP_TIMEOUT_SECONDS must be at least 1");
+        }
+        if auth_mode == AuthMode::Accounts {
+            public_base_url
+                .as_ref()
+                .context("SEIZA_PUBLIC_BASE_URL is required when SEIZA_AUTH_MODE=accounts")?;
+            if auth_code_pepper_file.is_none() {
+                bail!("SEIZA_AUTH_CODE_PEPPER_FILE is required when SEIZA_AUTH_MODE=accounts");
+            }
+            let provider = email_provider
+                .context("SEIZA_EMAIL_PROVIDER is required when SEIZA_AUTH_MODE=accounts")?;
+            if email_from.is_none() {
+                bail!("SEIZA_EMAIL_FROM is required when SEIZA_AUTH_MODE=accounts");
+            }
+            match provider {
+                EmailProvider::Ses => {}
+                EmailProvider::Smtp => {
+                    if smtp_host.is_none()
+                        || smtp_username.is_none()
+                        || smtp_password_file.is_none()
+                    {
+                        bail!(
+                            "SMTP email requires SEIZA_SMTP_HOST, SEIZA_SMTP_USERNAME, and SEIZA_SMTP_PASSWORD_FILE"
+                        );
+                    }
+                }
+            }
+        }
         let s3_prefix = env_or("SEIZA_S3_PREFIX", "uploads")
             .trim_matches('/')
             .to_owned();
@@ -235,11 +383,14 @@ impl Config {
             star_identifier_catalog_path,
             transient_catalog_path,
             minor_body_catalog_path,
-            job_backend: env_or("SEIZA_JOB_BACKEND", "sqlx").parse()?,
+            job_backend,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")
                 .ok()
                 .filter(|value| !value.is_empty()),
+            identity_backend,
+            identity_sql_database_url,
+            identity_dynamodb_table,
             // SEIZA_QUEUE_BACKEND was the original name. It remains an alias
             // so existing local/SQS deployments do not need a flag day.
             queue_transport: env::var("SEIZA_QUEUE_TRANSPORT")
@@ -265,7 +416,21 @@ impl Config {
             upload_cleanup_interval_seconds,
             rate_limit_per_minute,
             rate_limit_burst,
-            auth_mode: env_or("SEIZA_AUTH_MODE", "public").parse()?,
+            trusted_proxy_hops,
+            auth_mode,
+            public_base_url,
+            auth_code_pepper_file,
+            email_provider,
+            email_from,
+            ses_from_identity_arn,
+            ses_role_arn,
+            ses_role_external_id_file,
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password_file,
+            smtp_tls,
+            smtp_timeout_seconds,
             storage_backend: env_or("SEIZA_STORAGE_BACKEND", "local").parse()?,
             s3_bucket: env::var("SEIZA_S3_BUCKET")
                 .ok()
@@ -279,6 +444,35 @@ impl Config {
         self.priority_api_keys
             .queue_weight(api_key, self.sqs_priority_weight)
     }
+
+    pub(crate) fn secure_auth_cookies(&self) -> bool {
+        self.public_base_url
+            .as_ref()
+            .is_some_and(|url| url.scheme() == "https")
+    }
+}
+
+fn validate_public_base_url(value: &str) -> Result<Url> {
+    let url = Url::parse(value).context("invalid SEIZA_PUBLIC_BASE_URL")?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        bail!(
+            "SEIZA_PUBLIC_BASE_URL must be an origin without credentials, path, query, or fragment"
+        );
+    }
+    if url.scheme() != "https" && !(url.scheme() == "http" && is_loopback_url(&url)) {
+        bail!("SEIZA_PUBLIC_BASE_URL must use HTTPS except for localhost development");
+    }
+    Ok(url)
+}
+
+fn is_loopback_url(url: &Url) -> bool {
+    url.host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
 }
 
 fn optional_catalog_from_env(
@@ -418,5 +612,21 @@ mod tests {
         assert!(validate_sqs_priority_weight(2).is_ok());
         assert!(validate_sqs_priority_weight(100).is_ok());
         assert!(validate_sqs_priority_weight(101).is_err());
+    }
+
+    #[test]
+    fn accounts_auth_mode_is_explicit() {
+        assert_eq!("accounts".parse::<AuthMode>().unwrap(), AuthMode::Accounts);
+        assert!("account".parse::<AuthMode>().is_err());
+    }
+
+    #[test]
+    fn account_base_urls_require_https_except_for_loopback() {
+        assert!(validate_public_base_url("https://solve.example.com").is_ok());
+        assert!(validate_public_base_url("http://localhost:8080").is_ok());
+        assert!(validate_public_base_url("http://127.0.0.1:8080").is_err());
+        assert!(validate_public_base_url("http://solve.example.com").is_err());
+        assert!(validate_public_base_url("https://solve.example.com/path").is_err());
+        assert!(validate_public_base_url("https://user@solve.example.com").is_err());
     }
 }

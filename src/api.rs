@@ -1,6 +1,8 @@
 use crate::{
     annotations::{AnnotationEngine, AnnotationOptions},
+    auth::{AuthError, AuthService, AuthenticatedBrowserSession, EmailCredential},
     config::{AuthMode, Config, JobBackend},
+    identity::{IdentityRepository, identity_repository},
     models::{
         AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
         SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
@@ -19,7 +21,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Form, Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -27,6 +29,7 @@ use axum::{
 use base64::Engine;
 use bytes::Bytes;
 use chrono::{Duration as ChronoDuration, Utc};
+use cookie::{Cookie, SameSite, time::Duration as CookieDuration};
 use seiza::objects::{
     ObjectCatalogCapabilities, ObjectCatalogProvenance, ObjectDetails, ObjectHit, ObjectKind,
     ObjectNameMatch, ObjectQuery, ObjectQueryError, ObjectSort, SkyObject, SkyRegion,
@@ -37,7 +40,7 @@ use std::{
     collections::HashMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    net::{IpAddr, Ipv6Addr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime},
 };
@@ -50,12 +53,21 @@ use tower_http::{
 };
 use uuid::Uuid;
 
+mod catalog;
+use self::catalog::*;
+mod tus;
+use self::tus::*;
+mod auth;
+use self::auth::*;
+
 const VALIDATION_LICENSE_VERSION: &str = "seiza-validation-image-grant-v2";
 const MAX_VALIDATION_COMMENT_BYTES: usize = 2_000;
 
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
+    pub identity: Option<Arc<dyn IdentityRepository>>,
+    pub auth: Option<Arc<AuthService>>,
     repository: Arc<dyn JobRepository>,
     transport: Arc<dyn QueueTransport>,
     limiter: RateLimiter,
@@ -70,6 +82,11 @@ impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let store = object_store(&config).await?;
         let repository = job_repository(&config).await?;
+        let identity = identity_repository(&config).await?;
+        let auth = match identity.clone() {
+            Some(identity) => Some(Arc::new(AuthService::from_config(&config, identity).await?)),
+            None => None,
+        };
         let transport = queue_transport(&config).await?;
         let solver = SolverEngine::from_catalog_paths(
             config.catalog_path.as_deref(),
@@ -86,6 +103,8 @@ impl AppState {
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
             config: Arc::new(config),
+            identity,
+            auth,
             repository,
             transport,
             store,
@@ -99,6 +118,26 @@ impl AppState {
     pub fn start_background_tasks(&self) {
         let state = self.clone();
         tokio::spawn(async move { state.cleanup_expired_uploads().await });
+        if let Some(identity) = self.identity.clone() {
+            let interval_seconds = self.config.upload_cleanup_interval_seconds;
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(Duration::from_secs(interval_seconds.max(60)));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    match identity.purge_expired(Utc::now()).await {
+                        Ok(0) => {}
+                        Ok(purged) => {
+                            tracing::info!(purged, "purged expired identity records");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not purge expired identity records");
+                        }
+                    }
+                }
+            });
+        }
         if self.transport.uses_external_queue() {
             let state = self.clone();
             tokio::spawn(async move { state.dispatch_outbox().await });
@@ -557,8 +596,50 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let frontend_dir = state.config.frontend_dir.clone();
     let frontend_index = frontend_dir.join("index.html");
+    let cors = cors_layer(&state);
     Router::new()
         .route("/api/v1/health", get(get_health))
+        .route("/api/v1/auth/email/start", post(start_email_sign_in))
+        .route("/api/v1/auth/email/complete", post(complete_email_sign_in))
+        .route(
+            "/api/v1/auth/passkeys/authentication/start",
+            post(start_passkey_sign_in),
+        )
+        .route(
+            "/api/v1/auth/passkeys/authentication/complete",
+            post(complete_passkey_sign_in),
+        )
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/logout-all", post(logout_all))
+        .route("/api/v1/account", get(get_account))
+        .route("/api/v1/account/passkeys", get(list_passkeys))
+        .route(
+            "/api/v1/account/passkeys/registration/start",
+            post(start_passkey_registration),
+        )
+        .route(
+            "/api/v1/account/passkeys/registration/complete",
+            post(complete_passkey_registration),
+        )
+        .route(
+            "/api/v1/account/passkeys/{passkey_id}",
+            axum::routing::delete(revoke_passkey),
+        )
+        .route(
+            "/api/v1/account/api-keys",
+            get(list_api_keys).post(create_api_key),
+        )
+        .route(
+            "/api/v1/account/api-keys/{key_id}",
+            axum::routing::delete(revoke_api_key),
+        )
+        .route(
+            "/api/v1/account/sessions/{session_id}",
+            axum::routing::delete(revoke_account_session),
+        )
+        // Auth and account bodies are small JSON documents; they must not
+        // inherit the multi-hundred-megabyte upload body limit.
+        .route_layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT_BYTES))
         .route("/api/v1/catalog/objects", get(get_catalog_objects))
         .route(
             "/api/v1/catalog/objects/search",
@@ -643,6 +724,8 @@ pub fn router(state: AppState) -> Router {
         .route_service("/solve", ServeFile::new(frontend_index.clone()))
         .route_service("/docs/api", ServeFile::new(frontend_index.clone()))
         .route_service("/data-sources", ServeFile::new(frontend_index.clone()))
+        .route_service("/signin", ServeFile::new(frontend_index.clone()))
+        .route_service("/account", ServeFile::new(frontend_index.clone()))
         .route_service(
             "/solutions/{job_id}",
             ServeFile::new(frontend_index.clone()),
@@ -653,39 +736,49 @@ pub fn router(state: AppState) -> Router {
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .layer(RequestBodyLimitLayer::new(state.config.max_upload_bytes))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([
-                    http::Method::GET,
-                    http::Method::POST,
-                    http::Method::PATCH,
-                    http::Method::DELETE,
-                    http::Method::HEAD,
-                    http::Method::OPTIONS,
-                ])
-                .allow_headers([
-                    header::CONTENT_TYPE,
-                    header::AUTHORIZATION,
-                    header::IF_NONE_MATCH,
-                    http::HeaderName::from_static("x-api-key"),
-                    http::HeaderName::from_static("tus-resumable"),
-                    http::HeaderName::from_static("upload-length"),
-                    http::HeaderName::from_static("upload-offset"),
-                    http::HeaderName::from_static("upload-metadata"),
-                    http::HeaderName::from_static("upload-concat"),
-                ])
-                .expose_headers([
-                    header::LOCATION,
-                    header::CACHE_CONTROL,
-                    header::ETAG,
-                    http::HeaderName::from_static("tus-resumable"),
-                    http::HeaderName::from_static("upload-length"),
-                    http::HeaderName::from_static("upload-offset"),
-                    http::HeaderName::from_static("upload-concat"),
-                ]),
-        )
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+fn cors_layer(state: &AppState) -> CorsLayer {
+    let layer = CorsLayer::new()
+        .allow_methods([
+            http::Method::GET,
+            http::Method::POST,
+            http::Method::PATCH,
+            http::Method::DELETE,
+            http::Method::HEAD,
+            http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::IF_NONE_MATCH,
+            http::HeaderName::from_static("x-api-key"),
+            http::HeaderName::from_static("x-csrf-token"),
+            http::HeaderName::from_static("tus-resumable"),
+            http::HeaderName::from_static("upload-length"),
+            http::HeaderName::from_static("upload-offset"),
+            http::HeaderName::from_static("upload-metadata"),
+            http::HeaderName::from_static("upload-concat"),
+        ])
+        .expose_headers([
+            header::LOCATION,
+            header::CACHE_CONTROL,
+            header::ETAG,
+            http::HeaderName::from_static("tus-resumable"),
+            http::HeaderName::from_static("upload-length"),
+            http::HeaderName::from_static("upload-offset"),
+            http::HeaderName::from_static("upload-metadata"),
+            http::HeaderName::from_static("upload-concat"),
+        ]);
+    if let Some(auth) = state.auth.as_ref() {
+        let origin = HeaderValue::from_str(auth.public_origin())
+            .expect("validated public base URL produces a header-safe origin");
+        layer.allow_origin(origin).allow_credentials(true)
+    } else {
+        layer.allow_origin(Any)
+    }
 }
 
 async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -702,814 +795,11 @@ async fn get_health(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
         },
         "solver_ready": state.solver.is_ready(),
         "queue_depth": state.repository.queue_depth().await.map_err(ApiError::internal)?,
-        "auth_mode": match state.config.auth_mode { AuthMode::Public => "public", AuthMode::StubApiKey => "stub-api-key" },
+        "auth_mode": match state.config.auth_mode { AuthMode::Public => "public", AuthMode::StubApiKey => "stub-api-key", AuthMode::Accounts => "accounts" },
         "job_backend": match state.config.job_backend { crate::config::JobBackend::Sqlx => "sqlx", crate::config::JobBackend::DynamoDb => "dynamodb" },
         "queue_transport": match state.config.queue_transport { crate::config::QueueDelivery::Local => "local", crate::config::QueueDelivery::Sqs => "sqs" },
         "embedded_workers": state.config.embedded_workers,
     })))
-}
-
-const DEFAULT_CATALOG_QUERY_LIMIT: usize = 100;
-const DEFAULT_CATALOG_SEARCH_LIMIT: usize = 20;
-const MAX_CATALOG_QUERY_LIMIT: usize = 1_000;
-const MAX_CATALOG_SEARCH_LIMIT: usize = 100;
-
-#[derive(Debug, Deserialize)]
-struct CatalogObjectsQuery {
-    ra: f64,
-    dec: f64,
-    radius: f64,
-    /// Comma-separated ObjectKind names, such as `galaxy,nebula`.
-    kinds: Option<String>,
-    max_mag: Option<f32>,
-    min_major_arcmin: Option<f32>,
-    #[serde(default)]
-    common_name_only: bool,
-    #[serde(default = "default_true")]
-    include_extent_overlaps: bool,
-    #[serde(default = "default_catalog_query_limit")]
-    limit: usize,
-    #[serde(default = "default_catalog_sort")]
-    sort: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CatalogObjectSearchQuery {
-    q: String,
-    #[serde(default)]
-    prefix: bool,
-    #[serde(default = "default_catalog_search_limit")]
-    limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct StarIdentifierSearchQuery {
-    q: String,
-    #[serde(default)]
-    prefix: bool,
-    #[serde(default = "default_catalog_search_limit")]
-    limit: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogObjectsResponse {
-    catalog_version: String,
-    catalog_objects: usize,
-    returned: usize,
-    objects: Vec<CatalogObjectHitResponse>,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogObjectSearchResponse {
-    catalog_version: String,
-    catalog_objects: usize,
-    returned: usize,
-    matches: Vec<CatalogObjectNameResponse>,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogObjectDetailsResponse {
-    catalog_version: String,
-    format_version: u8,
-    capabilities: CatalogCapabilitiesResponse,
-    object: CatalogObjectResponse,
-    details: ObjectDetails,
-    provenance: Option<ObjectCatalogProvenance>,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogCapabilitiesResponse {
-    source_records: bool,
-    relations: bool,
-    selections: bool,
-    ellipses: bool,
-    outlines: bool,
-    provenance: bool,
-    unknown_optional_sections: usize,
-}
-
-impl From<ObjectCatalogCapabilities> for CatalogCapabilitiesResponse {
-    fn from(capabilities: ObjectCatalogCapabilities) -> Self {
-        Self {
-            source_records: capabilities.source_records,
-            relations: capabilities.relations,
-            selections: capabilities.selections,
-            ellipses: capabilities.ellipses,
-            outlines: capabilities.outlines,
-            provenance: capabilities.provenance,
-            unknown_optional_sections: capabilities.unknown_optional_sections,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct StarIdentifierSearchResponse {
-    catalog_version: String,
-    catalog_entries: usize,
-    spatial_labels: usize,
-    attribution: String,
-    epoch: f64,
-    returned: usize,
-    matches: Vec<StarIdentifierMatch>,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogObjectHitResponse {
-    #[serde(flatten)]
-    object: CatalogObjectResponse,
-    center_inside: bool,
-    extent_only: bool,
-    distance_from_center_deg: f64,
-    predicted_prominence: f64,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogObjectNameResponse {
-    matched_name: String,
-    #[serde(flatten)]
-    object: CatalogObjectResponse,
-}
-
-#[derive(Debug, Serialize)]
-struct CatalogObjectResponse {
-    kind: String,
-    name: String,
-    common_name: String,
-    id: String,
-    source: String,
-    aliases: Vec<String>,
-    parent_ids: Vec<String>,
-    alternate_ids: Vec<String>,
-    alternate_sources: Vec<String>,
-    ra_deg: f64,
-    dec_deg: f64,
-    mag: Option<f32>,
-    major_arcmin: Option<f32>,
-    minor_arcmin: Option<f32>,
-    position_angle_deg: Option<f32>,
-}
-
-impl From<SkyObject> for CatalogObjectResponse {
-    fn from(object: SkyObject) -> Self {
-        Self {
-            kind: object.kind.as_str().into(),
-            name: object.name,
-            common_name: object.common_name,
-            id: object.metadata.id,
-            source: object.metadata.source,
-            aliases: object.metadata.aliases,
-            parent_ids: object.metadata.parent_ids,
-            alternate_ids: object.metadata.alternate_ids,
-            alternate_sources: object.metadata.alternate_sources,
-            ra_deg: object.ra,
-            dec_deg: object.dec,
-            mag: object.mag,
-            major_arcmin: object.major_arcmin,
-            minor_arcmin: object.minor_arcmin,
-            position_angle_deg: object.position_angle_deg,
-        }
-    }
-}
-
-impl From<ObjectHit> for CatalogObjectHitResponse {
-    fn from(hit: ObjectHit) -> Self {
-        Self {
-            object: hit.object.into(),
-            center_inside: hit.center_inside,
-            extent_only: hit.extent_only,
-            distance_from_center_deg: hit.distance_from_center_deg,
-            predicted_prominence: hit.predicted_prominence,
-        }
-    }
-}
-
-impl From<ObjectNameMatch> for CatalogObjectNameResponse {
-    fn from(item: ObjectNameMatch) -> Self {
-        Self {
-            matched_name: item.matched_name,
-            object: item.object.into(),
-        }
-    }
-}
-
-async fn get_catalog_objects(
-    State(state): State<AppState>,
-    Query(params): Query<CatalogObjectsQuery>,
-) -> Result<Json<CatalogObjectsResponse>, ApiError> {
-    validate_catalog_limit(params.limit, MAX_CATALOG_QUERY_LIMIT)?;
-    if params.max_mag.is_some_and(|value| !value.is_finite()) {
-        return Err(ApiError::bad_request("max_mag must be finite"));
-    }
-    if params
-        .min_major_arcmin
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-    {
-        return Err(ApiError::bad_request(
-            "min_major_arcmin must be finite and non-negative",
-        ));
-    }
-    let query = ObjectQuery {
-        kinds: parse_object_kinds(params.kinds.as_deref())?,
-        max_mag: params.max_mag,
-        min_major_arcmin: params.min_major_arcmin,
-        common_name_only: params.common_name_only,
-        include_extent_overlaps: params.include_extent_overlaps,
-        limit: Some(params.limit),
-        sort: parse_object_sort(&params.sort)?,
-    };
-    let region = SkyRegion::Cone {
-        center: (params.ra, params.dec),
-        radius_deg: params.radius,
-    };
-    let (objects, catalog_version, catalog_objects) = state
-        .annotations
-        .query_objects(&region, &query)
-        .map_err(catalog_query_error)?
-        .ok_or_else(catalog_unavailable)?;
-    let objects: Vec<_> = objects.into_iter().map(Into::into).collect();
-    Ok(Json(CatalogObjectsResponse {
-        catalog_version,
-        catalog_objects,
-        returned: objects.len(),
-        objects,
-    }))
-}
-
-async fn search_catalog_objects(
-    State(state): State<AppState>,
-    Query(params): Query<CatalogObjectSearchQuery>,
-) -> Result<Json<CatalogObjectSearchResponse>, ApiError> {
-    validate_catalog_limit(params.limit, MAX_CATALOG_SEARCH_LIMIT)?;
-    let designation = params.q.trim();
-    if designation.is_empty() {
-        return Err(ApiError::bad_request("q must not be empty"));
-    }
-    if designation.len() > 256 {
-        return Err(ApiError::bad_request("q must be at most 256 bytes"));
-    }
-    let (matches, catalog_version, catalog_objects) = state
-        .annotations
-        .search_objects(designation, params.prefix, params.limit)
-        .map_err(ApiError::internal)?
-        .ok_or_else(catalog_unavailable)?;
-    let matches: Vec<_> = matches.into_iter().map(Into::into).collect();
-    Ok(Json(CatalogObjectSearchResponse {
-        catalog_version,
-        catalog_objects,
-        returned: matches.len(),
-        matches,
-    }))
-}
-
-async fn get_catalog_object_details(
-    State(state): State<AppState>,
-    Path(canonical_id): Path<String>,
-) -> Result<Json<CatalogObjectDetailsResponse>, ApiError> {
-    if canonical_id.trim().is_empty() {
-        return Err(ApiError::bad_request("canonical object ID is required"));
-    }
-    let lookup = state
-        .annotations
-        .object_details(&canonical_id)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found_message("catalog object not found"))?;
-    Ok(Json(CatalogObjectDetailsResponse {
-        catalog_version: lookup.catalog_version,
-        format_version: lookup.format_version,
-        capabilities: lookup.capabilities.into(),
-        object: lookup.object.into(),
-        details: lookup.details,
-        provenance: lookup.provenance,
-    }))
-}
-
-async fn search_star_identifiers(
-    State(state): State<AppState>,
-    Query(params): Query<StarIdentifierSearchQuery>,
-) -> Result<Json<StarIdentifierSearchResponse>, ApiError> {
-    validate_catalog_limit(params.limit, MAX_CATALOG_SEARCH_LIMIT)?;
-    let query = params.q.trim();
-    if query.is_empty() {
-        return Err(ApiError::bad_request("q must not be empty"));
-    }
-    if query.len() > 256 {
-        return Err(ApiError::bad_request("q must be at most 256 bytes"));
-    }
-    let result = state
-        .annotations
-        .search_star_identifiers(query, params.prefix, params.limit)
-        .map_err(ApiError::internal)?
-        .ok_or_else(star_identifier_catalog_unavailable)?;
-    Ok(Json(StarIdentifierSearchResponse {
-        catalog_version: result.catalog_version,
-        catalog_entries: result.catalog_entries,
-        spatial_labels: result.spatial_labels,
-        attribution: result.attribution,
-        epoch: result.epoch,
-        returned: result.matches.len(),
-        matches: result.matches,
-    }))
-}
-
-fn catalog_unavailable() -> ApiError {
-    ApiError::service_unavailable(
-        "object catalog is not configured or could not be opened; set SEIZA_OBJECT_DATA",
-    )
-}
-
-fn star_identifier_catalog_unavailable() -> ApiError {
-    ApiError::service_unavailable(
-        "stellar identifier catalog is not configured or could not be opened; set SEIZA_STAR_IDENTIFIER_DATA",
-    )
-}
-
-fn catalog_query_error(error: ObjectQueryError) -> ApiError {
-    match error {
-        ObjectQueryError::Catalog(_) => ApiError::internal(error),
-        _ => ApiError::bad_request(error),
-    }
-}
-
-fn validate_catalog_limit(limit: usize, maximum: usize) -> Result<(), ApiError> {
-    if !(1..=maximum).contains(&limit) {
-        return Err(ApiError::bad_request(format!(
-            "limit must be between 1 and {maximum}"
-        )));
-    }
-    Ok(())
-}
-
-fn parse_object_kinds(value: Option<&str>) -> Result<Vec<ObjectKind>, ApiError> {
-    value
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(parse_object_kind)
-        .collect()
-}
-
-fn parse_object_kind(value: &str) -> Result<ObjectKind, ApiError> {
-    let normalized = value.to_ascii_lowercase().replace('_', "-");
-    match normalized.as_str() {
-        "galaxy" => Ok(ObjectKind::Galaxy),
-        "open-cluster" => Ok(ObjectKind::OpenCluster),
-        "globular-cluster" => Ok(ObjectKind::GlobularCluster),
-        "nebula" => Ok(ObjectKind::Nebula),
-        "planetary-nebula" => Ok(ObjectKind::PlanetaryNebula),
-        "hii" | "hii-region" => Ok(ObjectKind::HiiRegion),
-        "supernova-remnant" => Ok(ObjectKind::SupernovaRemnant),
-        "dark-nebula" => Ok(ObjectKind::DarkNebula),
-        "cluster-nebula" | "cluster-with-nebula" => Ok(ObjectKind::ClusterWithNebula),
-        "star" => Ok(ObjectKind::Star),
-        "double-star" => Ok(ObjectKind::DoubleStar),
-        "association" => Ok(ObjectKind::Association),
-        "other" => Ok(ObjectKind::Other),
-        "transient" => Ok(ObjectKind::Transient),
-        _ => Err(ApiError::bad_request(format!(
-            "unsupported object kind `{value}`"
-        ))),
-    }
-}
-
-fn parse_object_sort(value: &str) -> Result<ObjectSort, ApiError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "prominence" => Ok(ObjectSort::Prominence),
-        "size" => Ok(ObjectSort::Size),
-        "magnitude" | "mag" => Ok(ObjectSort::Magnitude),
-        "distance" => Ok(ObjectSort::Distance),
-        "name" => Ok(ObjectSort::Name),
-        _ => Err(ApiError::bad_request(format!(
-            "unsupported catalog sort `{value}`"
-        ))),
-    }
-}
-
-fn default_catalog_query_limit() -> usize {
-    DEFAULT_CATALOG_QUERY_LIMIT
-}
-
-fn default_catalog_search_limit() -> usize {
-    DEFAULT_CATALOG_SEARCH_LIMIT
-}
-
-fn default_catalog_sort() -> String {
-    "prominence".into()
-}
-
-async fn resumable_upload_options(State(state): State<AppState>) -> Response {
-    (
-        StatusCode::NO_CONTENT,
-        tus_headers(state.config.max_upload_bytes),
-    )
-        .into_response()
-}
-
-async fn create_resumable_upload(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None)?;
-    let upload_concat = headers
-        .get("upload-concat")
-        .and_then(|value| value.to_str().ok());
-    let mut upload = match upload_concat {
-        Some("partial") => {
-            let total_size = checked_upload_length(&state, &headers)?;
-            ResumableUpload::new_partial(total_size, client.id, client.queue_weight)
-        }
-        Some(value) if value.starts_with("final;") => {
-            state
-                .limiter
-                .check(&client.id)
-                .await
-                .map_err(ApiError::rate_limited)?;
-            let part_ids = parse_concat_part_ids(value)?;
-            let mut parts = Vec::with_capacity(part_ids.len());
-            for part_id in &part_ids {
-                let part = ResumableUpload::load(&state.store, &state.config.s3_prefix, part_id)
-                    .await
-                    .map_err(resumable_api_error)?;
-                ensure_upload_owner(&part, &client)?;
-                if !part.partial || part.offset != part.total_size || part.job_id.is_some() {
-                    return Err(ApiError::upload_conflict(
-                        "Upload-Concat references an incomplete or non-partial upload",
-                    ));
-                }
-                parts.push(part);
-            }
-            let total_size = parts.iter().try_fold(0_u64, |total, part| {
-                total
-                    .checked_add(part.total_size)
-                    .ok_or_else(ApiError::payload_too_large)
-            })?;
-            if total_size == 0 {
-                return Err(ApiError::bad_request("uploaded image must not be empty"));
-            }
-            if total_size > state.config.max_upload_bytes as u64 {
-                return Err(ApiError::payload_too_large());
-            }
-            let (original_filename, content_type, options) = upload_metadata(&headers)?;
-            let object_key = state.new_object_key(&original_filename);
-            ResumableUpload::concatenate(
-                original_filename,
-                content_type,
-                object_key,
-                options,
-                client.id,
-                client.queue_weight,
-                &parts,
-            )
-            .map_err(resumable_api_error)?
-        }
-        Some(_) => {
-            return Err(ApiError::bad_request(
-                "Upload-Concat must be `partial` or `final;<upload URLs>`",
-            ));
-        }
-        None => {
-            state
-                .limiter
-                .check(&client.id)
-                .await
-                .map_err(ApiError::rate_limited)?;
-            let total_size = checked_upload_length(&state, &headers)?;
-            let (original_filename, content_type, options) = upload_metadata(&headers)?;
-            let object_key = state.new_object_key(&original_filename);
-            ResumableUpload::new(
-                original_filename,
-                content_type,
-                total_size,
-                object_key,
-                options,
-                client.id,
-                client.queue_weight,
-            )
-        }
-    };
-    upload
-        .save(&state.store, &state.config.s3_prefix)
-        .await
-        .map_err(resumable_api_error)?;
-
-    if !upload.partial && !upload.concat_parts.is_empty() {
-        state.finalize_resumable(&mut upload).await?;
-        for part_id in &upload.concat_parts {
-            let part = ResumableUpload::load(&state.store, &state.config.s3_prefix, part_id)
-                .await
-                .map_err(resumable_api_error)?;
-            if let Err(error) = part
-                .delete_state(&state.store, &state.config.s3_prefix)
-                .await
-            {
-                tracing::warn!(upload_id = %part.id, %error, "could not remove concatenated upload state");
-            }
-        }
-    }
-
-    let mut response_headers = tus_headers(state.config.max_upload_bytes);
-    response_headers.insert(
-        header::LOCATION,
-        HeaderValue::from_str(&format!("/api/v1/uploads/{}", upload.id))
-            .map_err(ApiError::internal)?,
-    );
-    response_headers.insert(
-        http::HeaderName::from_static("upload-offset"),
-        HeaderValue::from_str(&upload.offset.to_string()).map_err(ApiError::internal)?,
-    );
-    Ok((StatusCode::CREATED, response_headers).into_response())
-}
-
-fn checked_upload_length(state: &AppState, headers: &HeaderMap) -> Result<u64, ApiError> {
-    let total_size = required_u64_header(headers, "upload-length")?;
-    if total_size == 0 {
-        return Err(ApiError::bad_request("uploaded image must not be empty"));
-    }
-    if total_size > state.config.max_upload_bytes as u64 {
-        return Err(ApiError::payload_too_large());
-    }
-    Ok(total_size)
-}
-
-fn upload_metadata(
-    headers: &HeaderMap,
-) -> Result<(String, Option<String>, SolveOptions), ApiError> {
-    let metadata = parse_upload_metadata(headers)?;
-    let original_filename = metadata
-        .get("filename")
-        .map(|filename| safe_filename(filename))
-        .filter(|filename| !filename.is_empty())
-        .ok_or_else(|| ApiError::bad_request("Upload-Metadata must include filename"))?;
-    let content_type = metadata
-        .get("filetype")
-        .filter(|value| !value.is_empty() && value.len() <= 255)
-        .cloned();
-    let options = metadata
-        .get("options")
-        .map(|raw| {
-            serde_json::from_str::<SolveOptions>(raw)
-                .map_err(|error| ApiError::bad_request(format!("invalid options JSON: {error}")))
-        })
-        .transpose()?
-        .unwrap_or_default();
-    options.validate().map_err(ApiError::bad_request)?;
-    Ok((original_filename, content_type, options))
-}
-
-fn parse_concat_part_ids(value: &str) -> Result<Vec<String>, ApiError> {
-    let raw_parts = value
-        .strip_prefix("final;")
-        .ok_or_else(|| ApiError::bad_request("invalid Upload-Concat header"))?;
-    let mut ids = Vec::new();
-    for raw in raw_parts.split_ascii_whitespace() {
-        let path = raw
-            .parse::<http::Uri>()
-            .map_err(|_| ApiError::bad_request("Upload-Concat contains an invalid upload URL"))?
-            .path()
-            .to_owned();
-        let id = path
-            .strip_prefix("/api/v1/uploads/")
-            .filter(|id| !id.is_empty() && !id.contains('/'))
-            .ok_or_else(|| {
-                ApiError::bad_request("Upload-Concat may only reference this server's uploads")
-            })?;
-        if Uuid::parse_str(id).is_err() || ids.iter().any(|existing| existing == id) {
-            return Err(ApiError::bad_request(
-                "Upload-Concat contains an invalid or duplicate upload URL",
-            ));
-        }
-        ids.push(id.to_owned());
-    }
-    if ids.is_empty() {
-        return Err(ApiError::bad_request(
-            "Upload-Concat must reference at least one partial upload",
-        ));
-    }
-    Ok(ids)
-}
-
-async fn head_resumable_upload(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None)?;
-    let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
-        .await
-        .map_err(resumable_api_error)?;
-    ensure_upload_owner(&upload, &client)?;
-    let mut response_headers = tus_headers(state.config.max_upload_bytes);
-    insert_u64_header(&mut response_headers, "upload-offset", upload.offset)?;
-    insert_u64_header(&mut response_headers, "upload-length", upload.total_size)?;
-    if upload.partial {
-        response_headers.insert(
-            http::HeaderName::from_static("upload-concat"),
-            HeaderValue::from_static("partial"),
-        );
-    } else if !upload.concat_parts.is_empty() {
-        let value = format!(
-            "final;{}",
-            upload
-                .concat_parts
-                .iter()
-                .map(|id| format!("/api/v1/uploads/{id}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
-        response_headers.insert(
-            http::HeaderName::from_static("upload-concat"),
-            HeaderValue::from_str(&value).map_err(ApiError::internal)?,
-        );
-    }
-    response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    Ok((StatusCode::OK, response_headers).into_response())
-}
-
-async fn patch_resumable_upload(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, ApiError> {
-    verify_tus_version(&headers)?;
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if content_type != "application/offset+octet-stream" {
-        return Err(ApiError::bad_request(
-            "chunk Content-Type must be application/offset+octet-stream",
-        ));
-    }
-    let client = client_from_headers(&state, &headers, None)?;
-    let offset = required_u64_header(&headers, "upload-offset")?;
-    let lock = state.upload_lock(&upload_id).await;
-    let _guard = lock.lock().await;
-    let mut upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
-        .await
-        .map_err(resumable_api_error)?;
-    ensure_upload_owner(&upload, &client)?;
-    let new_offset = upload
-        .append(&state.store, &state.config.s3_prefix, offset, body)
-        .await
-        .map_err(resumable_api_error)?;
-    if new_offset == upload.total_size && !upload.partial {
-        state.finalize_resumable(&mut upload).await?;
-    }
-    let mut response_headers = tus_headers(state.config.max_upload_bytes);
-    insert_u64_header(&mut response_headers, "upload-offset", new_offset)?;
-    Ok((StatusCode::NO_CONTENT, response_headers).into_response())
-}
-
-async fn delete_resumable_upload(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    verify_tus_version(&headers)?;
-    let client = client_from_headers(&state, &headers, None)?;
-    let lock = state.upload_lock(&upload_id).await;
-    let _guard = lock.lock().await;
-    let upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
-        .await
-        .map_err(resumable_api_error)?;
-    ensure_upload_owner(&upload, &client)?;
-    upload
-        .terminate(&state.store, &state.config.s3_prefix)
-        .await
-        .map_err(resumable_api_error)?;
-    Ok((
-        StatusCode::NO_CONTENT,
-        tus_headers(state.config.max_upload_bytes),
-    )
-        .into_response())
-}
-
-async fn get_resumable_upload_result(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<JobResponse>, ApiError> {
-    let client = client_from_headers(&state, &headers, None)?;
-    let lock = state.upload_lock(&upload_id).await;
-    let _guard = lock.lock().await;
-    let mut upload = ResumableUpload::load(&state.store, &state.config.s3_prefix, &upload_id)
-        .await
-        .map_err(resumable_api_error)?;
-    ensure_upload_owner(&upload, &client)?;
-    if upload.offset != upload.total_size {
-        return Err(ApiError::artifact_not_ready(format!(
-            "upload has received {} of {} bytes",
-            upload.offset, upload.total_size
-        )));
-    }
-    let job = state.finalize_resumable(&mut upload).await?;
-    Ok(Json(state.job_response(&job)?))
-}
-
-fn tus_headers(max_upload_bytes: usize) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::HeaderName::from_static("tus-resumable"),
-        HeaderValue::from_static(TUS_VERSION),
-    );
-    headers.insert(
-        http::HeaderName::from_static("tus-version"),
-        HeaderValue::from_static(TUS_VERSION),
-    );
-    headers.insert(
-        http::HeaderName::from_static("tus-extension"),
-        HeaderValue::from_static(TUS_EXTENSIONS),
-    );
-    if let Ok(value) = HeaderValue::from_str(&max_upload_bytes.to_string()) {
-        headers.insert(http::HeaderName::from_static("tus-max-size"), value);
-    }
-    headers
-}
-
-fn verify_tus_version(headers: &HeaderMap) -> Result<(), ApiError> {
-    match headers
-        .get("tus-resumable")
-        .and_then(|value| value.to_str().ok())
-    {
-        Some(TUS_VERSION) => Ok(()),
-        _ => Err(ApiError::bad_request(format!(
-            "Tus-Resumable must be {TUS_VERSION}"
-        ))),
-    }
-}
-
-fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, ApiError> {
-    headers
-        .get(name)
-        .ok_or_else(|| ApiError::bad_request(format!("missing {name} header")))?
-        .to_str()
-        .map_err(ApiError::bad_request)?
-        .parse()
-        .map_err(|_| ApiError::bad_request(format!("invalid {name} header")))
-}
-
-fn insert_u64_header(
-    headers: &mut HeaderMap,
-    name: &'static str,
-    value: u64,
-) -> Result<(), ApiError> {
-    headers.insert(
-        http::HeaderName::from_static(name),
-        HeaderValue::from_str(&value.to_string()).map_err(ApiError::internal)?,
-    );
-    Ok(())
-}
-
-fn parse_upload_metadata(headers: &HeaderMap) -> Result<HashMap<String, String>, ApiError> {
-    let Some(raw) = headers
-        .get("upload-metadata")
-        .and_then(|value| value.to_str().ok())
-    else {
-        return Ok(HashMap::new());
-    };
-    raw.split(',')
-        .map(str::trim)
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (key, encoded) = pair.split_once(' ').unwrap_or((pair, ""));
-            let value = base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .map_err(|_| ApiError::bad_request("invalid base64 Upload-Metadata value"))?;
-            let value = String::from_utf8(value)
-                .map_err(|_| ApiError::bad_request("Upload-Metadata value is not UTF-8"))?;
-            Ok((key.to_owned(), value))
-        })
-        .collect()
-}
-
-fn ensure_upload_owner(upload: &ResumableUpload, client: &Client) -> Result<(), ApiError> {
-    if upload.owner == client.id {
-        Ok(())
-    } else {
-        Err(ApiError::not_found_message("upload session not found"))
-    }
-}
-
-fn resumable_api_error(error: ResumableUploadError) -> ApiError {
-    match error {
-        ResumableUploadError::NotFound => ApiError::not_found_message("upload session not found"),
-        ResumableUploadError::OffsetMismatch { expected, actual } => ApiError::upload_conflict(
-            format!("upload offset mismatch: expected {expected}, received {actual}"),
-        ),
-        ResumableUploadError::ExceedsLength => {
-            ApiError::bad_request("upload chunk exceeds declared file length")
-        }
-        ResumableUploadError::Incomplete { offset, total } => {
-            ApiError::artifact_not_ready(format!("upload has received {offset} of {total} bytes"))
-        }
-        ResumableUploadError::Completed => {
-            ApiError::upload_conflict("upload has already completed")
-        }
-        ResumableUploadError::Internal(error) => ApiError::internal(error),
-    }
 }
 
 async fn post_solve(
@@ -1517,7 +807,7 @@ async fn post_solve(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let (upload, options_json, _) =
         read_multipart(multipart, state.config.max_upload_bytes).await?;
     let options = options_json
@@ -1553,7 +843,7 @@ async fn resolve_solve(
     headers: HeaderMap,
     Json(mut options): Json<SolveOptions>,
 ) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
-    let client = client_from_headers(&state, &headers, None)?;
+    let client = client_from_headers(&state, &headers, None, true).await?;
     let job = state
         .public_job(&public_id)
         .await?
@@ -1644,7 +934,7 @@ async fn donate_validation_image(
     headers: HeaderMap,
     Json(request): Json<ValidationDonationRequest>,
 ) -> Result<Json<JobResponse>, ApiError> {
-    let _client = client_from_headers(&state, &headers, None)?;
+    let _client = client_from_headers(&state, &headers, None, true).await?;
     if !request.license_agreed {
         return Err(ApiError::bad_request(
             "license_agreed must be true to contribute an image",
@@ -2102,6 +1392,22 @@ async fn astrometry_login(
 ) -> Result<Json<Value>, ApiError> {
     let request: AstroLoginRequest = serde_json::from_str(&form.request_json)
         .map_err(|error| ApiError::bad_request(format!("invalid request-json: {error}")))?;
+    if state.config.auth_mode == AuthMode::Accounts {
+        let api_key = request
+            .apikey
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::unauthorized("an account API key is required"))?;
+        let session = auth_service(&state)?
+            .create_astrometry_session(api_key)
+            .await
+            .map_err(auth_api_error)?;
+        return Ok(Json(json!({
+            "status": "success",
+            "message": "authenticated by Seiza account API key",
+            "session": session.token,
+        })));
+    }
     if state.config.auth_mode == AuthMode::StubApiKey
         && request.apikey.as_deref().is_none_or(str::is_empty)
     {
@@ -2109,12 +1415,9 @@ async fn astrometry_login(
             "an API key is required while SEIZA_AUTH_MODE=stub-api-key",
         ));
     }
-    // Sessions intentionally are opaque-but-unvalidated until a real API-key
-    // store is introduced. Keeping this response shape lets existing clients
-    // integrate now without locking in that future auth implementation.
     Ok(Json(json!({
         "status": "success",
-        "message": "authenticated by Seiza server (authentication stub)",
+        "message": "authenticated by Seiza server (public/stub mode)",
         "session": format!("seiza-{}", Uuid::now_v7()),
     })))
 }
@@ -2130,7 +1433,7 @@ async fn astrometry_upload(
         request_json.ok_or_else(|| ApiError::bad_request("missing request-json field"))?;
     let request: AstroUploadRequest = serde_json::from_str(&request_json)
         .map_err(|error| ApiError::bad_request(format!("invalid request-json: {error}")))?;
-    let client = client_from_headers(&state, &headers, request.session.as_deref())?;
+    let client = client_from_headers(&state, &headers, request.session.as_deref(), true).await?;
     let dimensions =
         dimensions_from_bytes(&upload.data, &upload.filename).map_err(ApiError::bad_request)?;
     let options = request.into_options(dimensions)?;
@@ -2333,29 +1636,66 @@ async fn read_multipart(
         .ok_or_else(|| ApiError::bad_request("missing file field"))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Client {
     id: String,
     queue_weight: f64,
 }
 
-fn client_from_headers(
+async fn client_from_headers(
     state: &AppState,
     headers: &HeaderMap,
     astrometry_session: Option<&str>,
+    mutation: bool,
 ) -> Result<Client, ApiError> {
-    let api_key = headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-        })
+    if state.config.auth_mode == AuthMode::Accounts {
+        let api_key = request_api_key(headers);
+        if astrometry_session.is_some() && api_key.is_some() {
+            return Err(ApiError::unauthorized(
+                "provide exactly one account credential",
+            ));
+        }
+        if let Some(session) = astrometry_session {
+            let authenticated = auth_service(state)?
+                .authenticate_astrometry_session(session)
+                .await
+                .map_err(auth_api_error)?;
+            return Ok(Client {
+                id: format!("account:{}", authenticated.account.id),
+                queue_weight: authenticated.queue_weight,
+            });
+        }
+        if let Some(api_key) = api_key {
+            let scope = if mutation {
+                crate::auth::SCOPE_SOLVE_SUBMIT
+            } else {
+                crate::auth::SCOPE_SOLVE_READ
+            };
+            let authenticated = auth_service(state)?
+                .authenticate_api_key(api_key, scope)
+                .await
+                .map_err(auth_api_error)?;
+            return Ok(Client {
+                id: format!("account:{}", authenticated.account.id),
+                queue_weight: authenticated.api_key.queue_weight,
+            });
+        }
+        let authenticated = if mutation {
+            authenticated_browser_for_mutation(state, headers).await?
+        } else {
+            authenticated_browser(state, headers).await?
+        };
+        return Ok(Client {
+            id: format!("account:{}", authenticated.account.id),
+            queue_weight: 1.0,
+        });
+    }
+
+    let api_key = request_api_key(headers)
         .or(astrometry_session)
         .filter(|value| !value.trim().is_empty());
     let id = match (state.config.auth_mode, api_key) {
+        (AuthMode::Accounts, _) => unreachable!("accounts mode is handled above"),
         (AuthMode::StubApiKey, None) => {
             return Err(ApiError::unauthorized(
                 "provide X-API-Key, Bearer token, or Astrometry session",
@@ -2376,6 +1716,19 @@ fn client_from_headers(
         id,
         queue_weight: state.config.queue_weight_for_api_key(api_key),
     })
+}
+
+fn request_api_key(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+        })
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn public_client_id(source_ip: &str) -> String {
@@ -2610,6 +1963,14 @@ impl ApiError {
             retry_after: None,
         }
     }
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
+            message: message.into(),
+            retry_after: None,
+        }
+    }
     fn not_found() -> Self {
         Self::not_found_message("solve job not found")
     }
@@ -2727,6 +2088,10 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
+    use crate::{
+        email::{EmailSender, SignInEmail},
+        sqlx_identity::SqlxIdentityRepository,
+    };
     use axum::{
         body::{Body, to_bytes},
         http::Request,
@@ -2736,6 +2101,18 @@ mod tests {
         StarIdentifier, StarIdentifierCatalogBuilder, StarNameCatalog, StarNameKind,
     };
     use tower::ServiceExt;
+    use url::Url;
+
+    #[derive(Default)]
+    struct CapturingEmailSender(Mutex<Vec<SignInEmail>>);
+
+    #[async_trait::async_trait]
+    impl EmailSender for CapturingEmailSender {
+        async fn send_sign_in(&self, email: SignInEmail) -> anyhow::Result<()> {
+            self.0.lock().await.push(email);
+            Ok(())
+        }
+    }
 
     fn solved_fixture() -> SolutionResponse {
         SolutionResponse {
@@ -3642,6 +3019,240 @@ mod tests {
         headers
     }
 
+    #[tokio::test]
+    async fn email_sign_in_issues_a_csrf_bound_multi_session_cookie() {
+        let root = std::env::temp_dir().join(format!("seiza-account-api-{}", Uuid::now_v7()));
+        let mut accounts_config = test_config(&root);
+        accounts_config.auth_mode = AuthMode::Accounts;
+        accounts_config.public_base_url = Some(Url::parse("https://solve.example.com").unwrap());
+
+        let mut state = AppState::new(test_config(&root)).await.unwrap();
+        let identity = Arc::new(
+            SqlxIdentityRepository::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let sender = Arc::new(CapturingEmailSender::default());
+        state.config = Arc::new(accounts_config);
+        state.identity = Some(identity.clone());
+        state.auth = Some(Arc::new(AuthService::new(
+            identity,
+            sender.clone(),
+            Url::parse("https://solve.example.com").unwrap(),
+            vec![42; 32],
+        )));
+
+        let start_response = start_email_sign_in(
+            State(state.clone()),
+            ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))),
+            HeaderMap::new(),
+            Json(EmailStartRequest {
+                email: "Astronomer@Example.com".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(start_response.status(), StatusCode::ACCEPTED);
+        let message = sender.0.lock().await[0].clone();
+        let token = Url::parse(&message.link)
+            .unwrap()
+            .query_pairs()
+            .find_map(|(key, value)| (key == "token").then(|| value.into_owned()))
+            .unwrap();
+
+        let response = complete_email_sign_in(
+            State(state.clone()),
+            Json(EmailCompleteRequest {
+                link_token: Some(token),
+                email: None,
+                challenge_id: None,
+                code: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| Cookie::parse(value.to_str().unwrap()).unwrap().into_owned())
+            .collect::<Vec<_>>();
+        let session = cookies
+            .iter()
+            .find(|cookie| cookie.name() == "__Host-seiza_session")
+            .unwrap();
+        assert!(session.http_only().unwrap_or(false));
+        assert!(session.secure().unwrap_or(false));
+        let csrf = cookies
+            .iter()
+            .find(|cookie| cookie.name() == "__Host-seiza_csrf")
+            .unwrap();
+        assert!(!csrf.http_only().unwrap_or(false));
+        let cookie_header = cookies
+            .iter()
+            .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        let mut read_headers = HeaderMap::new();
+        read_headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&cookie_header).unwrap(),
+        );
+        assert_eq!(
+            get_account(State(state.clone()), read_headers.clone())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            client_from_headers(&state, &read_headers, None, false)
+                .await
+                .unwrap()
+                .id,
+            format!(
+                "account:{}",
+                state
+                    .identity
+                    .as_ref()
+                    .unwrap()
+                    .account_by_email_lookup("astronomer@example.com")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .id
+            )
+        );
+
+        let missing_origin = client_from_headers(&state, &read_headers, None, true)
+            .await
+            .unwrap_err();
+        assert_eq!(missing_origin.status, StatusCode::UNAUTHORIZED);
+
+        let mut mutation_headers = read_headers;
+        mutation_headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://solve.example.com"),
+        );
+        mutation_headers.insert("x-csrf-token", HeaderValue::from_str(csrf.value()).unwrap());
+        assert!(
+            client_from_headers(&state, &mutation_headers, None, true)
+                .await
+                .is_ok()
+        );
+        let browser = authenticated_browser(&state, &mutation_headers)
+            .await
+            .unwrap();
+        let created_key = auth_service(&state)
+            .unwrap()
+            .create_api_key(
+                &browser,
+                "API test",
+                &[
+                    crate::auth::SCOPE_SOLVE_READ.into(),
+                    crate::auth::SCOPE_SOLVE_SUBMIT.into(),
+                ],
+            )
+            .await
+            .unwrap();
+        let mut api_headers = HeaderMap::new();
+        api_headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&created_key.token).unwrap(),
+        );
+        assert_eq!(
+            client_from_headers(&state, &api_headers, None, true)
+                .await
+                .unwrap()
+                .id,
+            format!("account:{}", browser.account.id)
+        );
+        let Json(astrometry_login) = astrometry_login(
+            State(state.clone()),
+            Form(RequestJsonForm {
+                request_json: serde_json::to_string(&json!({
+                    "apikey": created_key.token,
+                }))
+                .unwrap(),
+            }),
+        )
+        .await
+        .unwrap();
+        let astrometry_session = astrometry_login["session"].as_str().unwrap();
+        assert_eq!(
+            client_from_headers(&state, &HeaderMap::new(), Some(astrometry_session), true)
+                .await
+                .unwrap()
+                .id,
+            format!("account:{}", browser.account.id)
+        );
+        let (_, astrometry_session_id, _) =
+            crate::auth::parse_session_token(astrometry_session).unwrap();
+        assert_eq!(
+            revoke_account_session(
+                State(state.clone()),
+                Path(astrometry_session_id),
+                mutation_headers.clone(),
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::OK
+        );
+        assert!(
+            client_from_headers(&state, &HeaderMap::new(), Some(astrometry_session), true)
+                .await
+                .is_err()
+        );
+        let registration =
+            start_passkey_registration(State(state.clone()), mutation_headers.clone())
+                .await
+                .unwrap();
+        assert_eq!(registration.status(), StatusCode::OK);
+        let registration: Value = serde_json::from_slice(
+            &to_bytes(registration.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(registration["challenge_id"].is_string());
+        assert!(registration["options"]["publicKey"].is_object());
+        let authentication = start_passkey_sign_in(
+            State(state.clone()),
+            ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(authentication.status(), StatusCode::OK);
+        let authentication: Value = serde_json::from_slice(
+            &to_bytes(authentication.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(authentication["options"]["mediation"], "conditional");
+        assert_eq!(
+            logout(State(state.clone()), mutation_headers)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_account(State(state.clone()), HeaderMap::new())
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn public_client_ids_normalize_ip_addresses_for_queue_fairness() {
         assert_eq!(public_client_id("192.0.2.42"), "public:192.0.2.42");
@@ -3662,12 +3273,16 @@ mod tests {
 
         let mut priority_headers = HeaderMap::new();
         priority_headers.insert("x-api-key", HeaderValue::from_static("operator-secret"));
-        let priority = client_from_headers(&state, &priority_headers, None).unwrap();
+        let priority = client_from_headers(&state, &priority_headers, None, false)
+            .await
+            .unwrap();
         assert_eq!(priority.queue_weight, 2.0);
 
         let mut ordinary_headers = HeaderMap::new();
         ordinary_headers.insert("x-api-key", HeaderValue::from_static("unconfigured-key"));
-        let ordinary = client_from_headers(&state, &ordinary_headers, None).unwrap();
+        let ordinary = client_from_headers(&state, &ordinary_headers, None, false)
+            .await
+            .unwrap();
         assert_eq!(ordinary.queue_weight, 1.0);
 
         drop(state);
@@ -3688,6 +3303,12 @@ mod tests {
             job_backend: JobBackend::Sqlx,
             sql_database_url: format!("sqlite://{}?mode=rwc", root.join("jobs.sqlite3").display()),
             dynamodb_table: None,
+            identity_backend: JobBackend::Sqlx,
+            identity_sql_database_url: format!(
+                "sqlite://{}?mode=rwc",
+                root.join("identity.sqlite3").display()
+            ),
+            identity_dynamodb_table: None,
             queue_transport: QueueDelivery::Local,
             sqs_queue_url: None,
             sqs_priority_queue_url: None,
@@ -3702,7 +3323,21 @@ mod tests {
             upload_cleanup_interval_seconds: 3_600,
             rate_limit_per_minute: 60.0,
             rate_limit_burst: 10.0,
+            trusted_proxy_hops: 0,
             auth_mode: AuthMode::Public,
+            public_base_url: None,
+            auth_code_pepper_file: None,
+            email_provider: None,
+            email_from: None,
+            ses_from_identity_arn: None,
+            ses_role_arn: None,
+            ses_role_external_id_file: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_username: None,
+            smtp_password_file: None,
+            smtp_tls: crate::config::SmtpTls::StartTls,
+            smtp_timeout_seconds: 30,
             storage_backend: StorageBackend::Local,
             s3_bucket: None,
             s3_prefix: "uploads".into(),

@@ -37,9 +37,9 @@ disappears on a process restart.
   priority queue. An unseen/least-recently served client goes first; higher
   future API tiers can use a larger queue weight without changing the
   scheduler. Conditional leasing makes duplicate delivery safe across workers.
-- `public` and `stub-api-key` authentication modes. The latter requires a
-  nonempty key/session but deliberately does not validate it against a key
-  database yet.
+- `public`, legacy `stub-api-key`, and `accounts` authentication modes. Account
+  mode provides verified-email recovery, multi-session cookies, passkeys,
+  revocable scoped API keys, and persisted Astrometry-compatible sessions.
 - Separate-process workers can poll an authenticated internal API, while an
   SQS adapter can deliver jobs directly to cloud workers. Local object storage
   is the default; S3 and SQS are opt-in through the `aws` Cargo feature.
@@ -321,9 +321,15 @@ curl -sS -X POST http://127.0.0.1:8080/api/upload \
 
 This is deliberately a focused interoperability surface, not a clone of every
 Astrometry.net endpoint. URL uploads are not exposed, avoiding an SSRF-capable
-server fetch path. Tags, generated FITS images, durable sessions, and API-key
-verification are future additions. The canonical native API already provides
-annotations and a downloadable WCS header.
+server fetch path. In `accounts` mode the login validates an account API key
+and returns a persisted, expiring Astrometry session; public/stub modes retain
+their compatibility behavior. Tags and generated FITS images are not exposed.
+The canonical native API already provides annotations and a downloadable WCS
+header.
+
+The implementation and rollout plan for verified-email accounts, passkeys,
+durable sessions, API keys, and SES/authenticated-SMTP delivery is in
+[docs/accounts-authentication.md](docs/accounts-authentication.md).
 
 The endpoint shapes and multipart encoding follow the
 [Astrometry.net API documentation](https://astrometry.net/doc/net/api.html).
@@ -359,7 +365,22 @@ are currently supported:
 | `SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS` | `3600` | Local/S3 expired-object sweep interval |
 | `SEIZA_RATE_LIMIT_PER_MINUTE` | `6` | Per-client submission refill rate |
 | `SEIZA_RATE_LIMIT_BURST` | `3` | Per-client initial burst size |
-| `SEIZA_AUTH_MODE` | `public` | `public` or `stub-api-key` |
+| `SEIZA_TRUSTED_PROXY_HOPS` | `0` | Reverse proxies that append to `X-Forwarded-For`; `0` rate-limits sign-in by peer address and ignores forwarded headers |
+| `SEIZA_AUTH_MODE` | `public` | `public`, `stub-api-key`, or verified-email `accounts` |
+| `SEIZA_IDENTITY_BACKEND` | job backend | Identity storage for accounts: `sqlx` or `dynamodb` |
+| `SEIZA_IDENTITY_SQL_DATABASE_URL` | job SQL URL | SQLx identity database URL |
+| `SEIZA_IDENTITY_DYNAMODB_TABLE` | unset | Required for DynamoDB identity storage; composite string keys `pk` and `sk`, with `ttl_epoch` TTL |
+| `SEIZA_PUBLIC_BASE_URL` | unset | Required origin for account links, WebAuthn, cookies, CORS, and CSRF; HTTPS except loopback development |
+| `SEIZA_AUTH_CODE_PEPPER_FILE` | unset | Required mounted secret (at least 32 bytes) used to HMAC short-lived email codes |
+| `SEIZA_EMAIL_PROVIDER` | unset | Required in accounts mode: `ses` or `smtp` |
+| `SEIZA_EMAIL_FROM` | unset | Verified/enabled sign-in sender mailbox |
+| `SEIZA_SES_FROM_IDENTITY_ARN` | unset | Optional SES delegated-sending identity ARN |
+| `SEIZA_SES_ROLE_ARN` | unset | Optional IAM role assumed for cross-account SES sending |
+| `SEIZA_SES_ROLE_EXTERNAL_ID_FILE` | unset | Optional mounted external ID for SES role assumption |
+| `SEIZA_SMTP_HOST`, `SEIZA_SMTP_PORT` | unset / provider default | Authenticated SMTP relay endpoint |
+| `SEIZA_SMTP_USERNAME`, `SEIZA_SMTP_PASSWORD_FILE` | unset | Required SMTP credentials; password is read from a mounted file |
+| `SEIZA_SMTP_TLS` | `starttls` | Required encrypted transport: `starttls` or `implicit` |
+| `SEIZA_SMTP_TIMEOUT_SECONDS` | `30` | SMTP connection and request timeout |
 | `SEIZA_STORAGE_BACKEND` | `local` | `local` or `s3` |
 | `SEIZA_S3_BUCKET` | unset | Required when storage is `s3` |
 | `SEIZA_S3_PREFIX` | `uploads` | S3 object-key prefix |
@@ -369,8 +390,9 @@ are currently supported:
 | `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged (`2`–`100`); also becomes the configured priority client's durable queue weight |
 | `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
 
-`X-Forwarded-For`/`X-Real-IP` are used for anonymous fairness and rate limits.
-Only accept those headers from a trusted reverse proxy in production.
+`X-Forwarded-For`/`X-Real-IP` are used for anonymous queue fairness. Sign-in
+rate limiting only honors them when `SEIZA_TRUSTED_PROXY_HOPS` declares the
+trusted proxy chain; otherwise the connected peer address is used.
 
 Catalog paths are resolved by `seiza::data_paths`. Each explicit per-catalog
 variable may name either a file or a directory and fails startup when it does
