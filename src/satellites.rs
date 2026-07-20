@@ -117,6 +117,13 @@ impl SatelliteEngine {
                 .is_some()
     }
 
+    pub fn has_loaded_catalog(&self) -> bool {
+        self.active
+            .read()
+            .expect("satellite catalog lock poisoned")
+            .is_some()
+    }
+
     pub async fn refresh(&self) {
         if let Err(error) = self.load_active(true).await {
             tracing::warn!(%error, "could not refresh CelesTrak satellite elements");

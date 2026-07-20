@@ -58,8 +58,7 @@ disappears on a process restart.
   job has one shutter-open interval and an observer location. FITS may supply
   those values automatically; JPEG and other image uploads may supply the same
   optional fields explicitly. CelesTrak orbital elements use a bounded durable
-  snapshot history that is primed at startup and refreshed every two hours;
-  prediction failure never changes the plate-solve result.
+  snapshot history, and prediction failure never changes the plate-solve result.
 
 ## Quick start
 
@@ -372,7 +371,7 @@ are currently supported:
 | `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |
 | `SEIZA_MINOR_BODY_DATA` | unset | Optional reloadable Seiza minor-body orbital-elements catalog |
 | `SEIZA_SATELLITE_TRACKS` | `true` | Enable post-solve satellite-track prediction from cached CelesTrak active-object elements |
-| `SEIZA_SATELLITE_CACHE_DIR` | `data/satellites` | Durable CelesTrak snapshot-history directory; place it on persistent storage and share it between API replicas on the same host |
+| `SEIZA_SATELLITE_CACHE_DIR` | `data/satellites` | Durable CelesTrak snapshot-history directory; share one persistent directory between API replicas on the same host |
 | `SEIZA_SATELLITE_CACHE_MAX_BYTES` | `5368709120` | Oldest-first snapshot-history ceiling; the newest valid snapshot is always retained |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
