@@ -4,7 +4,7 @@ Seiza Server is a queued web service for plate solving. It uses the
 [`seiza`](https://github.com/theatrus/seiza) and
 [`seiza-fits`](https://crates.io/crates/seiza-fits) Rust crates directly—not a
 CLI subprocess—and includes a TypeScript/React frontend. The current source
-uses the published Seiza 0.11.0 release for satellite-track support and
+uses the published Seiza 0.11.1 release for satellite-track support and
 `@seiza/astro-overlay` 0.5.0 for risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
@@ -28,7 +28,7 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.11.0, including catalog-seeded matching for source
+  solving with Seiza 0.11.1, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
   forward and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
