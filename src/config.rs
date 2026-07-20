@@ -195,9 +195,9 @@ pub struct Config {
     pub rate_limit_per_minute: f64,
     pub rate_limit_burst: f64,
     /// Number of reverse proxies in front of the server that append to
-    /// `X-Forwarded-For`. Zero (the default) ignores forwarded headers and
-    /// rate-limits by peer address, so a direct client cannot spoof its
-    /// identity.
+    /// `X-Forwarded-For` and set `X-Forwarded-Proto`. Zero (the default)
+    /// ignores forwarded headers and rate-limits by peer address, so a direct
+    /// client cannot spoof its identity.
     pub trusted_proxy_hops: usize,
     pub auth_mode: AuthMode,
     pub public_ui_solves: bool,

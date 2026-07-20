@@ -8,7 +8,10 @@ use crate::{
         SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
         WorkerCompletion,
     },
-    overlay::{OverlayOptions, render_svg},
+    overlay::{
+        OPENGRAPH_HEIGHT, OPENGRAPH_WIDTH, OverlayOptions, render_opengraph_png, render_svg,
+        render_svg_for_viewport,
+    },
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
     satellites::{
@@ -795,6 +798,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/solves/{job_id}/overlay.svg",
             get(get_solve_overlay),
         )
+        .route(
+            "/api/v1/solves/{job_id}/opengraph.png",
+            get(get_solve_opengraph),
+        )
         .route("/api/v1/solves/{job_id}/wcs", get(get_solve_wcs))
         .route("/api/v1/internal/worker/claim", post(worker_claim_next))
         .route(
@@ -838,10 +845,7 @@ pub fn router(state: AppState) -> Router {
         .route_service("/data-sources", ServeFile::new(frontend_index.clone()))
         .route_service("/signin", ServeFile::new(frontend_index.clone()))
         .route_service("/account", ServeFile::new(frontend_index.clone()))
-        .route_service(
-            "/solutions/{job_id}",
-            ServeFile::new(frontend_index.clone()),
-        )
+        .route("/solutions/{job_id}", get(get_solution_page))
         .fallback_service(
             ServeDir::new(&frontend_dir).not_found_service(ServeFile::new(frontend_index)),
         )
@@ -850,6 +854,175 @@ pub fn router(state: AppState) -> Router {
         .layer(RequestBodyLimitLayer::new(state.config.max_upload_bytes))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn get_solution_page(
+    State(state): State<AppState>,
+    Path(requested_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let template = tokio::fs::read_to_string(state.config.frontend_dir.join("index.html"))
+        .await
+        .map_err(ApiError::internal)?;
+    let job = state.public_job(&requested_id).await?;
+    let (body, cache_control) = if let Some(job) = job {
+        let canonical_id = public_job_id(&job);
+        let metadata = solution_page_metadata(&state, &headers, &canonical_id, &job);
+        (
+            inject_solution_metadata(template, &metadata),
+            if matches!(job.status, JobStatus::Queued | JobStatus::Solving) {
+                "no-store"
+            } else {
+                "public, max-age=300, stale-while-revalidate=3600"
+            },
+        )
+    } else {
+        (template, "no-store")
+    };
+    Ok(cached_body_response(
+        &headers,
+        "text/html; charset=utf-8",
+        cache_control,
+        Bytes::from(body),
+    ))
+}
+
+struct SolutionPageMetadata {
+    title: &'static str,
+    description: String,
+    canonical_url: String,
+    image_url: Option<String>,
+}
+
+fn solution_page_metadata(
+    state: &AppState,
+    headers: &HeaderMap,
+    public_id: &str,
+    job: &JobRecord,
+) -> SolutionPageMetadata {
+    let origin = public_origin(state, headers);
+    let canonical_url = format!("{origin}/solutions/{public_id}");
+    let (title, description) = match (job.status, job.solution.as_ref()) {
+        (JobStatus::Succeeded, Some(solution)) => (
+            "Solved astronomical field · Seiza",
+            format!(
+                "Plate solved at RA {:.5}°, Dec {:+.5}° with {:.3}″/px scale, {} matched stars, and {:.3}″ RMS.",
+                solution.center_ra_deg,
+                solution.center_dec_deg,
+                solution.pixel_scale_arcsec_per_pixel,
+                solution.matched_stars,
+                solution.rms_arcsec,
+            ),
+        ),
+        (JobStatus::Failed, _) => (
+            "Plate solve result · Seiza",
+            "Seiza could not solve this astronomical image. Open the result to review it or try again with hints."
+                .into(),
+        ),
+        (JobStatus::Solving, _) => (
+            "Solving an astronomical image · Seiza",
+            "Seiza is plate solving this astronomical image in a background worker.".into(),
+        ),
+        _ => (
+            "Astronomical image queued · Seiza",
+            "This astronomical image is queued for plate solving with Seiza.".into(),
+        ),
+    };
+    let image_url = (job.status == JobStatus::Succeeded
+        && job.solution.is_some()
+        && state.input_available(job))
+    .then(|| format!("{origin}/api/v1/solves/{public_id}/opengraph.png"));
+    SolutionPageMetadata {
+        title,
+        description,
+        canonical_url,
+        image_url,
+    }
+}
+
+fn public_origin(state: &AppState, headers: &HeaderMap) -> String {
+    if let Some(base_url) = &state.config.public_base_url {
+        return base_url.as_str().trim_end_matches('/').to_owned();
+    }
+    let forwarded_scheme = (state.config.trusted_proxy_hops > 0)
+        .then(|| headers.get("x-forwarded-proto"))
+        .flatten()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .map(str::trim)
+        .filter(|value| matches!(*value, "http" | "https"));
+    let scheme = forwarded_scheme.unwrap_or("http");
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost");
+    let candidate = format!("{scheme}://{host}");
+    url::Url::parse(&candidate)
+        .ok()
+        .filter(|url| {
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "http://localhost".into())
+}
+
+fn inject_solution_metadata(mut template: String, metadata: &SolutionPageMetadata) -> String {
+    let title = escape_html_attribute(metadata.title);
+    let description = escape_html_attribute(&metadata.description);
+    let canonical_url = escape_html_attribute(&metadata.canonical_url);
+    let card = if metadata.image_url.is_some() {
+        "summary_large_image"
+    } else {
+        "summary"
+    };
+    let mut tags = format!(
+        r#"
+    <link rel="canonical" href="{canonical_url}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Seiza" />
+    <meta property="og:title" content="{title}" />
+    <meta property="og:description" content="{description}" />
+    <meta property="og:url" content="{canonical_url}" />
+    <meta name="twitter:card" content="{card}" />
+    <meta name="twitter:title" content="{title}" />
+    <meta name="twitter:description" content="{description}" />"#,
+    );
+    if let Some(image_url) = &metadata.image_url {
+        let image_url = escape_html_attribute(image_url);
+        tags.push_str(&format!(
+            r#"
+    <meta property="og:image" content="{image_url}" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="{OPENGRAPH_WIDTH}" />
+    <meta property="og:image:height" content="{OPENGRAPH_HEIGHT}" />
+    <meta property="og:image:alt" content="Astronomical image with Seiza solution overlays" />
+    <meta name="twitter:image" content="{image_url}" />
+    <meta name="twitter:image:alt" content="Astronomical image with Seiza solution overlays" />"#,
+        ));
+        if image_url.starts_with("https://") {
+            tags.push_str(&format!(
+                "\n    <meta property=\"og:image:secure_url\" content=\"{image_url}\" />",
+            ));
+        }
+    }
+    tags.push('\n');
+    if let Some(head_end) = template.rfind("</head>") {
+        template.insert_str(head_end, &tags);
+    }
+    template
+}
+
+fn escape_html_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn cors_layer(state: &AppState) -> CorsLayer {
@@ -1317,6 +1490,74 @@ async fn get_solve_overlay(
     Ok(response)
 }
 
+async fn get_solve_opengraph(
+    State(state): State<AppState>,
+    Path(public_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let job = state
+        .public_job(&public_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    ensure_input_available(&state, &job)?;
+    let stored_solution = job.solution.as_ref().ok_or_else(|| {
+        ApiError::artifact_not_ready("the solve has not produced a social preview yet")
+    })?;
+    let annotation_query = AnnotationQuery::opengraph();
+    let annotations = state
+        .annotations_for(
+            &public_id,
+            &job,
+            stored_solution,
+            &job.options,
+            &annotation_query.options(),
+            annotation_query.satellite_tracks,
+        )
+        .await;
+    let mut solution = stored_solution.clone();
+    solution.objects = annotations.objects;
+    solution.objects.extend(
+        annotations
+            .satellite_tracks
+            .iter()
+            .map(track_overlay_object),
+    );
+    let content = state
+        .store
+        .get(job.input_object_key())
+        .await
+        .map_err(ApiError::internal)?;
+    let preview = preview_png(content, job.original_filename)
+        .await
+        .map_err(ApiError::bad_request)?;
+    let svg = render_svg_for_viewport(
+        &solution,
+        &preview,
+        OverlayOptions {
+            objects: true,
+            grid: true,
+            outlines: true,
+        },
+        OPENGRAPH_WIDTH,
+        OPENGRAPH_HEIGHT,
+    );
+    let png = tokio::task::spawn_blocking(move || render_opengraph_png(&svg))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
+    let mut response = cached_body_response(
+        &headers,
+        "image/png",
+        "public, max-age=300, stale-while-revalidate=3600",
+        png,
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline; filename=seiza-opengraph.png"),
+    );
+    Ok(response)
+}
+
 #[derive(Debug, Deserialize)]
 struct OverlayQuery {
     #[serde(default = "default_true")]
@@ -1358,6 +1599,23 @@ struct AnnotationQuery {
 }
 
 impl AnnotationQuery {
+    fn opengraph() -> Self {
+        Self {
+            deep_sky: true,
+            named_stars: true,
+            star_identifiers: false,
+            field_stars: false,
+            transients: true,
+            minor_bodies: true,
+            satellite_tracks: false,
+            historical_transients: false,
+            field_star_mag_limit: default_field_star_magnitude(),
+            max_field_stars: default_field_star_limit(),
+            star_identifier_mag_limit: default_star_identifier_magnitude(),
+            max_star_identifiers: default_star_identifier_limit(),
+        }
+    }
+
     fn options(&self) -> AnnotationOptions {
         AnnotationOptions {
             deep_sky: self.deep_sky,
@@ -2496,6 +2754,143 @@ mod tests {
         );
 
         drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn solution_page_exposes_server_rendered_social_metadata_and_overlay_png() {
+        let root = std::env::temp_dir().join(format!("seiza-api-og-{}", Uuid::now_v7()));
+        let frontend_dir = root.join("frontend");
+        std::fs::create_dir_all(&frontend_dir).unwrap();
+        std::fs::write(
+            frontend_dir.join("index.html"),
+            "<html><head><title>Seiza</title></head><body><div id=\"root\"></div></body></html>",
+        )
+        .unwrap();
+        let mut config = test_config(&root);
+        config.public_base_url = Some(Url::parse("https://solve.example.com").unwrap());
+        let state = AppState::new(config).await.unwrap();
+        let mut preview = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(120, 80)
+            .write_to(&mut preview, image::ImageFormat::Png)
+            .unwrap();
+        let object_key = state.new_object_key("social.png");
+        state
+            .store
+            .put(
+                &object_key,
+                Bytes::from(preview.into_inner()),
+                Some("image/png"),
+            )
+            .await
+            .unwrap();
+        let job = state
+            .enqueue_stored(
+                Client {
+                    id: "social-test".into(),
+                    queue_weight: 1.0,
+                },
+                object_key,
+                "social.png".into(),
+                Some("image/png".into()),
+                SolveOptions::default(),
+            )
+            .await
+            .unwrap();
+        let public_id = public_job_id(&job);
+        let app = router(state.clone());
+
+        let queued = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/solutions/{public_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queued.status(), StatusCode::OK);
+        assert_eq!(queued.headers()[header::CACHE_CONTROL], "no-store");
+        let queued_body = String::from_utf8(
+            to_bytes(queued.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(queued_body.contains("Astronomical image queued · Seiza"));
+        assert!(!queued_body.contains("property=\"og:image\""));
+        assert!(queued_body.contains("<div id=\"root\"></div>"));
+
+        let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        assert!(
+            state
+                .repository
+                .complete(
+                    lease.job_id,
+                    lease.lease_token,
+                    Some(solved_fixture()),
+                    None,
+                )
+                .await
+                .unwrap()
+        );
+        let solved = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/solutions/{public_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(solved.status(), StatusCode::OK);
+        assert_eq!(
+            solved.headers()[header::CACHE_CONTROL],
+            "public, max-age=300, stale-while-revalidate=3600"
+        );
+        let solved_body = String::from_utf8(
+            to_bytes(solved.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            solved_body
+                .contains("property=\"og:title\" content=\"Solved astronomical field · Seiza\"")
+        );
+        assert!(solved_body.contains(&format!(
+            "property=\"og:url\" content=\"https://solve.example.com/solutions/{public_id}\""
+        )));
+        assert!(solved_body.contains(&format!(
+            "property=\"og:image\" content=\"https://solve.example.com/api/v1/solves/{public_id}/opengraph.png\""
+        )));
+        assert!(solved_body.contains("content=\"1200\""));
+        assert!(solved_body.contains("content=\"630\""));
+        assert!(solved_body.contains("<div id=\"root\"></div>"));
+
+        let social_image = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/solves/{public_id}/opengraph.png"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(social_image.status(), StatusCode::OK);
+        assert_eq!(social_image.headers()[header::CONTENT_TYPE], "image/png");
+        let social_image = to_bytes(social_image.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let decoded = image::load_from_memory(&social_image).unwrap();
+        assert_eq!(decoded.width(), OPENGRAPH_WIDTH);
+        assert_eq!(decoded.height(), OPENGRAPH_HEIGHT);
+
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 

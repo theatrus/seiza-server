@@ -16,6 +16,8 @@ BuildRequires:   /usr/bin/npm
 BuildRequires:   /usr/bin/rpmbuild
 BuildRequires:   pkgconfig(openssl)
 Requires:        systemd
+Requires:        dejavu-sans-fonts
+Requires:        dejavu-sans-mono-fonts
 Requires(pre):   shadow-utils
 
 %description
