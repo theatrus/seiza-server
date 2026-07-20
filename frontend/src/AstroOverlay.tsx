@@ -3,6 +3,7 @@ import { AstroOverlay as ReusableAstroOverlay } from '@seiza/astro-overlay/react
 import {
   defaultOverlayDensity,
   defaultOverlayTheme,
+  satelliteTrackOverlayObject,
   suggestedDeepSkyCatalogColors as deepSkyCatalogColors,
   suggestedDeepSkyCatalogForObject as deepSkyCatalogForObject,
   suggestedDeepSkyCatalogLayer as deepSkyCatalogLayer,
@@ -10,9 +11,10 @@ import {
   suggestedDeepSkyColorForObject,
   suggestedDeepSkyLayerForObject,
   type OverlayLayerVisibility,
+  type OverlayObject as PackageOverlayObject,
   type SuggestedDeepSkyCatalogId as DeepSkyCatalogId,
 } from '@seiza/astro-overlay'
-import type { OverlayObject, Solution } from './api'
+import type { OverlayObject, SatelliteTrack, Solution } from './api'
 
 export interface OverlayLayers {
   deepSky: boolean
@@ -21,6 +23,7 @@ export interface OverlayLayers {
   fieldStars: boolean
   transients: boolean
   minorBodies: boolean
+  satelliteTracks: boolean
   historicalTransients: boolean
   grid: boolean
 }
@@ -32,6 +35,7 @@ const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
   ['fieldStars', 'Field stars', 'field_stars'],
   ['transients', 'Transients', 'transients'],
   ['minorBodies', 'Solar system', 'minor_bodies'],
+  ['satelliteTracks', 'Satellite tracks', 'satellite_tracks'],
   ['historicalTransients', 'Older transients', 'historical_transients'],
   ['grid', 'RA / Dec grid', 'grid'],
 ]
@@ -155,24 +159,39 @@ function DeepSkyCatalogMenu({
 export function AstroOverlay({
   solution,
   objects,
+  satelliteTracks,
   layers,
   hiddenCatalogs,
   showCatalogOutlines,
 }: {
   solution: Solution
   objects: OverlayObject[]
+  satelliteTracks: SatelliteTrack[]
   layers: OverlayLayers
   hiddenCatalogs: DeepSkyCatalogId[]
   showCatalogOutlines: boolean
 }) {
-  const visibleObjects = objects
-    .filter((object) => {
-      const catalog = deepSkyCatalogForObject(object)
-      return catalog == null || !hiddenCatalogs.includes(catalog)
-    })
-    .map((object) => showCatalogOutlines || (object.outlines?.length ?? 0) === 0
-      ? object
-      : { ...object, outlines: [] })
+  const visibleObjects: PackageOverlayObject[] = [
+    ...objects
+      .filter((object) => {
+        const catalog = deepSkyCatalogForObject(object)
+        return catalog == null || !hiddenCatalogs.includes(catalog)
+      })
+      .map((object) => showCatalogOutlines || (object.outlines?.length ?? 0) === 0
+        ? object
+        : { ...object, outlines: [] }),
+    ...satelliteTracks.map((track) => satelliteTrackOverlayObject({
+      stableId: track.stable_id,
+      label: track.label,
+      noradId: track.norad_id,
+      cosparId: track.cospar_id,
+      source: 'satellite_prediction',
+      catalogSource: track.source,
+      riskLevel: track.risk.level,
+      maximumApparentRateArcsecPerSecond: track.maximum_apparent_rate_arcsec_per_second,
+      segments: track.segments,
+    })),
+  ]
 
   return <ReusableAstroOverlay
     className="sky-overlay"
@@ -194,6 +213,7 @@ function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
     field_stars: layers.fieldStars,
     transients: layers.transients,
     minor_bodies: layers.minorBodies,
+    satellite_tracks: layers.satelliteTracks,
     historical_transients: layers.historicalTransients,
     grid: layers.grid,
   }

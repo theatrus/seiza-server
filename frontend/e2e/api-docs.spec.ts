@@ -14,6 +14,15 @@ test('advertises N.I.N.A. and Siril integrations on the home page', async ({ pag
   await expect(page.getByRole('link', { name: 'Download Seiza' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
 })
 
+test('advertises optional satellite lookup without presenting predictions as detections', async ({ page }) => {
+  await page.goto('/')
+
+  await expect(page.getByRole('heading', { name: 'Catalog the field—and predict satellite crossings.' })).toBeVisible()
+  await expect(page.getByText('Satellite lookup is optional and off by default', { exact: false })).toBeVisible()
+  await expect(page.getByText('orbit predictions, not claims that a trail was detected', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Read the annotation contract' })).toHaveAttribute('href', '/docs/api#responses')
+})
+
 test('links the data-source acknowledgements from the home hero and about section', async ({ page }) => {
   await page.goto('/')
 
@@ -48,6 +57,8 @@ test('credits the upstream catalogues and links their primary sources', async ({
   await expect(page.getByRole('link', { name: /Latest Supernovae/ })).toHaveAttribute('href', 'https://www.rochesterastronomy.org/snimages/snactive.html')
   await expect(page.getByRole('link', { name: /Minor Planet Center/ }).first()).toHaveAttribute('href', 'https://www.minorplanetcenter.net/')
   await expect(page.getByRole('link', { name: /Small-body orbits/ })).toHaveAttribute('href', 'https://ssd.jpl.nasa.gov/sb/orbits.html')
+  await expect(page.getByRole('link', { name: 'IAU SatChecker' })).toHaveAttribute('href', 'https://satchecker.cps.iau.org/')
+  await expect(page.getByRole('link', { name: 'Seiza rolling mirror' })).toHaveAttribute('href', 'https://downloads.seiza.fyi/satellites/v1/manifest.json')
   await expect(page.getByText(/Seiza’s Apache-2.0 license covers Seiza software, not third-party catalogue data/)).toBeVisible()
 })
 
@@ -75,6 +86,7 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByText('/api/v1/catalog/objects/search', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/catalog/objects/details/{canonical_id}', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/catalog/stars/search', { exact: true })).toBeVisible()
+  await expect(page.getByText('Predicted satellite tracks')).toBeVisible()
   await expect(page.getByText('/api/v1/auth/logout-all', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/account/api-keys', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()

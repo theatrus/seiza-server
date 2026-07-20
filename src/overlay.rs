@@ -389,6 +389,7 @@ fn render_object(
         "transient" => "#ff4fd8",
         "comet" => "#6df2a2",
         "asteroid" => "#ffad5c",
+        "satellite" => satellite_color(object),
         _ => deep_sky_catalog_color(&object.name),
     };
     if object.kind == "field-star" {
@@ -411,11 +412,16 @@ fn render_object(
         .mag
         .map(|mag| format!(" · mag {mag:.1}"))
         .unwrap_or_default();
+    let display_label = if label == designation {
+        format!("{designation}{magnitude}")
+    } else {
+        format!("{label} ({designation}){magnitude}")
+    };
     let encompasses_frame = encompasses_frame(object, width, height);
     if encompasses_frame {
         let _ = write!(
             output,
-            r#"<text class="label" x="{x:.2}" y="{y:.2}" fill="{color}">{label} ({designation}){magnitude}</text>"#,
+            r#"<text class="label" x="{x:.2}" y="{y:.2}" fill="{color}">{display_label}</text>"#,
             x = object.x.clamp(16.0, width - 16.0),
             y = object.y.clamp(68.0, height - 16.0),
         );
@@ -457,6 +463,7 @@ fn render_object(
                 render_direction_tail(output, object, size, angle, vector_length, color);
             }
         }
+        "satellite" => render_outlines(output, object, color),
         _ => {
             if object.outlines.is_empty() || !show_outlines {
                 let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
@@ -479,7 +486,7 @@ fn render_object(
     }
     let _ = write!(
         output,
-        r#"<text class="label" x="{x:.2}" y="{y:.2}">{label} ({designation}){magnitude}</text>"#,
+        r#"<text class="label" x="{x:.2}" y="{y:.2}">{display_label}</text>"#,
         x = (object.x + 14.0).clamp(8.0, width - 8.0),
         y = (object.y - 14.0).clamp(18.0, height - 8.0),
     );
@@ -509,6 +516,19 @@ fn deep_sky_catalog_color(name: &str) -> &'static str {
         "#72dfb9"
     } else {
         "#c1d1d3"
+    }
+}
+
+fn satellite_color(object: &OverlayObject) -> &'static str {
+    match object
+        .outlines
+        .iter()
+        .find(|outline| outline.role == "predicted-track")
+        .and_then(|outline| outline.level.as_deref())
+    {
+        Some("high") => "#ff4d5a",
+        Some("possible") => "#ffd166",
+        _ => "#43d9e6",
     }
 }
 
@@ -796,6 +816,59 @@ mod tests {
         assert!(svg.contains("class=\"marker object-outline\""));
         assert!(svg.contains("data-outline-level=\"1\""));
         assert!(svg.contains("M 10.00 20.00 L 30.00 40.00 L 50.00 20.00 Z"));
+        assert!(!svg.contains("<ellipse class=\"marker\""));
+    }
+
+    #[test]
+    fn satellite_tracks_render_as_open_risk_paths_without_duplicate_labels() {
+        let mut tracked = solution();
+        tracked.objects = vec![OverlayObject {
+            stable_id: Some("satellite:norad:25544".into()),
+            name: "ISS (ZARYA)".into(),
+            common_name: String::new(),
+            kind: "satellite".into(),
+            mag: None,
+            x: 30.0,
+            y: 30.0,
+            semi_major_px: 0.0,
+            semi_minor_px: 0.0,
+            angle_deg: None,
+            source: Some("satellite_prediction".into()),
+            catalog_source: Some("CelesTrak active".into()),
+            aliases: Vec::new(),
+            parent_ids: Vec::new(),
+            alternate_ids: vec!["NORAD 25544".into()],
+            alternate_sources: Vec::new(),
+            ra_deg: None,
+            dec_deg: None,
+            discovered: None,
+            near_capture: None,
+            distance_au: None,
+            motion_arcsec_per_hour: None,
+            direction_pa_deg: None,
+            direction_angle_deg: None,
+            outlines: vec![OverlayOutline {
+                geometry_id: "satellite:norad:25544:predicted-track".into(),
+                source_record_id: "satellite:norad:25544".into(),
+                role: "predicted-track".into(),
+                quality: "propagated".into(),
+                level: Some("low".into()),
+                contours: vec![OverlayContour {
+                    closed: false,
+                    points: vec![[10.0, 20.0], [30.0, 30.0], [50.0, 40.0]],
+                }],
+            }],
+        }];
+
+        let svg = render_svg(
+            &tracked,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(svg.contains("stroke=\"#43d9e6\""));
+        assert!(svg.contains("M 10.00 20.00 L 30.00 30.00 L 50.00 40.00\""));
+        assert!(svg.contains(">ISS (ZARYA)</text>"));
+        assert!(!svg.contains("ISS (ZARYA) (ISS (ZARYA))"));
         assert!(!svg.contains("<ellipse class=\"marker\""));
     }
 

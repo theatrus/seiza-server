@@ -79,23 +79,28 @@ function defaultSolveOptions() {
     max_stars: 500,
     sip_order: 0,
     capture_time: null,
+    exposure_seconds: null,
+    observer_latitude_deg: null,
+    observer_longitude_deg: null,
+    observer_altitude_m: null,
+    observer_itrf_m: null,
   }
 }
 
-async function setStableFile(page: Page, name: string, size: number) {
+async function setStableFile(page: Page, name: string, size: number, type = 'application/fits') {
   await page.getByLabel('FITS or image file').evaluate((node, file) => {
     const input = node as HTMLInputElement
     const bytes = new Uint8Array(file.size)
     bytes.fill(42)
     const transfer = new DataTransfer()
     transfer.items.add(new File([bytes], file.name, {
-      type: 'application/fits',
+      type: file.type,
       lastModified: 1_720_000_000_000,
     }))
     input.files = transfer.files
     input.dispatchEvent(new Event('input', { bubbles: true }))
     input.dispatchEvent(new Event('change', { bubbles: true }))
-  }, { name, size })
+  }, { name, size, type })
 }
 
 function queuedJob(id: string, filename: string) {
@@ -153,9 +158,12 @@ test('places the solve action beside the file selector', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
+  const satelliteTrails = row.getByRole('checkbox', { name: 'Show predicted satellite trails' })
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
 
   await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
+  await expect(satelliteTrails).toBeVisible()
+  await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()
   const fileBox = await fileSelector.boundingBox()
   const buttonBox = await solveButton.boundingBox()
@@ -166,6 +174,53 @@ test('places the solve action beside the file selector', async ({ page }) => {
   const viewport = page.viewportSize()
   expect(viewport).not.toBeNull()
   expect(fileBox!.y + fileBox!.height).toBeLessThan(viewport!.height)
+})
+
+test('submits manual satellite observation metadata with a JPEG upload', async ({ page }) => {
+  let submittedOptions: Record<string, unknown> | null = null
+  let offset = 0
+  await page.route('**/api/v1/uploads', async (route) => {
+    const metadata = route.request().headers()['upload-metadata']
+    const encodedOptions = metadata.split(',').map((field) => field.trim().split(' ')).find(([name]) => name === 'options')?.[1]
+    expect(encodedOptions).toBeDefined()
+    submittedOptions = JSON.parse(Buffer.from(encodedOptions!, 'base64').toString('utf8'))
+    await route.fulfill({
+      status: 201,
+      headers: { Location: `/api/v1/uploads/${uploadId}`, 'Tus-Resumable': '1.0.0', 'Upload-Offset': '0' },
+    })
+  })
+  await page.route(`**/api/v1/uploads/${uploadId}`, async (route) => {
+    const request = route.request()
+    if (request.method() === 'HEAD') {
+      await route.fulfill({ status: 200, headers: { 'Tus-Resumable': '1.0.0', 'Upload-Length': '1024', 'Upload-Offset': String(offset) } })
+      return
+    }
+    offset = 1024
+    await route.fulfill({ status: 204, headers: { 'Tus-Resumable': '1.0.0', 'Upload-Offset': String(offset) } })
+  })
+  const job = queuedJob(publicId, 'night-sky.jpg')
+  await page.route(`**/api/v1/uploads/${uploadId}/result`, async (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(job) }))
+  await page.route(`**/api/v1/solves/${publicId}`, async (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(job) }))
+
+  await page.goto('/solve')
+  await setStableFile(page, 'night-sky.jpg', 1024, 'image/jpeg')
+  await page.getByLabel('Time zone').selectOption('utc')
+  await page.getByLabel('Date and time').fill('2026-07-19T04:05:06')
+  await page.getByLabel('Exposure (seconds)').fill('30')
+  await page.getByLabel('Observer latitude (° N)').fill('37.3')
+  await page.getByLabel('Observer longitude (° E)').fill('-122')
+  await page.getByLabel('Observer altitude (m)').fill('50')
+  await page.getByRole('checkbox', { name: 'Show predicted satellite trails' }).check()
+  await page.getByRole('button', { name: 'Solve', exact: true }).click()
+
+  await expect(page).toHaveURL(`/solutions/${publicId}?satellite_tracks=true`)
+  expect(submittedOptions).toMatchObject({
+    capture_time: '2026-07-19T04:05:06.000Z',
+    exposure_seconds: 30,
+    observer_latitude_deg: 37.3,
+    observer_longitude_deg: -122,
+    observer_altitude_m: 50,
+  })
 })
 
 test('uploads large images as parallel TUS parts and concatenates them', async ({ page, browserName }) => {

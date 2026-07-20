@@ -15,6 +15,7 @@ const defaultOverlayLayers: OverlayLayers = {
   fieldStars: false,
   transients: true,
   minorBodies: true,
+  satelliteTracks: false,
   historicalTransients: false,
   grid: true,
 }
@@ -51,6 +52,18 @@ function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOpt
     ignore_border: defaults?.ignore_border,
     max_stars: defaults?.max_stars,
     sip_order: numberOrUndefined(form.get('sip_order')),
+    exposure_seconds: numberOrUndefined(form.get('exposure_seconds')),
+    observer_latitude_deg: numberOrUndefined(form.get('observer_latitude_deg')),
+    observer_longitude_deg: numberOrUndefined(form.get('observer_longitude_deg')),
+    observer_altitude_m: numberOrUndefined(form.get('observer_altitude_m')),
+  }
+  const hasLatitude = options.observer_latitude_deg !== undefined
+  const hasLongitude = options.observer_longitude_deg !== undefined
+  if (hasLatitude !== hasLongitude) {
+    throw new Error('Satellite tracks need observer latitude and longitude together.')
+  }
+  if (options.observer_altitude_m !== undefined && !hasLatitude) {
+    throw new Error('Observer altitude also needs latitude and longitude.')
   }
   const captureTime = form.get('capture_time')
   if (typeof captureTime === 'string' && captureTime !== '') {
@@ -101,8 +114,8 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
       </div>
     </fieldset>
     <fieldset className="optional-fields">
-      <legend>Acquisition time <span className="optional-badge">Optional</span></legend>
-      <p><strong>FITS DATE-OBS is used automatically; timestamps without an offset are treated as UTC.</strong> For other images, enter the time shown by the camera or acquisition software and identify whether that clock used local time or UTC. This lets Seiza position comets and asteroids and scope transient events.</p>
+      <legend>Exposure and observing site <span className="optional-badge">Optional</span></legend>
+      <p><strong>Compatible FITS timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in beside the upload button to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
       <div className="capture-time-grid">
         <label>Date and time<input name="capture_time" type="datetime-local" step="1" value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
         <label>Time zone<select name="capture_time_zone" value={captureTimeZone} aria-describedby={captureTimeHelpId} onChange={(event) => {
@@ -118,6 +131,13 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
       <p id={captureTimeHelpId} className="capture-time-note">{captureTimeZone === 'local'
         ? <><strong>Local entry:</strong> this browser will interpret the value as {localTimeZoneDescription(captureTime)}.</>
         : <><strong>UTC entry:</strong> the value will be interpreted as Coordinated Universal Time, with no local offset.</>} Seiza submits and stores the instant in UTC.</p>
+      <div className="form-grid satellite-metadata-grid">
+        <label>Exposure (seconds)<input name="exposure_seconds" type="number" min="0.001" max="3600" step="any" placeholder="Optional · 30" defaultValue={defaults?.exposure_seconds ?? ''} /></label>
+        <label>Observer latitude (° N)<input name="observer_latitude_deg" type="number" min="-90" max="90" step="any" placeholder="Optional · 37.3" defaultValue={defaults?.observer_latitude_deg ?? ''} /></label>
+        <label>Observer longitude (° E)<input name="observer_longitude_deg" type="number" step="any" placeholder="Optional · -122.0" defaultValue={defaults?.observer_longitude_deg ?? ''} /></label>
+        <label>Observer altitude (m)<input name="observer_altitude_m" type="number" step="any" placeholder="Optional · 50" defaultValue={defaults?.observer_altitude_m ?? ''} /></label>
+      </div>
+      <p className="solve-control-note">Satellite prediction is for one continuous exposure, not a stacked image’s total integration. Site coordinates remain in the solve record so the result can be reproduced.</p>
     </fieldset>
     <details>
       <summary>Advanced solve controls <span className="optional-badge">Optional</span></summary>
@@ -154,12 +174,16 @@ function Link({ to, children, className }: { to: string; children: ReactNode; cl
 
 export default function App() {
   const [path, setPath] = useState(window.location.pathname)
+  const [search, setSearch] = useState(window.location.search)
   const [authMode, setAuthMode] = useState<Health['auth_mode'] | null>(null)
   const [publicSolveAccess, setPublicSolveAccess] = useState<Health['public_solve_access'] | null>(null)
   const [account, setAccount] = useState<AccountDetails | null>(null)
   const [accountChecked, setAccountChecked] = useState(false)
   useEffect(() => {
-    const updatePath = () => setPath(window.location.pathname)
+    const updatePath = () => {
+      setPath(window.location.pathname)
+      setSearch(window.location.search)
+    }
     window.addEventListener('popstate', updatePath)
     return () => window.removeEventListener('popstate', updatePath)
   }, [])
@@ -201,7 +225,11 @@ export default function App() {
     {path === '/data-sources' && <DataSourcesPage />}
     {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} solveEnabled={solveUiEnabled} publicApiSolves={publicApiSolves} onAuthenticated={refreshAccount} />}
     {path === '/account' && <AccountPage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} onAccountChanged={refreshAccount} />}
-    {solutionMatch && <SolutionPage jobId={solutionMatch[1]} />}
+    {solutionMatch && <SolutionPage
+      key={`${solutionMatch[1]}:${search}`}
+      jobId={solutionMatch[1]}
+      satelliteTracksRequested={new URLSearchParams(search).get('satellite_tracks') === 'true'}
+    />}
     {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage solveEnabled={solveUiEnabled} />}
     <SiteFooter />
   </div>
@@ -252,6 +280,21 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <li><span>02</span><div><strong>Match</strong><p>Geometric star patterns are compared with a compact sky catalog, blind or with an optional hint.</p></div></li>
         <li><span>03</span><div><strong>Calibrate</strong><p>A tangent-plane WCS maps every pixel to ICRS sky coordinates and enables a catalog overlay.</p></div></li>
       </ol>
+    </section>
+
+    <section className="about-card" aria-labelledby="optional-sky-context">
+      <div>
+        <p className="eyebrow">OPTIONAL SKY CONTEXT</p>
+        <h2 id="optional-sky-context">Catalog the field—and predict satellite crossings.</h2>
+      </div>
+      <div className="about-copy">
+        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional and off by default in the browser: opt in beside the upload button when one exposure has a UTC shutter interval and observing site, and Seiza can add WCS-clipped predicted tracks from epoch-appropriate orbital elements.</p>
+        <p>These tracks are orbit predictions, not claims that a trail was detected in the pixels. Missing exposure metadata or orbital data never makes the plate solve fail.</p>
+        <div className="text-links">
+          {solveEnabled && <Link to="/solve">Solve with optional sky context <span aria-hidden="true">→</span></Link>}
+          <a href="/docs/api#responses">Read the annotation contract <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
     </section>
 
     <section className="about-card integration-card" aria-labelledby="application-integrations">
@@ -328,6 +371,7 @@ function SolvePage({
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     const file = form.get('file')
+    const showSatelliteTracks = form.get('show_satellite_tracks') === 'on'
     if (!(file instanceof File) || file.size === 0) {
       setError('Choose an image to solve.')
       return
@@ -344,7 +388,7 @@ function SolvePage({
     setError(null)
     try {
       const job = await submitSolve(file, options, setUploadProgress)
-      navigate(`/solutions/${job.id}`)
+      navigate(`/solutions/${job.id}${showSatelliteTracks ? '?satellite_tracks=true' : ''}`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Upload failed')
       setSubmitting(false)
@@ -364,6 +408,7 @@ function SolvePage({
       <form onSubmit={onSubmit}>
         <div className="file-submit-row">
           <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
+          <label className="satellite-trail-opt-in"><input name="show_satellite_tracks" type="checkbox" /><span><strong>Show predicted satellite trails</strong><small>Off by default · predictions, not detections</small></span></label>
           <button className="button solve-submit-button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : <><span>Solve</span><span className="go-arrow" aria-hidden="true">→</span></>}</button>
         </div>
         {submitting && <div className="upload-progress" aria-live="polite">
@@ -377,7 +422,7 @@ function SolvePage({
   </main>
 }
 
-function SolutionPage({ jobId }: { jobId: string }) {
+function SolutionPage({ jobId, satelliteTracksRequested }: { jobId: string; satelliteTracksRequested: boolean }) {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pollVersion, setPollVersion] = useState(0)
@@ -407,10 +452,10 @@ function SolutionPage({ jobId }: { jobId: string }) {
       <ValidationDonationPanel job={job} onDonated={setJob} />
     </div> : <SolutionHeading job={job} />}
     {error && <p className="error" role="alert">{error}</p>}
-    {job && <SolutionContent job={job} onRetried={(retried) => {
+    {job && <SolutionContent job={job} satelliteTracksRequested={satelliteTracksRequested} onRetried={(retried) => {
       setJob(retried)
       setPollVersion((version) => version + 1)
-      navigate(`/solutions/${retried.id}`)
+      navigate(`/solutions/${retried.id}${satelliteTracksRequested ? '?satellite_tracks=true' : ''}`)
     }} />}
   </main>
 }
@@ -429,10 +474,10 @@ function titleForStatus(status: Job['status']) {
   return 'The field is solved.'
 }
 
-function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) => void }) {
+function SolutionContent({ job, satelliteTracksRequested, onRetried }: { job: Job; satelliteTracksRequested: boolean; onRetried: (job: Job) => void }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
-  const [layers, setLayers] = useState(defaultOverlayLayers)
+  const [layers, setLayers] = useState({ ...defaultOverlayLayers, satelliteTracks: satelliteTracksRequested })
   const [hiddenCatalogs, setHiddenCatalogs] = useState<DeepSkyCatalogId[]>([])
   const [showCatalogOutlines, setShowCatalogOutlines] = useState(true)
   const [expanded, setExpanded] = useState(false)
@@ -444,7 +489,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
     if (!job.annotations_url) {
       return () => { active = false }
     }
-    getAnnotations(job.annotations_url)
+    getAnnotations(job.annotations_url, satelliteTracksRequested)
       .then((result) => {
         if (active) {
           setAnnotations(result)
@@ -455,7 +500,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
         if (active) setAnnotationError(reason instanceof Error ? reason.message : String(reason))
       })
     return () => { active = false }
-  }, [job.annotations_url])
+  }, [job.annotations_url, satelliteTracksRequested])
   const solution = job.solution
   const currentAnnotations = annotations?.job_id === job.id ? annotations : null
   const overlayObjects = currentAnnotations?.objects ?? solution?.objects ?? []
@@ -464,17 +509,28 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
   const minorBodiesNeedCaptureTime = overlayAvailability?.minor_bodies === false
     && currentAnnotations?.capture_time == null
     && currentAnnotations?.catalog_version.split(';').some((version) => version.startsWith('minor-bodies:')) === true
+  const satelliteUnavailableReason = satelliteTracksRequested
+    ? currentAnnotations?.unavailable_reasons?.satellite_tracks
+    : undefined
   const unavailableLayers = overlayAvailability && [
     ['deep_sky', 'Deep sky'],
     ['named_stars', 'Named stars'],
     ['star_identifiers', 'Star identifiers'],
     ['transients', 'Transients'],
     ['minor_bodies', 'Solar system'],
+    ['satellite_tracks', 'Satellite tracks'],
   ].filter(([key]) => overlayAvailability[key] === false
-    && !(key === 'minor_bodies' && minorBodiesNeedCaptureTime)).map(([, label]) => label)
-  const disabledReasons = minorBodiesNeedCaptureTime
-    ? { minor_bodies: 'Solar system positions require an acquisition time for this image' }
-    : undefined
+    && !(key === 'minor_bodies' && minorBodiesNeedCaptureTime)
+    && !(key === 'satellite_tracks' && !satelliteTracksRequested)
+    && !(key === 'satellite_tracks' && satelliteUnavailableReason)).map(([, label]) => label)
+  const controlAvailability = satelliteTracksRequested
+    ? overlayAvailability
+    : { ...overlayAvailability, satellite_tracks: false }
+  const disabledReasons = {
+    ...(minorBodiesNeedCaptureTime ? { minor_bodies: 'Solar system positions require an acquisition time for this image' } : {}),
+    ...(!satelliteTracksRequested ? { satellite_tracks: 'Satellite trails were not requested for this solve view' } : {}),
+    ...(satelliteUnavailableReason ? { satellite_tracks: satelliteUnavailableReason } : {}),
+  }
   const downloadPng = async () => {
     if (!job.preview_url || !solution || !frameRef.current) return
     setDownloading(true)
@@ -499,7 +555,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
         <OverlayControls
           layers={layers}
           counts={overlayCounts}
-          available={overlayAvailability}
+          available={controlAvailability}
           disabledReasons={disabledReasons}
           objects={overlayObjects}
           hiddenCatalogs={hiddenCatalogs}
@@ -510,6 +566,7 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
         />
         {unavailableLayers && unavailableLayers.length > 0 && <p className="overlay-warning">Catalog data unavailable for this solution: {unavailableLayers.join(', ')}.</p>}
         {minorBodiesNeedCaptureTime && <p className="overlay-warning">Solar system positions require an acquisition time for this image. The minor-body catalog is installed.</p>}
+        {satelliteUnavailableReason && <p className="overlay-warning">{satelliteUnavailableReason}</p>}
         {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
         {exportError && <p className="overlay-warning">PNG rendering failed: {exportError}</p>}
         <div
@@ -529,9 +586,10 @@ function SolutionContent({ job, onRetried }: { job: Job; onRetried: (job: Job) =
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
-            <AstroOverlay solution={solution} objects={overlayObjects} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
+            <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
           </div>
         </div>
+        {(currentAnnotations?.satellite_tracks?.length ?? 0) > 0 && <SatelliteTrackDetails annotations={currentAnnotations!} />}
         <div className="overlay-footer">
           <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
           <div className="overlay-actions overlay-actions-below"><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
@@ -801,6 +859,46 @@ function countObjects(objects: OverlayObject[]) {
   return counts
 }
 
+function SatelliteTrackDetails({ annotations }: { annotations: Annotations }) {
+  const tracks = annotations.satellite_tracks ?? []
+  const search = annotations.satellite_search
+  return <details className="satellite-track-details">
+    <summary>Predicted satellite crossings · {tracks.length}</summary>
+    <p className="solve-control-note">These are orbit predictions through the solved field, not detections in the pixels. Illumination and trail risk are estimates; satellite attitude, passband, clouds, and shutter timing can change what appears in the image.</p>
+    <div className="satellite-track-list">
+      {tracks.map((track) => <div key={track.stable_id}>
+        <div><strong>{track.label}</strong><span>{track.cospar_id ? `${track.cospar_id} · ` : ''}elements {formatSignedAge(track.element_age_seconds)} from exposure</span></div>
+        <div className="satellite-track-metrics">
+          <span className={`satellite-risk ${track.risk.level}`}>{track.risk.level} trail risk</span>
+          <span>{Math.round(track.risk.maximum_sunlight_fraction * 100)}% sunlit</span>
+          <span>{track.risk.maximum_elevation_deg.toFixed(1)}° peak elevation</span>
+          <span>{track.risk.minimum_range_km.toLocaleString(undefined, { maximumFractionDigits: 0 })} km nearest range</span>
+        </div>
+      </div>)}
+    </div>
+    {search && <p className="satellite-search-note">Checked {search.elements_considered.toLocaleString()} orbital records{search.stale_elements > 0 ? ` · ${search.stale_elements.toLocaleString()} outside the seven-day propagation window` : ''}{search.propagation_failures > 0 ? ` · ${search.propagation_failures.toLocaleString()} propagation failures` : ''}.</p>}
+  </details>
+}
+
+function formatSignedAge(seconds: number) {
+  const absoluteHours = Math.abs(seconds) / 3600
+  const amount = absoluteHours >= 48
+    ? `${(absoluteHours / 24).toFixed(1)} days`
+    : `${absoluteHours.toFixed(1)} hours`
+  return seconds < 0 ? `${amount} after exposure` : `${amount} before exposure`
+}
+
+function formatObserver(options: SolveOptions) {
+  if (options.observer_latitude_deg != null && options.observer_longitude_deg != null) {
+    const altitude = options.observer_altitude_m == null ? '' : ` · ${options.observer_altitude_m.toLocaleString()} m`
+    return `${options.observer_latitude_deg.toFixed(5)}°, ${options.observer_longitude_deg.toFixed(5)}°${altitude}`
+  }
+  if (options.observer_itrf_m) {
+    return `ITRF ${options.observer_itrf_m.map((coordinate) => coordinate.toFixed(1)).join(', ')} m`
+  }
+  return 'Not recorded'
+}
+
 function WcsDetails({ job }: { job: Job }) {
   const solution = job.solution!
   const wcs = solution.wcs
@@ -818,6 +916,8 @@ function WcsDetails({ job }: { job: Job }) {
       <DataPair label="Units" value={`${wcs.cunit[0]} / ${wcs.cunit[1]}`} />
       <DataPair label="Distortion model" value={sip ? `SIP order ${sip.order} · ${forwardTerms} forward + ${inverseTerms} inverse coefficients` : 'Linear TAN · no SIP distortion'} />
       <DataPair label="Capture time" value={solution.capture_time ? new Date(solution.capture_time).toLocaleString() : 'Not recorded'} />
+      <DataPair label="Exposure" value={job.options.exposure_seconds != null ? `${job.options.exposure_seconds.toLocaleString()} seconds` : 'Not recorded'} />
+      <DataPair label="Observer" value={formatObserver(job.options)} />
       <DataPair label="Annotation catalog" value={solution.catalog_version ?? 'Not configured'} />
     </div>
     <div className="matrix-wrap">

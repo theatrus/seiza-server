@@ -21,6 +21,13 @@ export interface SolveOptions {
   max_stars?: number | null
   sip_order?: number | null
   capture_time?: string | null
+  exposure_seconds?: number | null
+  observer_latitude_deg?: number | null
+  observer_longitude_deg?: number | null
+  observer_altitude_m?: number | null
+  observer_itrf_m?: [number, number, number] | null
+  satellite_metadata_source?: 'explicit' | 'fits_header'
+  satellite_metadata_keywords?: string[]
 }
 
 export type SipCoefficient = [p: number, q: number, value: number]
@@ -112,8 +119,46 @@ export interface Annotations {
   catalog_version: string
   capture_time: string | null
   available?: Record<string, boolean>
+  unavailable_reasons?: Record<string, string>
   counts: Record<string, number>
   objects: OverlayObject[]
+  satellite_tracks?: SatelliteTrack[]
+  satellite_search?: SatelliteSearchSummary
+}
+
+export interface SatelliteTrackSegment {
+  start: [number, number]
+  end: [number, number]
+}
+
+export interface SatelliteTrack {
+  stable_id: string
+  label: string
+  name: string
+  norad_id: number | null
+  cospar_id: string | null
+  source: string
+  element_epoch_utc: string
+  element_age_seconds: number
+  sample_interval_seconds: number
+  maximum_apparent_rate_arcsec_per_second: number | null
+  segments: SatelliteTrackSegment[]
+  risk: {
+    level: 'low' | 'possible' | 'high'
+    score: number
+    maximum_sunlight_fraction: number
+    minimum_range_km: number
+    maximum_elevation_deg: number
+    clipped_length_px: number
+  }
+}
+
+export interface SatelliteSearchSummary {
+  catalog_source: string
+  catalog_retrieved_at: string | null
+  elements_considered: number
+  propagation_failures: number
+  stale_elements: number
 }
 
 export interface ValidationDonation {
@@ -493,10 +538,10 @@ export async function donateValidationImage(
   }, true))
 }
 
-export async function getAnnotations(url: string): Promise<Annotations> {
+export async function getAnnotations(url: string, satelliteTracks = false): Promise<Annotations> {
   const separator = url.includes('?') ? '&' : '?'
   return expectJson<Annotations>(await sessionFetch(
-    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150`,
+    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150&satellite_tracks=${satelliteTracks}`,
   ))
 }
 

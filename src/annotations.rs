@@ -147,6 +147,7 @@ impl AnnotationEngine {
             ("transients".into(), false),
             ("historical_transients".into(), false),
             ("minor_bodies".into(), false),
+            ("satellite_tracks".into(), false),
             ("grid".into(), true),
         ]);
 
@@ -225,6 +226,7 @@ impl AnnotationEngine {
             ("transients".into(), 0),
             ("historical_transients".into(), 0),
             ("minor_bodies".into(), 0),
+            ("satellite_tracks".into(), 0),
         ]);
         for object in &objects {
             available.insert(layer_name(&object.kind).to_owned(), true);
@@ -244,8 +246,11 @@ impl AnnotationEngine {
             },
             capture_time,
             available,
+            unavailable_reasons: BTreeMap::new(),
             counts,
             objects,
+            satellite_tracks: Vec::new(),
+            satellite_search: None,
         }
     }
 

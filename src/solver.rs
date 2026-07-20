@@ -1,5 +1,6 @@
 use crate::models::{
-    SolutionResponse, SolveHintSource, SolveMode, SolveOptions, SolveStatistics, WcsResponse,
+    SatelliteMetadataSource, SolutionResponse, SolveHintSource, SolveMode, SolveOptions,
+    SolveStatistics, WcsResponse,
 };
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
@@ -293,6 +294,10 @@ pub fn capture_time_from_bytes(
 pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename: &str) {
     options.hint_source = None;
     options.hint_keywords.clear();
+    options.satellite_metadata_keywords.clear();
+    let explicit_satellite_metadata = satellite_metadata_present(options);
+    options.satellite_metadata_source =
+        explicit_satellite_metadata.then_some(SatelliteMetadataSource::Explicit);
 
     let has_complete_explicit_hint = options.center_ra_deg.is_some()
         && options.center_dec_deg.is_some()
@@ -304,12 +309,7 @@ pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename:
     let Some(headers) = fits_headers(bytes, filename) else {
         return;
     };
-    if options.capture_time.is_none() {
-        options.capture_time = headers
-            .get("DATE-OBS")
-            .and_then(seiza_fits::HeaderValue::as_str)
-            .and_then(parse_capture_time);
-    }
+    prepare_satellite_metadata(options, &headers, explicit_satellite_metadata);
     if has_complete_explicit_hint
         || options.center_ra_deg.is_some()
         || options.center_dec_deg.is_some()
@@ -343,6 +343,178 @@ pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename:
         .chain(scale_keywords)
         .map(str::to_owned)
         .collect();
+}
+
+fn satellite_metadata_present(options: &SolveOptions) -> bool {
+    options.capture_time.is_some()
+        || options.exposure_seconds.is_some()
+        || options.observer_latitude_deg.is_some()
+        || options.observer_longitude_deg.is_some()
+        || options.observer_altitude_m.is_some()
+        || options.observer_itrf_m.is_some()
+}
+
+fn prepare_satellite_metadata(
+    options: &mut SolveOptions,
+    headers: &BTreeMap<String, seiza_fits::HeaderValue>,
+    explicit_satellite_metadata: bool,
+) {
+    let explicit_time = options.capture_time.is_some();
+    let explicit_duration = options.exposure_seconds.is_some();
+    let explicit_observer = options.observer_itrf_m.is_some()
+        || options.observer_latitude_deg.is_some()
+        || options.observer_longitude_deg.is_some();
+    let header_duration = ["XPOSURE", "EXPTIME", "EXPOSURE"]
+        .into_iter()
+        .find_map(|key| {
+            header_f64(headers, key)
+                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                .map(|seconds| (seconds, key))
+        });
+    let header_time_is_usable = headers
+        .get("TIMESYS")
+        .and_then(seiza_fits::HeaderValue::as_str)
+        .is_none_or(|value| value.eq_ignore_ascii_case("UTC"))
+        && headers
+            .get("TREFPOS")
+            .and_then(seiza_fits::HeaderValue::as_str)
+            .is_none_or(|value| value.to_ascii_uppercase().starts_with("TOP"));
+
+    if !explicit_duration && let Some((seconds, keyword)) = header_duration {
+        options.exposure_seconds = Some(seconds);
+        options.satellite_metadata_keywords.push(keyword.into());
+    }
+    if explicit_time
+        && options.exposure_seconds.is_none()
+        && let (Some(start), Some(end)) = (
+            fits_time(headers, "DATE-BEG"),
+            fits_time(headers, "DATE-END"),
+        )
+        && let Some(microseconds) = (end - start).num_microseconds()
+        && microseconds > 0
+    {
+        options.exposure_seconds = Some(microseconds as f64 / 1e6);
+        options
+            .satellite_metadata_keywords
+            .extend(["DATE-BEG", "DATE-END"].map(str::to_owned));
+    }
+
+    if !explicit_time && header_time_is_usable {
+        let duration = options.exposure_seconds;
+        let date_beg = fits_time(headers, "DATE-BEG");
+        let date_end = fits_time(headers, "DATE-END");
+        let date_avg = fits_time(headers, "DATE-AVG");
+        let date_obs = fits_time(headers, "DATE-OBS");
+        let resolved = if let (Some(start), Some(end)) = (date_beg, date_end) {
+            let seconds = (end - start)
+                .num_microseconds()
+                .map(|value| value as f64 / 1e6);
+            seconds
+                .filter(|seconds| *seconds > 0.0)
+                .map(|seconds| (start, seconds, vec!["DATE-BEG", "DATE-END"]))
+        } else if let (Some(midpoint), Some(seconds)) = (date_avg, duration) {
+            subtract_seconds(midpoint, seconds / 2.0)
+                .map(|start| (start, seconds, vec!["DATE-AVG"]))
+        } else if let (Some(start), Some(seconds)) = (date_obs.or(date_beg), duration) {
+            let keyword = if date_obs.is_some() {
+                "DATE-OBS"
+            } else {
+                "DATE-BEG"
+            };
+            Some((start, seconds, vec![keyword]))
+        } else if let (Some(end), Some(seconds)) = (date_end, duration) {
+            subtract_seconds(end, seconds).map(|start| (start, seconds, vec!["DATE-END"]))
+        } else {
+            None
+        };
+        if let Some((start, seconds, keywords)) = resolved {
+            options.capture_time = Some(start);
+            options.exposure_seconds = Some(seconds);
+            for keyword in keywords {
+                push_keyword(&mut options.satellite_metadata_keywords, keyword);
+            }
+        } else if let Some(capture_time) = date_obs {
+            // A lone DATE-OBS is still useful for transient scoping and
+            // minor-body propagation, even though it is insufficient for a
+            // satellite track without one exposure duration.
+            options.capture_time = Some(capture_time);
+            push_keyword(&mut options.satellite_metadata_keywords, "DATE-OBS");
+        }
+    }
+
+    if !explicit_observer {
+        let itrf = [
+            header_f64(headers, "OBSGEO-X"),
+            header_f64(headers, "OBSGEO-Y"),
+            header_f64(headers, "OBSGEO-Z"),
+        ];
+        if let [Some(x), Some(y), Some(z)] = itrf {
+            options.observer_itrf_m = Some([x, y, z]);
+            options
+                .satellite_metadata_keywords
+                .extend(["OBSGEO-X", "OBSGEO-Y", "OBSGEO-Z"].map(str::to_owned));
+        } else if let (Some(latitude), Some(longitude), Some(altitude)) = (
+            header_f64(headers, "OBSGEO-B"),
+            header_f64(headers, "OBSGEO-L"),
+            header_f64(headers, "OBSGEO-H"),
+        ) {
+            options.observer_latitude_deg = Some(latitude);
+            options.observer_longitude_deg = Some(longitude);
+            options.observer_altitude_m = Some(altitude);
+            options
+                .satellite_metadata_keywords
+                .extend(["OBSGEO-B", "OBSGEO-L", "OBSGEO-H"].map(str::to_owned));
+        } else if let (Some(latitude), Some(longitude)) = (
+            header_f64(headers, "SITELAT"),
+            header_f64(headers, "SITELONG"),
+        ) {
+            options.observer_latitude_deg = Some(latitude);
+            options.observer_longitude_deg = Some(longitude);
+            options.observer_altitude_m = Some(header_f64(headers, "SITEALT").unwrap_or(0.0));
+            options
+                .satellite_metadata_keywords
+                .extend(["SITELAT", "SITELONG"].map(str::to_owned));
+            if headers.contains_key("SITEALT") {
+                options.satellite_metadata_keywords.push("SITEALT".into());
+            }
+        }
+    }
+
+    if !options.satellite_metadata_keywords.is_empty() {
+        options.satellite_metadata_source = Some(if explicit_satellite_metadata {
+            SatelliteMetadataSource::Explicit
+        } else {
+            SatelliteMetadataSource::FitsHeader
+        });
+    }
+}
+
+fn fits_time(
+    headers: &BTreeMap<String, seiza_fits::HeaderValue>,
+    key: &str,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    headers
+        .get(key)
+        .and_then(seiza_fits::HeaderValue::as_str)
+        .and_then(parse_capture_time)
+}
+
+fn subtract_seconds(
+    time: chrono::DateTime<chrono::Utc>,
+    seconds: f64,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    if !seconds.is_finite() || seconds <= 0.0 || seconds > i64::MAX as f64 / 1e6 {
+        return None;
+    }
+    time.checked_sub_signed(chrono::TimeDelta::microseconds(
+        (seconds * 1e6).round() as i64
+    ))
+}
+
+fn push_keyword(keywords: &mut Vec<String>, keyword: &str) {
+    if !keywords.iter().any(|existing| existing == keyword) {
+        keywords.push(keyword.to_owned());
+    }
 }
 
 fn fits_headers(bytes: &[u8], filename: &str) -> Option<BTreeMap<String, seiza_fits::HeaderValue>> {
@@ -563,6 +735,85 @@ mod tests {
         assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
         assert_eq!(options.hint_keywords, ["RA", "DEC", "PIXSCALE"]);
         assert!(options.capture_time.is_some());
+    }
+
+    #[test]
+    fn promotes_single_exposure_bounds_and_geodetic_observer_from_fits() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "DATE-BEG= '2026-07-19T04:05:06Z'",
+            "DATE-END= '2026-07-19T04:05:36Z'",
+            "OBSGEO-B=                 37.3",
+            "OBSGEO-L=               -122.0",
+            "OBSGEO-H=                 50.0",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert_eq!(
+            options.capture_time.unwrap().to_rfc3339(),
+            "2026-07-19T04:05:06+00:00"
+        );
+        assert_eq!(options.exposure_seconds, Some(30.0));
+        assert_eq!(options.observer_latitude_deg, Some(37.3));
+        assert_eq!(options.observer_longitude_deg, Some(-122.0));
+        assert_eq!(options.observer_altitude_m, Some(50.0));
+        assert_eq!(
+            options.satellite_metadata_source,
+            Some(SatelliteMetadataSource::FitsHeader)
+        );
+        assert_eq!(
+            options.satellite_metadata_keywords,
+            ["DATE-BEG", "DATE-END", "OBSGEO-B", "OBSGEO-L", "OBSGEO-H"]
+        );
+    }
+
+    #[test]
+    fn date_avg_is_normalized_to_shutter_open_time() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "DATE-AVG= '2026-07-19T04:05:21Z'",
+            "EXPTIME =                 30.0",
+            "SITELAT =                 37.3",
+            "SITELONG=               -122.0",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert_eq!(
+            options.capture_time.unwrap().to_rfc3339(),
+            "2026-07-19T04:05:06+00:00"
+        );
+        assert_eq!(options.exposure_seconds, Some(30.0));
+        assert!(
+            options
+                .satellite_metadata_keywords
+                .contains(&"DATE-AVG".into())
+        );
+    }
+
+    #[test]
+    fn non_utc_fits_time_is_not_used_for_satellite_prediction() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "TIMESYS = 'TAI'",
+            "DATE-OBS= '2026-07-19T04:05:06'",
+            "EXPTIME =                 30.0",
+            "SITELAT =                 37.3",
+            "SITELONG=               -122.0",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert_eq!(options.capture_time, None);
+        assert_eq!(options.exposure_seconds, Some(30.0));
+        assert_eq!(options.observer_latitude_deg, Some(37.3));
     }
 
     #[test]

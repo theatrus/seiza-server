@@ -4,12 +4,14 @@ use crate::{
     config::{AuthMode, Config, JobBackend},
     identity::{IdentityRepository, identity_repository},
     models::{
-        AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
-        SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
+        AnnotationResponse, AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus,
+        SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
+        WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
+    satellites::{SatelliteEngine, SatellitePrediction, track_overlay_object},
     solver::{
         FITS_HEADER_PROBE_BYTES, SolverEngine, dimensions_from_bytes, full_png,
         prepare_solve_options, preview_png,
@@ -75,6 +77,7 @@ pub struct AppState {
     store: Arc<dyn ObjectStore>,
     solver: SolverEngine,
     annotations: AnnotationEngine,
+    satellites: SatelliteEngine,
     upload_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     embedded_worker_wakeup: Arc<Notify>,
 }
@@ -101,6 +104,14 @@ impl AppState {
             config.transient_catalog_path.as_deref(),
             config.minor_body_catalog_path.as_deref(),
         );
+        let satellites = if config.satellite_tracks_enabled {
+            SatelliteEngine::orbital(
+                config.satellite_cache_dir.clone(),
+                config.satellite_cache_max_bytes,
+            )?
+        } else {
+            SatelliteEngine::disabled()
+        };
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
             config: Arc::new(config),
@@ -111,6 +122,7 @@ impl AppState {
             store,
             solver,
             annotations,
+            satellites,
             upload_locks: Arc::new(Mutex::new(HashMap::new())),
             embedded_worker_wakeup: Arc::new(Notify::new()),
         })
@@ -400,6 +412,56 @@ impl AppState {
         })
     }
 
+    async fn annotations_for(
+        &self,
+        public_id: &str,
+        solution: &SolutionResponse,
+        options: &SolveOptions,
+        annotation_options: &AnnotationOptions,
+        satellite_tracks: bool,
+    ) -> AnnotationResponse {
+        let mut annotations = self.annotations.annotate(
+            public_id,
+            solution,
+            options.capture_time,
+            annotation_options,
+        );
+        if !satellite_tracks {
+            return annotations;
+        }
+        match self.satellites.predict(public_id, solution, options).await {
+            SatellitePrediction::Unavailable(reason) => {
+                annotations
+                    .unavailable_reasons
+                    .insert("satellite_tracks".into(), reason);
+            }
+            SatellitePrediction::Complete(result) => {
+                let all_elements_stale = result.all_elements_stale();
+                annotations.catalog_version = if annotations.catalog_version == "unconfigured" {
+                    result.catalog_version.clone()
+                } else {
+                    format!("{};{}", annotations.catalog_version, result.catalog_version)
+                };
+                annotations.satellite_search = Some(result.summary);
+                if all_elements_stale {
+                    annotations.unavailable_reasons.insert(
+                        "satellite_tracks".into(),
+                        "No cached orbital elements are close enough to this exposure time.".into(),
+                    );
+                } else {
+                    annotations
+                        .available
+                        .insert("satellite_tracks".into(), true);
+                    annotations
+                        .counts
+                        .insert("satellite_tracks".into(), result.tracks.len());
+                    annotations.satellite_tracks = result.tracks;
+                }
+            }
+        }
+        annotations
+    }
+
     async fn submit(
         &self,
         client: Client,
@@ -558,6 +620,7 @@ impl AppState {
             &header_prefix,
             &upload.original_filename,
         );
+        upload.options.validate().map_err(ApiError::bad_request)?;
         let compose_started = Instant::now();
         upload
             .compose(&self.store)
@@ -885,10 +948,12 @@ async fn resolve_solve(
             "the retained upload is no longer available; upload the image again",
         ));
     }
-    if options.capture_time.is_none() {
-        options.capture_time = job.options.capture_time;
-    }
+    let overrides_satellite_metadata = merge_resolve_satellite_metadata(&mut options, &job.options);
     prepare_solve_options(&mut options, &[], &job.original_filename);
+    if !overrides_satellite_metadata {
+        options.satellite_metadata_source = job.options.satellite_metadata_source;
+        options.satellite_metadata_keywords = job.options.satellite_metadata_keywords.clone();
+    }
     options.validate().map_err(ApiError::bad_request)?;
     state
         .limiter
@@ -937,6 +1002,36 @@ async fn resolve_solve(
         }
     };
     Ok((StatusCode::ACCEPTED, Json(state.job_response(&resolved)?)))
+}
+
+fn merge_resolve_satellite_metadata(options: &mut SolveOptions, previous: &SolveOptions) -> bool {
+    if options.capture_time.is_none() {
+        options.capture_time = previous.capture_time;
+    }
+    if options.exposure_seconds.is_none() {
+        options.exposure_seconds = previous.exposure_seconds;
+    }
+
+    // Geodetic and ITRF coordinates are alternate representations of one site.
+    // If the re-solve supplies either representation, do not merge fields from
+    // the other representation back in from the previous solve.
+    let overrides_observer = options.observer_latitude_deg.is_some()
+        || options.observer_longitude_deg.is_some()
+        || options.observer_altitude_m.is_some()
+        || options.observer_itrf_m.is_some();
+    if !overrides_observer {
+        options.observer_latitude_deg = previous.observer_latitude_deg;
+        options.observer_longitude_deg = previous.observer_longitude_deg;
+        options.observer_altitude_m = previous.observer_altitude_m;
+        options.observer_itrf_m = previous.observer_itrf_m;
+    }
+
+    options.capture_time != previous.capture_time
+        || options.exposure_seconds != previous.exposure_seconds
+        || options.observer_latitude_deg != previous.observer_latitude_deg
+        || options.observer_longitude_deg != previous.observer_longitude_deg
+        || options.observer_altitude_m != previous.observer_altitude_m
+        || options.observer_itrf_m != previous.observer_itrf_m
 }
 
 #[derive(Debug, Deserialize)]
@@ -1093,12 +1188,15 @@ async fn get_solve_annotations(
     let solution = job.solution.as_ref().ok_or_else(|| {
         ApiError::artifact_not_ready("the solve has not produced annotations yet")
     })?;
-    let annotations = state.annotations.annotate(
-        &public_id,
-        solution,
-        job.options.capture_time,
-        &query.options(),
-    );
+    let annotations = state
+        .annotations_for(
+            &public_id,
+            solution,
+            &job.options,
+            &query.options(),
+            query.satellite_tracks,
+        )
+        .await;
     cached_json_response(
         &headers,
         "public, max-age=300, stale-while-revalidate=3600",
@@ -1123,15 +1221,22 @@ async fn get_solve_overlay(
         .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced an overlay yet"))?;
     let mut solution = stored_solution.clone();
     if query.objects {
-        solution.objects = state
-            .annotations
-            .annotate(
+        let annotations = state
+            .annotations_for(
                 &public_id,
                 stored_solution,
-                job.options.capture_time,
+                &job.options,
                 &query.annotations.options(),
+                query.annotations.satellite_tracks,
             )
-            .objects;
+            .await;
+        solution.objects = annotations.objects;
+        solution.objects.extend(
+            annotations
+                .satellite_tracks
+                .iter()
+                .map(track_overlay_object),
+        );
     }
     let content = state
         .store
@@ -1189,6 +1294,8 @@ struct AnnotationQuery {
     transients: bool,
     #[serde(default = "default_true")]
     minor_bodies: bool,
+    #[serde(default = "default_true")]
+    satellite_tracks: bool,
     #[serde(default)]
     historical_transients: bool,
     #[serde(default = "default_field_star_magnitude")]
@@ -2223,6 +2330,43 @@ mod tests {
 
     #[derive(Default)]
     struct CapturingEmailSender(Mutex<Vec<SignInEmail>>);
+
+    #[test]
+    fn re_solve_can_replace_itrf_observer_with_geodetic_coordinates() {
+        let previous = SolveOptions {
+            observer_itrf_m: Some([1_112_000.0, -4_841_000.0, 3_985_000.0]),
+            satellite_metadata_source: Some(crate::models::SatelliteMetadataSource::FitsHeader),
+            satellite_metadata_keywords: vec![
+                "OBSGEO-X".into(),
+                "OBSGEO-Y".into(),
+                "OBSGEO-Z".into(),
+            ],
+            ..SolveOptions::default()
+        };
+        let mut resolved = SolveOptions {
+            observer_latitude_deg: Some(37.3),
+            observer_longitude_deg: Some(-122.0),
+            observer_altitude_m: Some(50.0),
+            ..SolveOptions::default()
+        };
+
+        assert!(merge_resolve_satellite_metadata(&mut resolved, &previous));
+        assert_eq!(resolved.observer_itrf_m, None);
+        resolved.validate().unwrap();
+    }
+
+    #[test]
+    fn re_solve_inherits_an_unspecified_observer_as_one_coordinate_group() {
+        let previous = SolveOptions {
+            observer_itrf_m: Some([1_112_000.0, -4_841_000.0, 3_985_000.0]),
+            ..SolveOptions::default()
+        };
+        let mut resolved = SolveOptions::default();
+
+        assert!(!merge_resolve_satellite_metadata(&mut resolved, &previous));
+        assert_eq!(resolved.observer_itrf_m, previous.observer_itrf_m);
+        resolved.validate().unwrap();
+    }
 
     #[async_trait::async_trait]
     impl EmailSender for CapturingEmailSender {
@@ -3558,6 +3702,9 @@ mod tests {
             star_identifier_catalog_path: None,
             transient_catalog_path: None,
             minor_body_catalog_path: None,
+            satellite_tracks_enabled: false,
+            satellite_cache_dir: root.join("satellites"),
+            satellite_cache_max_bytes: seiza_satellites::DEFAULT_CELESTRAK_CACHE_SIZE_LIMIT_BYTES,
             job_backend: JobBackend::Sqlx,
             sql_database_url: format!("sqlite://{}?mode=rwc", root.join("jobs.sqlite3").display()),
             dynamodb_table: None,
