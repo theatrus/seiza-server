@@ -964,42 +964,7 @@ async fn resolve_solve(
             "the retained upload is no longer available; upload the image again",
         ));
     }
-    let overrides_satellite_metadata = options
-        .capture_time
-        .is_some_and(|value| Some(value) != job.options.capture_time)
-        || options
-            .exposure_seconds
-            .is_some_and(|value| Some(value) != job.options.exposure_seconds)
-        || options
-            .observer_latitude_deg
-            .is_some_and(|value| Some(value) != job.options.observer_latitude_deg)
-        || options
-            .observer_longitude_deg
-            .is_some_and(|value| Some(value) != job.options.observer_longitude_deg)
-        || options
-            .observer_altitude_m
-            .is_some_and(|value| Some(value) != job.options.observer_altitude_m)
-        || options
-            .observer_itrf_m
-            .is_some_and(|value| Some(value) != job.options.observer_itrf_m);
-    if options.capture_time.is_none() {
-        options.capture_time = job.options.capture_time;
-    }
-    if options.exposure_seconds.is_none() {
-        options.exposure_seconds = job.options.exposure_seconds;
-    }
-    if options.observer_latitude_deg.is_none() {
-        options.observer_latitude_deg = job.options.observer_latitude_deg;
-    }
-    if options.observer_longitude_deg.is_none() {
-        options.observer_longitude_deg = job.options.observer_longitude_deg;
-    }
-    if options.observer_altitude_m.is_none() {
-        options.observer_altitude_m = job.options.observer_altitude_m;
-    }
-    if options.observer_itrf_m.is_none() {
-        options.observer_itrf_m = job.options.observer_itrf_m;
-    }
+    let overrides_satellite_metadata = merge_resolve_satellite_metadata(&mut options, &job.options);
     prepare_solve_options(&mut options, &[], &job.original_filename);
     if !overrides_satellite_metadata {
         options.satellite_metadata_source = job.options.satellite_metadata_source;
@@ -1053,6 +1018,36 @@ async fn resolve_solve(
         }
     };
     Ok((StatusCode::ACCEPTED, Json(state.job_response(&resolved)?)))
+}
+
+fn merge_resolve_satellite_metadata(options: &mut SolveOptions, previous: &SolveOptions) -> bool {
+    if options.capture_time.is_none() {
+        options.capture_time = previous.capture_time;
+    }
+    if options.exposure_seconds.is_none() {
+        options.exposure_seconds = previous.exposure_seconds;
+    }
+
+    // Geodetic and ITRF coordinates are alternate representations of one site.
+    // If the re-solve supplies either representation, do not merge fields from
+    // the other representation back in from the previous solve.
+    let overrides_observer = options.observer_latitude_deg.is_some()
+        || options.observer_longitude_deg.is_some()
+        || options.observer_altitude_m.is_some()
+        || options.observer_itrf_m.is_some();
+    if !overrides_observer {
+        options.observer_latitude_deg = previous.observer_latitude_deg;
+        options.observer_longitude_deg = previous.observer_longitude_deg;
+        options.observer_altitude_m = previous.observer_altitude_m;
+        options.observer_itrf_m = previous.observer_itrf_m;
+    }
+
+    options.capture_time != previous.capture_time
+        || options.exposure_seconds != previous.exposure_seconds
+        || options.observer_latitude_deg != previous.observer_latitude_deg
+        || options.observer_longitude_deg != previous.observer_longitude_deg
+        || options.observer_altitude_m != previous.observer_altitude_m
+        || options.observer_itrf_m != previous.observer_itrf_m
 }
 
 #[derive(Debug, Deserialize)]
@@ -2351,6 +2346,43 @@ mod tests {
 
     #[derive(Default)]
     struct CapturingEmailSender(Mutex<Vec<SignInEmail>>);
+
+    #[test]
+    fn re_solve_can_replace_itrf_observer_with_geodetic_coordinates() {
+        let previous = SolveOptions {
+            observer_itrf_m: Some([1_112_000.0, -4_841_000.0, 3_985_000.0]),
+            satellite_metadata_source: Some(crate::models::SatelliteMetadataSource::FitsHeader),
+            satellite_metadata_keywords: vec![
+                "OBSGEO-X".into(),
+                "OBSGEO-Y".into(),
+                "OBSGEO-Z".into(),
+            ],
+            ..SolveOptions::default()
+        };
+        let mut resolved = SolveOptions {
+            observer_latitude_deg: Some(37.3),
+            observer_longitude_deg: Some(-122.0),
+            observer_altitude_m: Some(50.0),
+            ..SolveOptions::default()
+        };
+
+        assert!(merge_resolve_satellite_metadata(&mut resolved, &previous));
+        assert_eq!(resolved.observer_itrf_m, None);
+        resolved.validate().unwrap();
+    }
+
+    #[test]
+    fn re_solve_inherits_an_unspecified_observer_as_one_coordinate_group() {
+        let previous = SolveOptions {
+            observer_itrf_m: Some([1_112_000.0, -4_841_000.0, 3_985_000.0]),
+            ..SolveOptions::default()
+        };
+        let mut resolved = SolveOptions::default();
+
+        assert!(!merge_resolve_satellite_metadata(&mut resolved, &previous));
+        assert_eq!(resolved.observer_itrf_m, previous.observer_itrf_m);
+        resolved.validate().unwrap();
+    }
 
     #[async_trait::async_trait]
     impl EmailSender for CapturingEmailSender {

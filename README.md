@@ -28,9 +28,9 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with the Seiza 0.10 release candidate, including catalog-seeded matching for source lists
-  whose brightness ranking is unreliable. Optional SIP orders 2–5 fit forward
-  and inverse optical-distortion polynomials after the accepted linear
+  solving with Seiza 0.10.0, including catalog-seeded matching for source
+  lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
+  forward and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
   reused across jobs, including fine-scale fields down to 0.1"/px.
   Seiza automatically uses compact detection for 8-bit uploads and its
