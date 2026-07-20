@@ -59,8 +59,11 @@ disappears on a process restart.
   those values automatically; JPEG and other image uploads may supply the same
   optional fields explicitly. Seiza resolves epoch-appropriate orbital elements
   on demand from the durable cache, current CelesTrak data, its rolling mirror,
-  or IAU SatChecker. The server bounds lookup to 20 seconds, and prediction
-  failure never changes the plate-solve result.
+  or IAU SatChecker. While the uploaded image is retained, Seiza also checks
+  each predicted corridor for supporting pixels without treating that evidence
+  as proof of the satellite's identity. Result pages link identified NORAD
+  candidates to N2YO. The server bounds lookup to 20 seconds, and prediction or
+  pixel-check failure never changes the plate-solve result.
 
 ## Quick start
 
@@ -307,7 +310,11 @@ exposure. Orbital data is selected for the exposure epoch: recent captures use
 current CelesTrak elements, while older captures try the durable cache, Seiza's
 rolling mirror, and IAU SatChecker in that order. The complete lookup is limited
 to 20 seconds and is optional context, so a timeout never changes a successful
-plate solve.
+plate solve. If the original image is still retained, the server also runs
+Seiza's bounded pixel-trail alignment inside each predicted corridor and
+returns that evidence separately from the orbital candidate. An expired image,
+unsupported decoder, or detector failure leaves the prediction intact and is
+reported as unavailable pixel evidence.
 
 A position hint avoids the whole-sky path:
 

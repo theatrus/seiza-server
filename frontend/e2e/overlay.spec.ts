@@ -410,9 +410,14 @@ test('draws and explains predicted satellite tracks when exposure metadata is co
           element_epoch_utc: '2026-07-13T03:00:00Z', element_age_seconds: 3906,
           sample_interval_seconds: 1, maximum_apparent_rate_arcsec_per_second: 185.4,
           segments: [{ start: [110, 780], end: [900, 260] }],
+          pixel_alignment: {
+            status: 'detected', segments: [{ start: [118, 775], end: [908, 255] }],
+            mean_normal_offset_px: 9.4, angle_delta_deg: 0.2, contrast_adu: 42,
+            contrast_sigma: 5.8, continuity: 0.97, coverage: 0.99, search_radius_px: 32,
+          },
           risk: { level: 'possible', score: 0.48, maximum_sunlight_fraction: 0.82, minimum_range_km: 612, maximum_elevation_deg: 48.3, clipped_length_px: 945 },
         }],
-        satellite_search: { catalog_source: 'https://celestrak.org/test', catalog_retrieved_at: '2026-07-13T03:30:00Z', elements_considered: 12000, propagation_failures: 2, stale_elements: 0 },
+        satellite_search: { catalog_source: 'https://celestrak.org/test', catalog_retrieved_at: '2026-07-13T03:30:00Z', elements_considered: 12000, propagation_failures: 2, stale_elements: 0, pixel_alignment_attempted: true, pixel_aligned: 1 },
       }),
     })
   })
@@ -421,10 +426,14 @@ test('draws and explains predicted satellite tracks when exposure metadata is co
   const track = page.locator('[data-kind="satellite"]')
   await expect(page.getByRole('button', { name: 'Satellite tracks · 1' })).toBeEnabled()
   await expect(track).toBeVisible()
-  await expect(track.locator('.seiza-overlay__marker--outline')).toHaveCSS('stroke', 'rgb(255, 209, 102)')
+  await expect(track.locator('[data-outline-role="predicted-track"]')).toHaveCSS('stroke', 'rgb(255, 209, 102)')
+  await expect(track.locator('[data-outline-role="pixel-aligned-track"]')).toHaveCSS('stroke', 'rgb(124, 255, 107)')
   await expect(page.getByText('Predicted satellite crossings · 1')).toBeVisible()
   await page.getByText('Predicted satellite crossings · 1').click()
   await expect(page.locator('.satellite-track-list strong', { hasText: 'ISS (ZARYA) [25544]' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'ISS (ZARYA) [25544]' })).toHaveAttribute('href', 'https://www.n2yo.com/satellite/?s=25544')
+  await expect(page.getByText('pixel match', { exact: true })).toBeVisible()
+  await expect(page.getByText(/Pixel evidence supports 1 of 1 predicted crossing/)).toBeVisible()
   await expect(page.getByText('possible trail risk')).toBeVisible()
   await expect(page.getByText(/Checked 12,000 orbital records/)).toBeVisible()
 

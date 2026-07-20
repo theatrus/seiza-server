@@ -11,7 +11,9 @@ use crate::{
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
-    satellites::{SatelliteEngine, SatellitePrediction, track_overlay_object},
+    satellites::{
+        SatelliteEngine, SatellitePixelSource, SatellitePrediction, track_overlay_object,
+    },
     solver::{
         FITS_HEADER_PROBE_BYTES, SolverEngine, dimensions_from_bytes, full_png,
         prepare_solve_options, preview_png,
@@ -415,6 +417,7 @@ impl AppState {
     async fn annotations_for(
         &self,
         public_id: &str,
+        job: &JobRecord,
         solution: &SolutionResponse,
         options: &SolveOptions,
         annotation_options: &AnnotationOptions,
@@ -429,7 +432,18 @@ impl AppState {
         if !satellite_tracks {
             return annotations;
         }
-        match self.satellites.predict(public_id, solution, options).await {
+        let (pixel_source, pixel_alignment_error) = self.satellite_pixel_source(job).await;
+        match self
+            .satellites
+            .predict(
+                public_id,
+                solution,
+                options,
+                pixel_source,
+                pixel_alignment_error,
+            )
+            .await
+        {
             SatellitePrediction::Unavailable(reason) => {
                 annotations
                     .unavailable_reasons
@@ -460,6 +474,39 @@ impl AppState {
             }
         }
         annotations
+    }
+
+    async fn satellite_pixel_source(
+        &self,
+        job: &JobRecord,
+    ) -> (Option<SatellitePixelSource>, Option<String>) {
+        if !self.input_available(job) {
+            return (
+                None,
+                Some(
+                    "The uploaded image has expired; pixel trail detection was not evaluated."
+                        .into(),
+                ),
+            );
+        }
+        match self.store.get(job.input_object_key()).await {
+            Ok(bytes) => (
+                Some(SatellitePixelSource {
+                    bytes,
+                    filename: job.original_filename.clone(),
+                }),
+                None,
+            ),
+            Err(error) => {
+                tracing::warn!(job_id = %job.id, %error, "could not load image for satellite pixel alignment");
+                (
+                    None,
+                    Some(
+                        "The retained image could not be loaded for pixel trail detection.".into(),
+                    ),
+                )
+            }
+        }
     }
 
     async fn submit(
@@ -1191,6 +1238,7 @@ async fn get_solve_annotations(
     let annotations = state
         .annotations_for(
             &public_id,
+            &job,
             solution,
             &job.options,
             &query.options(),
@@ -1224,6 +1272,7 @@ async fn get_solve_overlay(
         let annotations = state
             .annotations_for(
                 &public_id,
+                &job,
                 stored_solution,
                 &job.options,
                 &query.annotations.options(),

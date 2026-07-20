@@ -1,12 +1,20 @@
-use crate::models::{
-    OverlayContour, OverlayObject, OverlayOutline, SatelliteMetadataSource,
-    SatelliteSearchSummaryResponse, SatelliteTrackResponse, SatelliteTrackSegment,
-    SatelliteTrailRiskResponse, SolutionResponse, SolveOptions,
+use crate::{
+    models::{
+        OverlayContour, OverlayObject, OverlayOutline, SatelliteMetadataSource,
+        SatellitePixelAlignmentResponse, SatelliteSearchSummaryResponse, SatelliteTrackResponse,
+        SatelliteTrackSegment, SatelliteTrailRiskResponse, SolutionResponse, SolveOptions,
+    },
+    solver::decode_monochrome_u16,
 };
+use bytes::Bytes;
 use seiza_satellites::{
     BrightTrailRiskLevel, BrightTrailRiskOptions, CacheState, ExposureProvenance, ObserverLocation,
     OrbitalCatalogLoad, OrbitalCatalogProvider, OrbitalCatalogSource, SatelliteCatalog,
     SatelliteTrackAnalysis, SingleExposure, TrackOptions, UtcTimestamp,
+    trail_alignment::{
+        PIXEL_TRAIL_ALIGNMENT_VERSION, PixelTrailAligner, PixelTrailAlignment,
+        PixelTrailAlignmentConfig, PixelTrailAlignmentStatus, PixelTrailNotEvaluatedReason,
+    },
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -50,21 +58,26 @@ pub struct SatellitePredictionResult {
     pub summary: SatelliteSearchSummaryResponse,
 }
 
+pub struct SatellitePixelSource {
+    pub bytes: Bytes,
+    pub filename: String,
+}
+
 #[derive(Default)]
 struct PredictionCache {
-    entries: HashMap<(String, String), SatellitePredictionResult>,
-    order: VecDeque<(String, String)>,
+    entries: HashMap<(String, String, bool), SatellitePredictionResult>,
+    order: VecDeque<(String, String, bool)>,
 }
 
 impl PredictionCache {
-    fn get(&mut self, key: &(String, String)) -> Option<SatellitePredictionResult> {
+    fn get(&mut self, key: &(String, String, bool)) -> Option<SatellitePredictionResult> {
         let result = self.entries.get(key)?.clone();
         self.order.retain(|existing| existing != key);
         self.order.push_back(key.clone());
         Some(result)
     }
 
-    fn insert(&mut self, key: (String, String), result: SatellitePredictionResult) {
+    fn insert(&mut self, key: (String, String, bool), result: SatellitePredictionResult) {
         self.entries.insert(key.clone(), result);
         self.order.retain(|existing| existing != &key);
         self.order.push_back(key);
@@ -122,6 +135,8 @@ impl SatelliteEngine {
         public_id: &str,
         solution: &SolutionResponse,
         options: &SolveOptions,
+        pixel_source: Option<SatellitePixelSource>,
+        pixel_alignment_error: Option<String>,
     ) -> SatellitePrediction {
         if !self.is_enabled() {
             return SatellitePrediction::Unavailable(
@@ -168,7 +183,11 @@ impl SatelliteEngine {
         let wcs = solution.wcs.to_seiza();
         let dimensions = (solution.image_width, solution.image_height);
         let fingerprint = loaded.catalog.fingerprint().content_sha256;
-        let cache_key = (public_id.to_owned(), fingerprint.clone());
+        let cache_key = (
+            public_id.to_owned(),
+            fingerprint.clone(),
+            pixel_source.is_some(),
+        );
         if let Some(cached) = self
             .prediction_cache
             .lock()
@@ -187,12 +206,62 @@ impl SatelliteEngine {
             return SatellitePrediction::Complete(cached);
         }
         let catalog = loaded.catalog.clone();
-        let search = match tokio::task::spawn_blocking(move || {
-            catalog.tracks_in_footprint(&wcs, dimensions, &exposure, &TrackOptions::default())
+        let analyzed = match tokio::task::spawn_blocking(move || {
+            let search = catalog.tracks_in_footprint(
+                &wcs,
+                dimensions,
+                &exposure,
+                &TrackOptions::default(),
+            )?;
+            let (pixel_aligner, pixel_alignment_error) = match pixel_source {
+                Some(source) => match decode_monochrome_u16(&source.bytes, &source.filename) {
+                    Ok(frame)
+                        if (frame.width, frame.height)
+                            == (dimensions.0 as usize, dimensions.1 as usize) =>
+                    {
+                        match PixelTrailAligner::from_u16(
+                            frame.width,
+                            frame.height,
+                            &frame.pixels,
+                            frame.adu_per_stored_unit,
+                            PixelTrailAlignmentConfig::default(),
+                        ) {
+                            Ok(aligner) => (Some(aligner), pixel_alignment_error),
+                            Err(error) => (
+                                None,
+                                Some(format!(
+                                    "Pixel trail detection could not initialize: {error}"
+                                )),
+                            ),
+                        }
+                    }
+                    Ok(frame) => (
+                        None,
+                        Some(format!(
+                            "Pixel trail detection skipped an image-size mismatch: decoded {}×{}, solved {}×{}.",
+                            frame.width, frame.height, dimensions.0, dimensions.1
+                        )),
+                    ),
+                    Err(error) => (
+                        None,
+                        Some(format!("Pixel trail detection could not decode the image: {error}")),
+                    ),
+                },
+                None => (None, pixel_alignment_error),
+            };
+            let pixel_alignment_attempted = pixel_aligner.is_some();
+            Ok::<_, seiza_satellites::Error>((
+                search.into_analysis(
+                    &BrightTrailRiskOptions::default(),
+                    pixel_aligner.as_ref(),
+                ),
+                pixel_alignment_attempted,
+                pixel_alignment_error,
+            ))
         })
         .await
         {
-            Ok(Ok(search)) => search,
+            Ok(Ok(analyzed)) => analyzed,
             Ok(Err(error)) => {
                 tracing::warn!(%error, "satellite propagation failed for solved footprint");
                 return SatellitePrediction::Unavailable(
@@ -206,7 +275,17 @@ impl SatelliteEngine {
                 );
             }
         };
-        let analysis = search.into_analysis(&BrightTrailRiskOptions::default(), None);
+        let (analysis, pixel_alignment_attempted, pixel_alignment_error) = analyzed;
+        let pixel_aligned = analysis
+            .tracks
+            .iter()
+            .filter(|track| {
+                track
+                    .pixel_alignment
+                    .as_ref()
+                    .is_some_and(PixelTrailAlignment::detected)
+            })
+            .count();
         let tracks = analysis
             .tracks
             .into_iter()
@@ -214,7 +293,11 @@ impl SatelliteEngine {
             .map(|(index, track)| track_response(index, track))
             .collect();
         let result = SatellitePredictionResult {
-            catalog_version: format!("satellites:{fingerprint}"),
+            catalog_version: if pixel_alignment_attempted {
+                format!("satellites:{fingerprint};pixel-trail:{PIXEL_TRAIL_ALIGNMENT_VERSION}")
+            } else {
+                format!("satellites:{fingerprint}")
+            },
             tracks,
             summary: SatelliteSearchSummaryResponse {
                 catalog_source: loaded.catalog.source().to_owned(),
@@ -222,6 +305,9 @@ impl SatelliteEngine {
                 elements_considered: analysis.elements_considered,
                 propagation_failures: analysis.propagation_failures,
                 stale_elements: analysis.stale_elements,
+                pixel_alignment_attempted,
+                pixel_aligned,
+                pixel_alignment_error,
             },
         };
         self.prediction_cache
@@ -259,8 +345,18 @@ impl From<OrbitalCatalogLoad> for LoadedCatalog {
 }
 
 pub fn track_overlay_object(track: &SatelliteTrackResponse) -> OverlayObject {
-    let representative = track
-        .segments
+    let aligned_segments = track
+        .pixel_alignment
+        .as_ref()
+        .filter(|alignment| alignment.status == "detected")
+        .map(|alignment| alignment.segments.as_slice())
+        .unwrap_or_default();
+    let representative_segments = if aligned_segments.is_empty() {
+        track.segments.as_slice()
+    } else {
+        aligned_segments
+    };
+    let representative = representative_segments
         .iter()
         .max_by(|left, right| segment_length(left).total_cmp(&segment_length(right)))
         .map(|segment| {
@@ -270,6 +366,37 @@ pub fn track_overlay_object(track: &SatelliteTrackResponse) -> OverlayObject {
             ]
         })
         .unwrap_or([0.0, 0.0]);
+    let mut outlines = vec![OverlayOutline {
+        geometry_id: format!("{}:predicted-track", track.stable_id),
+        source_record_id: track.stable_id.clone(),
+        role: "predicted-track".into(),
+        quality: "propagated".into(),
+        level: Some(track.risk.level.clone()),
+        contours: track
+            .segments
+            .iter()
+            .map(|segment| OverlayContour {
+                closed: false,
+                points: vec![segment.start, segment.end],
+            })
+            .collect(),
+    }];
+    if !aligned_segments.is_empty() {
+        outlines.push(OverlayOutline {
+            geometry_id: format!("{}:pixel-aligned-track", track.stable_id),
+            source_record_id: track.stable_id.clone(),
+            role: "pixel-aligned-track".into(),
+            quality: "detected".into(),
+            level: Some("detected".into()),
+            contours: aligned_segments
+                .iter()
+                .map(|segment| OverlayContour {
+                    closed: false,
+                    points: vec![segment.start, segment.end],
+                })
+                .collect(),
+        });
+    }
     OverlayObject {
         stable_id: Some(track.stable_id.clone()),
         name: track.label.clone(),
@@ -300,21 +427,7 @@ pub fn track_overlay_object(track: &SatelliteTrackResponse) -> OverlayObject {
             .map(|rate| rate * 3_600.0),
         direction_pa_deg: None,
         direction_angle_deg: None,
-        outlines: vec![OverlayOutline {
-            geometry_id: format!("{}:predicted-track", track.stable_id),
-            source_record_id: track.stable_id.clone(),
-            role: "predicted-track".into(),
-            quality: "propagated".into(),
-            level: Some(track.risk.level.clone()),
-            contours: track
-                .segments
-                .iter()
-                .map(|segment| OverlayContour {
-                    closed: false,
-                    points: vec![segment.start, segment.end],
-                })
-                .collect(),
-        }],
+        outlines,
     }
 }
 
@@ -404,6 +517,7 @@ fn track_response(index: usize, track: SatelliteTrackAnalysis) -> SatelliteTrack
     } else {
         format!("satellite:anonymous:{index}")
     };
+    let pixel_alignment = track.pixel_alignment.map(pixel_alignment_response);
     SatelliteTrackResponse {
         stable_id,
         label,
@@ -436,6 +550,41 @@ fn track_response(index: usize, track: SatelliteTrackAnalysis) -> SatelliteTrack
             maximum_elevation_deg: risk.maximum_elevation_deg,
             clipped_length_px: risk.clipped_length_px,
         },
+        pixel_alignment,
+    }
+}
+
+fn pixel_alignment_response(alignment: PixelTrailAlignment) -> SatellitePixelAlignmentResponse {
+    SatellitePixelAlignmentResponse {
+        status: match alignment.status {
+            PixelTrailAlignmentStatus::Detected => "detected",
+            PixelTrailAlignmentStatus::NotDetected => "not_detected",
+            PixelTrailAlignmentStatus::NotEvaluated => "not_evaluated",
+        }
+        .into(),
+        not_evaluated_reason: alignment.not_evaluated_reason.map(|reason| {
+            match reason {
+                PixelTrailNotEvaluatedReason::EmptyPath => "empty_path",
+                PixelTrailNotEvaluatedReason::TooShort => "too_short",
+                PixelTrailNotEvaluatedReason::InsufficientCoverage => "insufficient_coverage",
+            }
+            .into()
+        }),
+        segments: alignment
+            .aligned_segments
+            .into_iter()
+            .map(|segment| SatelliteTrackSegment {
+                start: [segment.start.x, segment.start.y],
+                end: [segment.end.x, segment.end.y],
+            })
+            .collect(),
+        mean_normal_offset_px: alignment.mean_normal_offset_px,
+        angle_delta_deg: alignment.angle_delta_deg,
+        contrast_adu: alignment.contrast_adu,
+        contrast_sigma: alignment.contrast_sigma,
+        continuity: alignment.continuity,
+        coverage: alignment.coverage,
+        search_radius_px: alignment.search_radius_px,
     }
 }
 
@@ -491,6 +640,58 @@ mod tests {
             single_exposure(&options).unwrap_err(),
             "Satellite tracks support a single shutter-open exposure of up to one hour."
         );
+    }
+
+    #[test]
+    fn overlay_keeps_prediction_and_pixel_evidence_as_separate_geometry() {
+        let track = SatelliteTrackResponse {
+            stable_id: "satellite:norad:25544".into(),
+            label: "ISS (ZARYA)".into(),
+            name: "ISS (ZARYA)".into(),
+            norad_id: Some(25_544),
+            cospar_id: Some("1998-067A".into()),
+            source: "celestrak:active".into(),
+            element_epoch_utc: "2026-07-20T00:00:00Z".into(),
+            element_age_seconds: 120.0,
+            sample_interval_seconds: 1.0,
+            maximum_apparent_rate_arcsec_per_second: Some(300.0),
+            segments: vec![SatelliteTrackSegment {
+                start: [10.0, 20.0],
+                end: [90.0, 20.0],
+            }],
+            risk: SatelliteTrailRiskResponse {
+                level: "high".into(),
+                score: 0.9,
+                maximum_sunlight_fraction: 1.0,
+                minimum_range_km: 420.0,
+                maximum_elevation_deg: 70.0,
+                clipped_length_px: 80.0,
+            },
+            pixel_alignment: Some(SatellitePixelAlignmentResponse {
+                status: "detected".into(),
+                not_evaluated_reason: None,
+                segments: vec![SatelliteTrackSegment {
+                    start: [20.0, 24.0],
+                    end: [80.0, 24.0],
+                }],
+                mean_normal_offset_px: 4.0,
+                angle_delta_deg: 0.1,
+                contrast_adu: 120.0,
+                contrast_sigma: 8.0,
+                continuity: 0.92,
+                coverage: 0.75,
+                search_radius_px: 12.0,
+            }),
+        };
+
+        let overlay = track_overlay_object(&track);
+
+        assert_eq!((overlay.x, overlay.y), (50.0, 24.0));
+        assert_eq!(overlay.outlines.len(), 2);
+        assert_eq!(overlay.outlines[0].role, "predicted-track");
+        assert_eq!(overlay.outlines[0].quality, "propagated");
+        assert_eq!(overlay.outlines[1].role, "pixel-aligned-track");
+        assert_eq!(overlay.outlines[1].quality, "detected");
     }
 
     #[tokio::test]

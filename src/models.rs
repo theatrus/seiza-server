@@ -530,6 +530,12 @@ pub struct SatelliteSearchSummaryResponse {
     pub elements_considered: usize,
     pub propagation_failures: usize,
     pub stale_elements: usize,
+    #[serde(default)]
+    pub pixel_alignment_attempted: bool,
+    #[serde(default)]
+    pub pixel_aligned: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_alignment_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -549,6 +555,22 @@ pub struct SatelliteTrailRiskResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatellitePixelAlignmentResponse {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_evaluated_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<SatelliteTrackSegment>,
+    pub mean_normal_offset_px: f64,
+    pub angle_delta_deg: f64,
+    pub contrast_adu: f64,
+    pub contrast_sigma: f64,
+    pub continuity: f64,
+    pub coverage: f64,
+    pub search_radius_px: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SatelliteTrackResponse {
     pub stable_id: String,
     pub label: String,
@@ -562,6 +584,8 @@ pub struct SatelliteTrackResponse {
     pub maximum_apparent_rate_arcsec_per_second: Option<f64>,
     pub segments: Vec<SatelliteTrackSegment>,
     pub risk: SatelliteTrailRiskResponse,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_alignment: Option<SatellitePixelAlignmentResponse>,
 }
 
 impl SolutionResponse {

@@ -115,7 +115,7 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
     </fieldset>
     <fieldset className="optional-fields">
       <legend>Exposure and observing site <span className="optional-badge">Optional</span></legend>
-      <p><strong>Compatible FITS timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in beside the upload button to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
+      <p><strong>Compatible FITS timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in below the file selector to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
       <div className="capture-time-grid">
         <label>Date and time<input name="capture_time" type="datetime-local" step="1" value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
         <label>Time zone<select name="capture_time_zone" value={captureTimeZone} aria-describedby={captureTimeHelpId} onChange={(event) => {
@@ -288,8 +288,8 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <h2 id="optional-sky-context">Catalog the field—and predict satellite crossings.</h2>
       </div>
       <div className="about-copy">
-        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional and off by default in the browser: opt in beside the upload button when one exposure has a UTC shutter interval and observing site, and Seiza can add WCS-clipped predicted tracks from epoch-appropriate orbital elements.</p>
-        <p>These tracks are orbit predictions, not claims that a trail was detected in the pixels. Missing exposure metadata or orbital data never makes the plate solve fail.</p>
+        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional and off by default in the browser: opt in below the file selector when one exposure has a UTC shutter interval and observing site, and Seiza can add WCS-clipped predicted tracks from epoch-appropriate orbital elements.</p>
+        <p>While the image is retained, Seiza separately checks predicted corridors for matching trail pixels. Pixel evidence improves confidence in the geometry but does not prove the candidate satellite identity. Missing exposure metadata, orbital data, or pixel evidence never makes the plate solve fail.</p>
         <div className="text-links">
           {solveEnabled && <Link to="/solve">Solve with optional sky context <span aria-hidden="true">→</span></Link>}
           <a href="/docs/api#responses">Read the annotation contract <span aria-hidden="true">→</span></a>
@@ -406,10 +406,15 @@ function SolvePage({
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
-        <div className="file-submit-row">
-          <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
-          <label className="satellite-trail-opt-in"><input name="show_satellite_tracks" type="checkbox" /><span><strong>Show predicted satellite trails</strong><small>Off by default · predictions, not detections</small></span></label>
-          <button className="button solve-submit-button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : <><span>Solve</span><span className="go-arrow" aria-hidden="true">→</span></>}</button>
+        <div className="upload-controls">
+          <div className="file-submit-row">
+            <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
+            <button className="button solve-submit-button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : <><span>Solve</span><span className="go-arrow" aria-hidden="true">→</span></>}</button>
+          </div>
+          <fieldset className="optional-fields satellite-trail-option">
+            <legend>Satellite trails <span className="optional-badge">Optional</span></legend>
+            <label className="satellite-trail-opt-in"><input name="show_satellite_tracks" type="checkbox" /><span>Show predicted satellite trails</span></label>
+          </fieldset>
         </div>
         {submitting && <div className="upload-progress" aria-live="polite">
           <progress max="100" value={uploadProgress} />
@@ -862,20 +867,36 @@ function countObjects(objects: OverlayObject[]) {
 function SatelliteTrackDetails({ annotations }: { annotations: Annotations }) {
   const tracks = annotations.satellite_tracks ?? []
   const search = annotations.satellite_search
+  const pixelAligned = search?.pixel_aligned ?? tracks.filter((track) => track.pixel_alignment?.status === 'detected').length
   return <details className="satellite-track-details">
     <summary>Predicted satellite crossings · {tracks.length}</summary>
-    <p className="solve-control-note">These are orbit predictions through the solved field, not detections in the pixels. Illumination and trail risk are estimates; satellite attitude, passband, clouds, and shutter timing can change what appears in the image.</p>
+    <p className="solve-control-note">Orbital paths remain predictions. A pixel match means the image supports a nearby trail; satellite identity remains a candidate association.</p>
     <div className="satellite-track-list">
-      {tracks.map((track) => <div key={track.stable_id}>
-        <div><strong>{track.label}</strong><span>{track.cospar_id ? `${track.cospar_id} · ` : ''}elements {formatSignedAge(track.element_age_seconds)} from exposure</span></div>
-        <div className="satellite-track-metrics">
-          <span className={`satellite-risk ${track.risk.level}`}>{track.risk.level} trail risk</span>
-          <span>{Math.round(track.risk.maximum_sunlight_fraction * 100)}% sunlit</span>
-          <span>{track.risk.maximum_elevation_deg.toFixed(1)}° peak elevation</span>
-          <span>{track.risk.minimum_range_km.toLocaleString(undefined, { maximumFractionDigits: 0 })} km nearest range</span>
+      {tracks.map((track) => {
+        const alignment = track.pixel_alignment
+        const evidence = alignment?.status === 'detected'
+          ? 'pixel match'
+          : alignment?.status === 'not_evaluated'
+            ? 'pixel check unavailable'
+            : 'prediction only'
+        return <div key={track.stable_id}>
+          <div>{track.norad_id == null
+            ? <strong>{track.label}</strong>
+            : <a className="satellite-info-link" href={`https://www.n2yo.com/satellite/?s=${encodeURIComponent(track.norad_id)}`} target="_blank" rel="noopener noreferrer" title={`View NORAD ${track.norad_id} satellite information`}><strong>{track.label}</strong><span aria-hidden="true"> ↗</span></a>}
+            <span>{track.cospar_id ? `${track.cospar_id} · ` : ''}elements {formatSignedAge(track.element_age_seconds)} from exposure</span></div>
+          <div className="satellite-track-metrics">
+            <span className={`satellite-evidence ${alignment?.status ?? 'not_evaluated'}`}>{evidence}</span>
+            <span className={`satellite-risk ${track.risk.level}`}>{track.risk.level} trail risk</span>
+            {alignment?.status === 'detected' && <span>{alignment.contrast_sigma.toFixed(1)}σ contrast · {Math.round(alignment.continuity * 100)}% continuity</span>}
+            <span>{Math.round(track.risk.maximum_sunlight_fraction * 100)}% sunlit</span>
+            <span>{track.risk.maximum_elevation_deg.toFixed(1)}° peak elevation</span>
+            <span>{track.risk.minimum_range_km.toLocaleString(undefined, { maximumFractionDigits: 0 })} km nearest range</span>
+          </div>
         </div>
-      </div>)}
+      })}
     </div>
+    {search?.pixel_alignment_attempted && <p className="satellite-search-note">{pixelAligned > 0 ? `Pixel evidence supports ${pixelAligned} of ${tracks.length} predicted crossing${tracks.length === 1 ? '' : 's'}.` : 'The pixel corridor check found no matching trails.'}</p>}
+    {search?.pixel_alignment_error && <p className="satellite-search-note satellite-alignment-warning">{search.pixel_alignment_error}</p>}
     {search && <p className="satellite-search-note">Checked {search.elements_considered.toLocaleString()} orbital records{search.stale_elements > 0 ? ` · ${search.stale_elements.toLocaleString()} outside the seven-day propagation window` : ''}{search.propagation_failures > 0 ? ` · ${search.propagation_failures.toLocaleString()} propagation failures` : ''}.</p>}
   </details>
 }

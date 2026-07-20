@@ -131,6 +131,19 @@ export interface SatelliteTrackSegment {
   end: [number, number]
 }
 
+export interface SatellitePixelAlignment {
+  status: 'detected' | 'not_detected' | 'not_evaluated'
+  not_evaluated_reason?: 'empty_path' | 'too_short' | 'insufficient_coverage' | null
+  segments: SatelliteTrackSegment[]
+  mean_normal_offset_px: number
+  angle_delta_deg: number
+  contrast_adu: number
+  contrast_sigma: number
+  continuity: number
+  coverage: number
+  search_radius_px: number
+}
+
 export interface SatelliteTrack {
   stable_id: string
   label: string
@@ -143,6 +156,7 @@ export interface SatelliteTrack {
   sample_interval_seconds: number
   maximum_apparent_rate_arcsec_per_second: number | null
   segments: SatelliteTrackSegment[]
+  pixel_alignment?: SatellitePixelAlignment | null
   risk: {
     level: 'low' | 'possible' | 'high'
     score: number
@@ -159,6 +173,9 @@ export interface SatelliteSearchSummary {
   elements_considered: number
   propagation_failures: number
   stale_elements: number
+  pixel_alignment_attempted?: boolean
+  pixel_aligned?: number
+  pixel_alignment_error?: string | null
 }
 
 export interface ValidationDonation {

@@ -153,24 +153,30 @@ function solvedJob(id: string, filename: string) {
   }
 }
 
-test('places the solve action beside the file selector', async ({ page }) => {
+test('places the solve action beside the file selector and satellite opt-in below', async ({ page }) => {
   await page.goto('/solve')
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
+  const controls = page.locator('.upload-controls')
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
-  const satelliteTrails = row.getByRole('checkbox', { name: 'Show predicted satellite trails' })
+  const satelliteRow = controls.locator('.satellite-trail-opt-in')
+  const satelliteTrails = satelliteRow.getByRole('checkbox', { name: 'Show predicted satellite trails' })
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
 
   await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
+  await expect(satelliteRow).toHaveText('Show predicted satellite trails')
   await expect(satelliteTrails).toBeVisible()
   await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()
   const fileBox = await fileSelector.boundingBox()
   const buttonBox = await solveButton.boundingBox()
+  const satelliteBox = await satelliteRow.boundingBox()
   expect(fileBox).not.toBeNull()
   expect(buttonBox).not.toBeNull()
+  expect(satelliteBox).not.toBeNull()
   expect(buttonBox!.x).toBeGreaterThan(fileBox!.x + fileBox!.width)
   expect(Math.abs((buttonBox!.y + buttonBox!.height) - (fileBox!.y + fileBox!.height))).toBeLessThan(2)
+  expect(satelliteBox!.y).toBeGreaterThanOrEqual(fileBox!.y + fileBox!.height)
   const viewport = page.viewportSize()
   expect(viewport).not.toBeNull()
   expect(fileBox!.y + fileBox!.height).toBeLessThan(viewport!.height)
