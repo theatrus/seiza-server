@@ -26,7 +26,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 const MAX_EXPOSURE_SECONDS: f64 = 60.0 * 60.0;
 const MAX_CACHED_PREDICTIONS: usize = 256;
-const SATELLITE_CATALOG_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+const SATELLITE_CATALOG_LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub struct SatelliteEngine {
