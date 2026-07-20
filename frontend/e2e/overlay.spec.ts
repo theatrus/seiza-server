@@ -426,7 +426,7 @@ test('draws and explains predicted satellite tracks when exposure metadata is co
   await page.getByText('Predicted satellite crossings · 1').click()
   await expect(page.locator('.satellite-track-list strong', { hasText: 'ISS (ZARYA) [25544]' })).toBeVisible()
   await expect(page.getByText('possible trail risk')).toBeVisible()
-  await expect(page.getByText(/Checked 12,000 active orbital records/)).toBeVisible()
+  await expect(page.getByText(/Checked 12,000 orbital records/)).toBeVisible()
 
   await page.getByRole('button', { name: 'Satellite tracks · 1' }).click()
   await expect(track).toHaveCount(0)

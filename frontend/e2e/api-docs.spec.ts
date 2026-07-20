@@ -57,6 +57,8 @@ test('credits the upstream catalogues and links their primary sources', async ({
   await expect(page.getByRole('link', { name: /Latest Supernovae/ })).toHaveAttribute('href', 'https://www.rochesterastronomy.org/snimages/snactive.html')
   await expect(page.getByRole('link', { name: /Minor Planet Center/ }).first()).toHaveAttribute('href', 'https://www.minorplanetcenter.net/')
   await expect(page.getByRole('link', { name: /Small-body orbits/ })).toHaveAttribute('href', 'https://ssd.jpl.nasa.gov/sb/orbits.html')
+  await expect(page.getByRole('link', { name: 'IAU SatChecker' })).toHaveAttribute('href', 'https://satchecker.cps.iau.org/')
+  await expect(page.getByRole('link', { name: 'Seiza rolling mirror' })).toHaveAttribute('href', 'https://downloads.seiza.fyi/satellites/v1/manifest.json')
   await expect(page.getByText(/Seiza’s Apache-2.0 license covers Seiza software, not third-party catalogue data/)).toBeVisible()
 })
 

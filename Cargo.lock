@@ -2690,7 +2690,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3074,9 +3074,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cd7998989f2c11becf073e3bd1e33b9973f31fead3eb060c5caf472077086fd"
+checksum = "dd3883b769cc60cbd4de66a26105333ac081c31295ae1ae11663251c392c88ce"
 dependencies = [
  "directories",
  "image",
@@ -3103,15 +3103,17 @@ dependencies = [
 
 [[package]]
 name = "seiza-satellites"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "860d73841db0a90882d490b9b14c129482952a39178e3ee1e33812633c79f963"
+checksum = "7874481df8b4534220a875077ead798ec2025fdacbb6d8085da4ac154d943ae0"
 dependencies = [
  "directories",
  "fs2",
  "reqwest",
  "satkit",
  "seiza",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",

@@ -176,6 +176,16 @@ export function DataSourcesPage() {
         >
           <p>CelesTrak, maintained by Dr. T.S. Kelso, supplies the active-satellite CCSDS OMM records used for post-solve track predictions. Seiza keeps source, retrieval time, content identity, and element epoch separate so each prediction can be reproduced and its age inspected.</p>
         </SourceCard>
+        <SourceCard
+          title="IAU SatChecker"
+          role="Historical satellite orbital elements"
+          links={[
+            { label: 'IAU SatChecker', href: 'https://satchecker.cps.iau.org/' },
+            { label: 'Seiza rolling mirror', href: 'https://downloads.seiza.fyi/satellites/v1/manifest.json' },
+          ]}
+        >
+          <p>Older exposures use epoch-matched TLEs from the durable cache, then Seiza’s bounded rolling mirror, with the IAU Centre for the Protection of the Dark and Quiet Sky’s SatChecker as the final provider. This makes historical predictions useful without treating them as pixel detections.</p>
+        </SourceCard>
       </div>
     </section>
 

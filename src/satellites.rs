@@ -4,27 +4,26 @@ use crate::models::{
     SatelliteTrailRiskResponse, SolutionResponse, SolveOptions,
 };
 use seiza_satellites::{
-    BrightTrailRiskLevel, BrightTrailRiskOptions, CelesTrakLoad, CelesTrakSource,
-    ExposureProvenance, ObserverLocation, SatelliteCatalog, SatelliteTrackAnalysis, SingleExposure,
-    TrackOptions, UtcTimestamp,
+    BrightTrailRiskLevel, BrightTrailRiskOptions, CacheState, ExposureProvenance, ObserverLocation,
+    OrbitalCatalogLoad, OrbitalCatalogProvider, OrbitalCatalogSource, SatelliteCatalog,
+    SatelliteTrackAnalysis, SingleExposure, TrackOptions, UtcTimestamp,
 };
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex, RwLock},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
-const HISTORY_SELECTION_THRESHOLD_SECONDS: f64 = 2.0 * 60.0 * 60.0;
 const MAX_EXPOSURE_SECONDS: f64 = 60.0 * 60.0;
 const MAX_CACHED_PREDICTIONS: usize = 256;
+const SATELLITE_CATALOG_LOOKUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 pub struct SatelliteEngine {
-    source: Option<CelesTrakSource>,
-    active: Arc<RwLock<Option<LoadedCatalog>>>,
-    refresh_lock: Arc<AsyncMutex<()>>,
+    source: Option<OrbitalCatalogSource>,
+    resolution_lock: Arc<AsyncMutex<()>>,
     prediction_lock: Arc<AsyncMutex<()>>,
     prediction_cache: Arc<StdMutex<PredictionCache>>,
 }
@@ -32,7 +31,11 @@ pub struct SatelliteEngine {
 #[derive(Clone)]
 struct LoadedCatalog {
     catalog: Arc<SatelliteCatalog>,
-    retrieved_at: Option<UtcTimestamp>,
+    retrieved_at: UtcTimestamp,
+    query_time: Option<UtcTimestamp>,
+    provider: OrbitalCatalogProvider,
+    cache_state: CacheState,
+    warning: Option<String>,
 }
 
 pub enum SatellitePrediction {
@@ -85,49 +88,33 @@ impl SatelliteEngine {
     pub fn disabled() -> Self {
         Self {
             source: None,
-            active: Arc::new(RwLock::new(None)),
-            refresh_lock: Arc::new(AsyncMutex::new(())),
+            resolution_lock: Arc::new(AsyncMutex::new(())),
             prediction_lock: Arc::new(AsyncMutex::new(())),
             prediction_cache: Arc::new(StdMutex::new(PredictionCache::default())),
         }
     }
 
-    pub fn celestrak(
+    pub fn orbital(
         cache_dir: PathBuf,
         cache_size_limit_bytes: u64,
     ) -> seiza_satellites::Result<Self> {
-        Ok(Self {
-            source: Some(
-                CelesTrakSource::new(cache_dir)?
-                    .with_cache_size_limit_bytes(cache_size_limit_bytes),
-            ),
-            active: Arc::new(RwLock::new(None)),
-            refresh_lock: Arc::new(AsyncMutex::new(())),
+        Ok(Self::with_source(
+            OrbitalCatalogSource::new(cache_dir)?
+                .with_cache_size_limit_bytes(cache_size_limit_bytes),
+        ))
+    }
+
+    fn with_source(source: OrbitalCatalogSource) -> Self {
+        Self {
+            source: Some(source),
+            resolution_lock: Arc::new(AsyncMutex::new(())),
             prediction_lock: Arc::new(AsyncMutex::new(())),
             prediction_cache: Arc::new(StdMutex::new(PredictionCache::default())),
-        })
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.source.is_some()
-            || self
-                .active
-                .read()
-                .expect("satellite catalog lock poisoned")
-                .is_some()
-    }
-
-    pub fn has_loaded_catalog(&self) -> bool {
-        self.active
-            .read()
-            .expect("satellite catalog lock poisoned")
-            .is_some()
-    }
-
-    pub async fn refresh(&self) {
-        if let Err(error) = self.load_active(true).await {
-            tracing::warn!(%error, "could not refresh CelesTrak satellite elements");
-        }
     }
 
     pub async fn predict(
@@ -145,15 +132,39 @@ impl SatelliteEngine {
             Ok(exposure) => exposure,
             Err(reason) => return SatellitePrediction::Unavailable(reason),
         };
-        let loaded = match self.catalog_for(exposure.midpoint()).await {
-            Ok(loaded) => loaded,
-            Err(error) => {
+        let loaded = match tokio::time::timeout(
+            SATELLITE_CATALOG_LOOKUP_TIMEOUT,
+            self.catalog_for(&exposure),
+        )
+        .await
+        {
+            Ok(Ok(loaded)) => loaded,
+            Ok(Err(error)) => {
                 tracing::warn!(%error, "could not load satellite elements for annotation");
                 return SatellitePrediction::Unavailable(
                     "Satellite orbital elements are temporarily unavailable.".into(),
                 );
             }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_seconds = SATELLITE_CATALOG_LOOKUP_TIMEOUT.as_secs(),
+                    "satellite element lookup timed out"
+                );
+                return SatellitePrediction::Unavailable(
+                    "Satellite orbital element lookup timed out; try this overlay again shortly."
+                        .into(),
+                );
+            }
         };
+        if let Some(warning) = &loaded.warning {
+            tracing::warn!(
+                %warning,
+                provider = ?loaded.provider,
+                cache_state = ?loaded.cache_state,
+                query_time = loaded.query_time.map(UtcTimestamp::to_rfc3339),
+                "satellite catalog resolved with a provider warning"
+            );
+        }
         let wcs = solution.wcs.to_seiza();
         let dimensions = (solution.image_width, solution.image_height);
         let fingerprint = loaded.catalog.fingerprint().content_sha256;
@@ -207,9 +218,7 @@ impl SatelliteEngine {
             tracks,
             summary: SatelliteSearchSummaryResponse {
                 catalog_source: loaded.catalog.source().to_owned(),
-                catalog_retrieved_at: loaded
-                    .retrieved_at
-                    .map(seiza_satellites::UtcTimestamp::to_rfc3339),
+                catalog_retrieved_at: Some(loaded.retrieved_at.to_rfc3339()),
                 elements_considered: analysis.elements_considered,
                 propagation_failures: analysis.propagation_failures,
                 stale_elements: analysis.stale_elements,
@@ -222,68 +231,28 @@ impl SatelliteEngine {
         SatellitePrediction::Complete(result)
     }
 
-    async fn catalog_for(&self, time: UtcTimestamp) -> seiza_satellites::Result<LoadedCatalog> {
-        let active = self.load_active(false).await?;
+    async fn catalog_for(
+        &self,
+        exposure: &SingleExposure,
+    ) -> seiza_satellites::Result<LoadedCatalog> {
         let Some(source) = self.source.clone() else {
-            return Ok(active);
+            return Err(seiza_satellites::Error::EmptyElements(
+                "satellite engine is disabled".into(),
+            ));
         };
-        let should_search_history = active.retrieved_at.is_some_and(|retrieved_at| {
-            retrieved_at.seconds_since(time).abs() > HISTORY_SELECTION_THRESHOLD_SECONDS
-        });
-        if !should_search_history {
-            return Ok(active);
-        }
-        let historical = tokio::task::spawn_blocking(move || source.load_cached_for(time))
-            .await
-            .map_err(|error| seiza_satellites::Error::CacheLock(error.to_string()))??;
-        Ok(historical.map(LoadedCatalog::from).unwrap_or(active))
-    }
-
-    async fn load_active(&self, force: bool) -> seiza_satellites::Result<LoadedCatalog> {
-        if !force
-            && let Some(loaded) = self.current_active()
-            && loaded.retrieved_at.is_none_or(|retrieved_at| {
-                now_unix_seconds() - retrieved_at.unix_seconds()
-                    < seiza_satellites::CELESTRAK_MIN_REFRESH.as_secs_f64()
-            })
-        {
-            return Ok(loaded);
-        }
-        let Some(source) = self.source.clone() else {
-            return self.current_active().ok_or_else(|| {
-                seiza_satellites::Error::EmptyElements("satellite engine is disabled".into())
-            });
-        };
-        let _refresh = self.refresh_lock.lock().await;
-        if !force
-            && let Some(loaded) = self.current_active()
-            && loaded.retrieved_at.is_none_or(|retrieved_at| {
-                now_unix_seconds() - retrieved_at.unix_seconds()
-                    < seiza_satellites::CELESTRAK_MIN_REFRESH.as_secs_f64()
-            })
-        {
-            return Ok(loaded);
-        }
-        let loaded = LoadedCatalog::from(source.load_active().await?);
-        *self
-            .active
-            .write()
-            .expect("satellite catalog lock poisoned") = Some(loaded.clone());
-        Ok(loaded)
-    }
-
-    fn current_active(&self) -> Option<LoadedCatalog> {
-        self.active
-            .read()
-            .expect("satellite catalog lock poisoned")
-            .clone()
+        let _resolution = self.resolution_lock.lock().await;
+        source.load_for_exposure(exposure).await.map(Into::into)
     }
 }
 
-impl From<CelesTrakLoad> for LoadedCatalog {
-    fn from(load: CelesTrakLoad) -> Self {
+impl From<OrbitalCatalogLoad> for LoadedCatalog {
+    fn from(load: OrbitalCatalogLoad) -> Self {
         Self {
-            retrieved_at: load.catalog.retrieved_at(),
+            retrieved_at: load.snapshot.retrieved_at,
+            query_time: load.snapshot.query_time,
+            provider: load.snapshot.provider,
+            cache_state: load.state,
+            warning: load.warning,
             catalog: Arc::new(load.catalog),
         }
     }
@@ -470,17 +439,14 @@ fn track_response(index: usize, track: SatelliteTrackAnalysis) -> SatelliteTrack
     }
 }
 
-fn now_unix_seconds() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+
+    const HISTORICAL_TLE: &str = "ISS (ZARYA)\n\
+1 25544U 98067A   24123.50000000  .00016717  00000-0  30126-3 0  9990\n\
+2 25544  51.6400 160.0000 0005000  80.0000 280.0000 15.50000000450000\n";
 
     #[test]
     fn manual_image_metadata_builds_a_single_exposure() {
@@ -525,5 +491,44 @@ mod tests {
             single_exposure(&options).unwrap_err(),
             "Satellite tracks support a single shutter-open exposure of up to one hour."
         );
+    }
+
+    #[tokio::test]
+    async fn historical_exposure_uses_epoch_cache_without_provider_network() {
+        let cache = std::env::temp_dir().join(format!(
+            "seiza-server-satellite-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&cache).unwrap();
+        let midpoint = UtcTimestamp::parse("2024-05-02T12:00:00Z").unwrap();
+        let query_millis = (midpoint.unix_seconds() * 1_000.0).round() as i64;
+        std::fs::write(
+            cache.join(format!(
+                "satchecker-epoch-{query_millis}-cached-1714651200.tle"
+            )),
+            HISTORICAL_TLE,
+        )
+        .unwrap();
+        let source = OrbitalCatalogSource::new(&cache)
+            .unwrap()
+            .with_mirror_base_url("http://127.0.0.1:1/never-called")
+            .with_satchecker_endpoint("http://127.0.0.1:1/never-called");
+        let engine = SatelliteEngine::with_source(source);
+        let observer = ObserverLocation::geodetic(37.3, -122.0, 50.0).unwrap();
+        let exposure = SingleExposure::from_start_and_duration(
+            midpoint.add_seconds(-15.0).unwrap(),
+            30.0,
+            observer,
+            ExposureProvenance::Explicit,
+        )
+        .unwrap();
+
+        let loaded = engine.catalog_for(&exposure).await.unwrap();
+
+        assert_eq!(loaded.provider, OrbitalCatalogProvider::IauSatChecker);
+        assert_eq!(loaded.cache_state, CacheState::Cached);
+        assert_eq!(loaded.query_time, Some(midpoint));
+        assert_eq!(loaded.catalog.len(), 1);
+        std::fs::remove_dir_all(cache).unwrap();
     }
 }

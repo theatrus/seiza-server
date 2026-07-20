@@ -288,7 +288,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <h2 id="optional-sky-context">Catalog the field—and predict satellite crossings.</h2>
       </div>
       <div className="about-copy">
-        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional and off by default in the browser: opt in beside the upload button when one exposure has a UTC shutter interval and observing site, and Seiza can add WCS-clipped predicted tracks from cached orbital elements.</p>
+        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional and off by default in the browser: opt in beside the upload button when one exposure has a UTC shutter interval and observing site, and Seiza can add WCS-clipped predicted tracks from epoch-appropriate orbital elements.</p>
         <p>These tracks are orbit predictions, not claims that a trail was detected in the pixels. Missing exposure metadata or orbital data never makes the plate solve fail.</p>
         <div className="text-links">
           {solveEnabled && <Link to="/solve">Solve with optional sky context <span aria-hidden="true">→</span></Link>}
@@ -876,7 +876,7 @@ function SatelliteTrackDetails({ annotations }: { annotations: Annotations }) {
         </div>
       </div>)}
     </div>
-    {search && <p className="satellite-search-note">Checked {search.elements_considered.toLocaleString()} active orbital records{search.stale_elements > 0 ? ` · ${search.stale_elements.toLocaleString()} outside the seven-day propagation window` : ''}{search.propagation_failures > 0 ? ` · ${search.propagation_failures.toLocaleString()} propagation failures` : ''}.</p>}
+    {search && <p className="satellite-search-note">Checked {search.elements_considered.toLocaleString()} orbital records{search.stale_elements > 0 ? ` · ${search.stale_elements.toLocaleString()} outside the seven-day propagation window` : ''}{search.propagation_failures > 0 ? ` · ${search.propagation_failures.toLocaleString()} propagation failures` : ''}.</p>}
   </details>
 }
 

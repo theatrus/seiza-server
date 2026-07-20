@@ -105,7 +105,7 @@ impl AppState {
             config.minor_body_catalog_path.as_deref(),
         );
         let satellites = if config.satellite_tracks_enabled {
-            SatelliteEngine::celestrak(
+            SatelliteEngine::orbital(
                 config.satellite_cache_dir.clone(),
                 config.satellite_cache_max_bytes,
             )?
@@ -131,22 +131,6 @@ impl AppState {
     pub fn start_background_tasks(&self) {
         let state = self.clone();
         tokio::spawn(async move { state.cleanup_expired_uploads().await });
-        if self.satellites.is_enabled() {
-            let satellites = self.satellites.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(seiza_satellites::CELESTRAK_MIN_REFRESH);
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                // The first interval tick is immediate. Consume it so a server that never
-                // receives an eligible exposure also never contacts the catalog service.
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    if satellites.has_loaded_catalog() {
-                        satellites.refresh().await;
-                    }
-                }
-            });
-        }
         if let Some(identity) = self.identity.clone() {
             let interval_seconds = self.config.upload_cleanup_interval_seconds;
             tokio::spawn(async move {

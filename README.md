@@ -4,7 +4,7 @@ Seiza Server is a queued web service for plate solving. It uses the
 [`seiza`](https://github.com/theatrus/seiza) and
 [`seiza-fits`](https://crates.io/crates/seiza-fits) Rust crates directly—not a
 CLI subprocess—and includes a TypeScript/React frontend. The current source
-uses the published Seiza 0.10.0 release for satellite-track support and
+uses the published Seiza 0.11.0 release for satellite-track support and
 `@seiza/astro-overlay` 0.5.0 for risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
@@ -28,7 +28,7 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.10.0, including catalog-seeded matching for source
+  solving with Seiza 0.11.0, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
   forward and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
@@ -57,8 +57,10 @@ disappears on a process restart.
 - Optional satellite tracks are predicted after a successful solve when the
   job has one shutter-open interval and an observer location. FITS may supply
   those values automatically; JPEG and other image uploads may supply the same
-  optional fields explicitly. CelesTrak orbital elements use a bounded durable
-  snapshot history, and prediction failure never changes the plate-solve result.
+  optional fields explicitly. Seiza resolves epoch-appropriate orbital elements
+  on demand from the durable cache, current CelesTrak data, its rolling mirror,
+  or IAU SatChecker. The server bounds lookup to 20 seconds, and prediction
+  failure never changes the plate-solve result.
 
 ## Quick start
 
@@ -301,7 +303,11 @@ the options JSON. Capture time scopes transient events and propagates comets
 and asteroids; the complete observation contract additionally enables
 satellite tracks. Prediction is bounded to one shutter-open exposure of at most
 one hour; stack integration totals are deliberately not accepted as a single
-exposure.
+exposure. Orbital data is selected for the exposure epoch: recent captures use
+current CelesTrak elements, while older captures try the durable cache, Seiza's
+rolling mirror, and IAU SatChecker in that order. The complete lookup is limited
+to 20 seconds and is optional context, so a timeout never changes a successful
+plate solve.
 
 A position hint avoids the whole-sky path:
 
@@ -370,9 +376,9 @@ are currently supported:
 | `SEIZA_STAR_IDENTIFIER_DATA` | unset | Optional Tycho/Bright Star/GCVS/WDS/IAU identifier sidecar; automatic discovery uses `stars-lite-tycho2.ids.bin` |
 | `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |
 | `SEIZA_MINOR_BODY_DATA` | unset | Optional reloadable Seiza minor-body orbital-elements catalog |
-| `SEIZA_SATELLITE_TRACKS` | `true` | Enable post-solve satellite-track prediction from cached CelesTrak active-object elements |
-| `SEIZA_SATELLITE_CACHE_DIR` | `data/satellites` | Durable CelesTrak snapshot-history directory; share one persistent directory between API replicas on the same host |
-| `SEIZA_SATELLITE_CACHE_MAX_BYTES` | `5368709120` | Oldest-first snapshot-history ceiling; the newest valid snapshot is always retained |
+| `SEIZA_SATELLITE_TRACKS` | `true` | Enable post-solve satellite-track prediction with epoch-appropriate orbital elements |
+| `SEIZA_SATELLITE_CACHE_DIR` | `data/satellites` | Durable shared cache for current CelesTrak, Seiza mirror, and IAU SatChecker snapshots; share one persistent directory between API replicas on the same host |
+| `SEIZA_SATELLITE_CACHE_MAX_BYTES` | `5368709120` | Oldest-first orbital-cache ceiling; the newest valid current snapshot is always retained |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |
