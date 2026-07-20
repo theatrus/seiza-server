@@ -1,8 +1,17 @@
 use crate::models::{OverlayObject, SolutionResponse};
+use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use seiza::wcs::Wcs;
-use std::fmt::Write;
+use std::{
+    fmt::Write,
+    sync::{Arc, OnceLock},
+};
+
+pub const OPENGRAPH_WIDTH: u32 = 1_200;
+pub const OPENGRAPH_HEIGHT: u32 = 630;
+
+static OPENGRAPH_FONT_DATABASE: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy)]
 pub struct OverlayOptions {
@@ -29,8 +38,31 @@ pub fn render_svg(
     preview_png: &Bytes,
     options: OverlayOptions,
 ) -> String {
+    render_svg_with_display_scale(solution, preview_png, options, 1.0)
+}
+
+pub fn render_svg_for_viewport(
+    solution: &SolutionResponse,
+    preview_png: &Bytes,
+    options: OverlayOptions,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> String {
+    let display_scale = (viewport_width as f64 / solution.image_width as f64)
+        .min(viewport_height as f64 / solution.image_height as f64);
+    render_svg_with_display_scale(solution, preview_png, options, display_scale)
+}
+
+fn render_svg_with_display_scale(
+    solution: &SolutionResponse,
+    preview_png: &Bytes,
+    options: OverlayOptions,
+    display_scale: f64,
+) -> String {
     let width = solution.image_width;
     let height = solution.image_height;
+    let display_scale = display_scale.max(f64::EPSILON);
+    let display_unit = 1.0 / display_scale;
     let encoded = STANDARD.encode(preview_png);
     let mut objects = String::new();
     if options.objects {
@@ -42,6 +74,7 @@ pub fn render_svg(
                 height as f64,
                 options.outlines,
                 solution.pixel_scale_arcsec_per_pixel,
+                display_scale,
             );
         }
     }
@@ -49,14 +82,22 @@ pub fn render_svg(
         lines: grid_lines,
         labels: grid_labels,
     } = if options.grid {
-        render_grid(solution)
+        render_grid(solution, display_scale)
     } else {
         GridMarkup::default()
     };
-    let grid_font_size = grid_label_font_size(width as f64);
+    let grid_font_size = grid_label_font_size(width as f64, display_scale);
     let grid_label_stroke = grid_font_size * 0.12;
+    let label_font_size = 15.0 * display_unit;
+    let detail_font_size = 13.0 * display_unit;
+    let text_stroke_width = 4.0 * display_unit;
     let center_x = width as f64 / 2.0;
     let center_y = height as f64 / 2.0;
+    let center_radius = 18.0 * display_unit;
+    let center_arm = 30.0 * display_unit;
+    let detail_x = 18.0 * display_unit;
+    let detail_first_y = 26.0 * display_unit;
+    let detail_second_y = 47.0 * display_unit;
     let projection = if solution.wcs.sip.is_some() {
         "TAN-SIP"
     } else {
@@ -68,8 +109,8 @@ pub fn render_svg(
   .marker {{ fill: none; stroke-width: 2.2; vector-effect: non-scaling-stroke; }}
   .satellite-predicted {{ stroke-dasharray: 8 5; opacity: .88; }}
   .satellite-pixel-aligned {{ stroke-width: 2.8; }}
-  .label {{ fill: #f8fbff; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 600 15px ui-sans-serif, system-ui, sans-serif; }}
-  .detail {{ fill: #c7d5e5; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 13px ui-monospace, monospace; }}
+  .label {{ fill: #f8fbff; stroke: #05090e; stroke-width: {text_stroke_width:.2}; paint-order: stroke; font: 600 {label_font_size:.2}px ui-sans-serif, system-ui, sans-serif; }}
+  .detail {{ fill: #c7d5e5; stroke: #05090e; stroke-width: {text_stroke_width:.2}; paint-order: stroke; font: {detail_font_size:.2}px ui-monospace, monospace; }}
   .grid-line {{ fill: none; stroke: #7ddbe8; stroke-width: 1.2; stroke-dasharray: 7 5; opacity: .72; vector-effect: non-scaling-stroke; }}
   .grid-label {{ fill: #b9f3f7; stroke: #05090e; stroke-width: {grid_label_stroke:.2}; paint-order: stroke; font: 700 {grid_font_size:.2}px ui-monospace, monospace; }}
   .direction-tail {{ stroke-linecap: round; stroke-linejoin: round; }}
@@ -80,16 +121,16 @@ pub fn render_svg(
 <g class="grid-labels">{grid_labels}</g>
 <g>{objects}</g>
 <g stroke="#f2c66d" fill="none" stroke-width="2" vector-effect="non-scaling-stroke">
-  <circle cx="{center_x}" cy="{center_y}" r="18" />
+  <circle cx="{center_x}" cy="{center_y}" r="{center_radius:.2}" />
   <path d="M {left} {center_y} H {right} M {center_x} {top} V {bottom}" />
 </g>
-<text class="detail" x="18" y="26">RA {ra:.8}°  Dec {dec:.8}°  Scale {scale:.5} arcsec/px</text>
-<text class="detail" x="18" y="47">ICRS / {projection} · {stars} matched stars · RMS {rms:.4} arcsec</text>
+<text class="detail" x="{detail_x:.2}" y="{detail_first_y:.2}">RA {ra:.8}°  Dec {dec:.8}°  Scale {scale:.5} arcsec/px</text>
+<text class="detail" x="{detail_x:.2}" y="{detail_second_y:.2}">ICRS / {projection} · {stars} matched stars · RMS {rms:.4} arcsec</text>
 </svg>"##,
-        left = center_x - 30.0,
-        right = center_x + 30.0,
-        top = center_y - 30.0,
-        bottom = center_y + 30.0,
+        left = center_x - center_arm,
+        right = center_x + center_arm,
+        top = center_y - center_arm,
+        bottom = center_y + center_arm,
         ra = solution.center_ra_deg,
         dec = solution.center_dec_deg,
         scale = solution.pixel_scale_arcsec_per_pixel,
@@ -99,13 +140,46 @@ pub fn render_svg(
     )
 }
 
+/// Rasterize a self-contained overlay into the wide PNG format expected by
+/// Open Graph consumers. The complete field is letterboxed rather than
+/// cropped so edge annotations and the WCS grid remain visible.
+pub fn render_opengraph_png(svg: &str) -> Result<Bytes> {
+    let font_database = OPENGRAPH_FONT_DATABASE.get_or_init(|| {
+        let mut database = resvg::usvg::fontdb::Database::new();
+        database.load_system_fonts();
+        Arc::new(database)
+    });
+    let options = resvg::usvg::Options {
+        fontdb: Arc::clone(font_database),
+        ..resvg::usvg::Options::default()
+    };
+    let tree = resvg::usvg::Tree::from_str(svg, &options)
+        .context("parsing the generated Open Graph overlay")?;
+    let source = tree.size();
+    let scale =
+        (OPENGRAPH_WIDTH as f32 / source.width()).min(OPENGRAPH_HEIGHT as f32 / source.height());
+    let offset_x = (OPENGRAPH_WIDTH as f32 - source.width() * scale) / 2.0;
+    let offset_y = (OPENGRAPH_HEIGHT as f32 - source.height() * scale) / 2.0;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(OPENGRAPH_WIDTH, OPENGRAPH_HEIGHT)
+        .context("allocating the Open Graph image")?;
+    pixmap.fill(resvg::tiny_skia::Color::from_rgba8(7, 16, 24, 255));
+    let transform =
+        resvg::tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, offset_x, offset_y);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Ok(Bytes::from(
+        pixmap
+            .encode_png()
+            .context("encoding the Open Graph image")?,
+    ))
+}
+
 #[derive(Debug, Default)]
 struct GridMarkup {
     lines: String,
     labels: String,
 }
 
-fn render_grid(solution: &SolutionResponse) -> GridMarkup {
+fn render_grid(solution: &SolutionResponse, display_scale: f64) -> GridMarkup {
     let width = solution.image_width as f64;
     let height = solution.image_height as f64;
     let wcs = solution.wcs.to_seiza();
@@ -116,7 +190,7 @@ fn render_grid(solution: &SolutionResponse) -> GridMarkup {
         .max(solution.pixel_scale_arcsec_per_pixel / 3600.0);
     let dec_step = nice_grid_step(angular_span / 5.0);
     let ra_step = nice_grid_step(angular_span / center_dec_cos / 5.0);
-    let font_size = grid_label_font_size(width);
+    let font_size = grid_label_font_size(width, display_scale);
     let geometry = GridGeometry {
         width,
         height,
@@ -305,8 +379,13 @@ fn clamp_or_center(value: f64, minimum: f64, maximum: f64, center: f64) -> f64 {
     }
 }
 
-fn grid_label_font_size(width: f64) -> f64 {
-    (width / 60.0).max(18.0).min(width / 18.0).max(6.0)
+fn grid_label_font_size(width: f64, display_scale: f64) -> f64 {
+    let display_width = width * display_scale;
+    (display_width / 60.0)
+        .max(18.0)
+        .min(display_width / 18.0)
+        .max(6.0)
+        / display_scale
 }
 
 fn nice_grid_step(target_degrees: f64) -> f64 {
@@ -384,7 +463,9 @@ fn render_object(
     height: f64,
     show_outlines: bool,
     pixel_scale_arcsec_per_pixel: f64,
+    display_scale: f64,
 ) {
+    let display_unit = 1.0 / display_scale;
     let color = match object.kind.as_str() {
         "star" | "double-star" => "#ffe45e",
         "identified-star" => "#b7a6ff",
@@ -397,9 +478,10 @@ fn render_object(
     if object.kind == "field-star" {
         let _ = write!(
             output,
-            r##"<circle class="marker" stroke="#eef7ff" opacity=".78" cx="{x:.2}" cy="{y:.2}" r="3.5" />"##,
+            r##"<circle class="marker" stroke="#eef7ff" opacity=".78" cx="{x:.2}" cy="{y:.2}" r="{radius:.2}" />"##,
             x = object.x,
             y = object.y,
+            radius = 3.5 * display_unit,
         );
         return;
     }
@@ -424,8 +506,12 @@ fn render_object(
         let _ = write!(
             output,
             r#"<text class="label" x="{x:.2}" y="{y:.2}" fill="{color}">{display_label}</text>"#,
-            x = object.x.clamp(16.0, width - 16.0),
-            y = object.y.clamp(68.0, height - 16.0),
+            x = object
+                .x
+                .clamp(16.0 * display_unit, width - 16.0 * display_unit),
+            y = object
+                .y
+                .clamp(68.0 * display_unit, height - 16.0 * display_unit),
         );
         return;
     }
@@ -435,15 +521,15 @@ fn render_object(
             let _ = write!(
                 output,
                 r#"<path class="marker" stroke="{color}" d="M {x1:.2} {y:.2} H {x2:.2} M {x3:.2} {y:.2} H {x4:.2}" />"#,
-                x1 = object.x - 16.0,
-                x2 = object.x - 4.0,
-                x3 = object.x + 4.0,
-                x4 = object.x + 16.0,
+                x1 = object.x - 16.0 * display_unit,
+                x2 = object.x - 4.0 * display_unit,
+                x3 = object.x + 4.0 * display_unit,
+                x4 = object.x + 16.0 * display_unit,
                 y = object.y,
             );
         }
         "transient" | "comet" | "asteroid" => {
-            let size = (width / 75.0).max(14.0);
+            let size = (width / 75.0).max(14.0 * display_unit);
             let _ = write!(
                 output,
                 r#"<path class="marker" stroke="{color}" d="M {x:.2} {top:.2} L {right:.2} {y:.2} L {x:.2} {bottom:.2} L {left:.2} {y:.2} Z" />"#,
@@ -468,11 +554,17 @@ fn render_object(
         "satellite" => render_outlines(output, object, color),
         _ => {
             if object.outlines.is_empty() || !show_outlines {
-                let radius_x = object.semi_major_px.max(10.0).min(width * 2.0);
+                let radius_x = object
+                    .semi_major_px
+                    .max(10.0 * display_unit)
+                    .min(width * 2.0);
                 let radius_y = if object.angle_deg.is_none() {
                     radius_x
                 } else {
-                    object.semi_minor_px.max(10.0).min(height * 2.0)
+                    object
+                        .semi_minor_px
+                        .max(10.0 * display_unit)
+                        .min(height * 2.0)
                 };
                 let _ = write!(
                     output,
@@ -489,8 +581,9 @@ fn render_object(
     let _ = write!(
         output,
         r#"<text class="label" x="{x:.2}" y="{y:.2}">{display_label}</text>"#,
-        x = (object.x + 14.0).clamp(8.0, width - 8.0),
-        y = (object.y - 14.0).clamp(18.0, height - 8.0),
+        x = (object.x + 14.0 * display_unit).clamp(8.0 * display_unit, width - 8.0 * display_unit),
+        y = (object.y - 14.0 * display_unit)
+            .clamp(18.0 * display_unit, height - 8.0 * display_unit),
     );
 }
 
@@ -728,6 +821,8 @@ fn xml_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::models::{OverlayContour, OverlayOutline, WcsResponse};
+    use image::{DynamicImage, ImageFormat};
+    use std::io::Cursor;
 
     fn solution() -> SolutionResponse {
         SolutionResponse {
@@ -792,6 +887,28 @@ mod tests {
         assert!(svg.contains("data:image/png;base64,cG5n"));
         assert!(svg.contains("&lt;target&gt;"));
         assert!(svg.contains("A&amp;B"));
+    }
+
+    #[test]
+    fn opengraph_renderer_produces_a_wide_png_from_the_overlay() {
+        let mut preview = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(100, 80)
+            .write_to(&mut preview, ImageFormat::Png)
+            .unwrap();
+        let svg = render_svg(
+            &solution(),
+            &Bytes::from(preview.into_inner()),
+            OverlayOptions {
+                grid: true,
+                ..OverlayOptions::default()
+            },
+        );
+
+        let png = render_opengraph_png(&svg).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let decoded = image::load_from_memory(&png).unwrap();
+        assert_eq!(decoded.width(), OPENGRAPH_WIDTH);
+        assert_eq!(decoded.height(), OPENGRAPH_HEIGHT);
     }
 
     #[test]
@@ -1019,6 +1136,25 @@ mod tests {
         );
         assert!(svg.contains("font: 700 68.27px ui-monospace"));
         assert!(svg.contains("stroke-width: 8.19"));
+    }
+
+    #[test]
+    fn social_viewport_preserves_screen_space_label_and_marker_sizes() {
+        let mut large = solution();
+        large.image_width = 4096;
+        large.image_height = 2400;
+        large.wcs.crpix = [2048.0, 1200.0];
+        let svg = render_svg_for_viewport(
+            &large,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+            OPENGRAPH_WIDTH,
+            OPENGRAPH_HEIGHT,
+        );
+
+        assert!(svg.contains("font: 600 57.14px ui-sans-serif"));
+        assert!(svg.contains("r=\"68.57\""));
+        assert!(svg.contains("x=\"68.57\" y=\"99.05\""));
     }
 
     #[test]

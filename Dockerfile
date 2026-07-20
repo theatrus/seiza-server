@@ -16,7 +16,7 @@ RUN cargo build --release --locked $CARGO_FEATURES
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
+    && apt-get install --yes --no-install-recommends ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 seiza
 WORKDIR /app

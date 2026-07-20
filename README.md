@@ -402,14 +402,14 @@ are currently supported:
 | `SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS` | `3600` | Local/S3 expired-object sweep interval |
 | `SEIZA_RATE_LIMIT_PER_MINUTE` | `6` | Per-client submission refill rate |
 | `SEIZA_RATE_LIMIT_BURST` | `3` | Per-client initial burst size |
-| `SEIZA_TRUSTED_PROXY_HOPS` | `0` | Reverse proxies that append to `X-Forwarded-For`; `0` rate-limits sign-in by peer address and ignores forwarded headers |
+| `SEIZA_TRUSTED_PROXY_HOPS` | `0` | Reverse proxies that append to `X-Forwarded-For` and set `X-Forwarded-Proto`; `0` rate-limits sign-in by peer address and ignores forwarded headers |
 | `SEIZA_AUTH_MODE` | `public` | `public`, `stub-api-key`, or verified-email `accounts` |
 | `SEIZA_PUBLIC_UI_SOLVES` | `true` | Allow anonymous submissions from the bundled browser UI; authenticated accounts are unaffected |
 | `SEIZA_PUBLIC_API_SOLVES` | `true` | Allow anonymous native and Astrometry-compatible API submissions; authenticated account keys/sessions are unaffected |
 | `SEIZA_IDENTITY_BACKEND` | job backend | Identity storage for accounts: `sqlx` or `dynamodb` |
 | `SEIZA_IDENTITY_SQL_DATABASE_URL` | job SQL URL | SQLx identity database URL |
 | `SEIZA_IDENTITY_DYNAMODB_TABLE` | unset | Required for DynamoDB identity storage; composite string keys `pk` and `sk`, with `ttl_epoch` TTL |
-| `SEIZA_PUBLIC_BASE_URL` | unset | Required origin for account links, WebAuthn, cookies, CORS, and CSRF; HTTPS except loopback development |
+| `SEIZA_PUBLIC_BASE_URL` | unset | Canonical origin for solution social cards; required for account links, WebAuthn, cookies, CORS, and CSRF; HTTPS except loopback development |
 | `SEIZA_AUTH_CODE_PEPPER_FILE` | unset | Required mounted secret (at least 32 bytes) used to HMAC short-lived email codes |
 | `SEIZA_EMAIL_PROVIDER` | unset | Required in accounts mode: `ses` or `smtp` |
 | `SEIZA_EMAIL_FROM` | unset | Verified/enabled sign-in sender mailbox |
