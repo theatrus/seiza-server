@@ -5,11 +5,11 @@ use crate::{
     identity::{IdentityRepository, identity_repository},
     models::{
         AnnotationResponse, AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus,
-        SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
-        WorkerCompletion,
+        OverlayObject, SolutionResponse, SolveMode, SolveOptions, ValidationDonation,
+        ValidationDonationResponse, WorkerCompletion,
     },
     overlay::{
-        OPENGRAPH_HEIGHT, OPENGRAPH_WIDTH, OverlayOptions, render_opengraph_png, render_svg,
+        OverlayOptions, opengraph_dimensions, render_opengraph_png, render_svg,
         render_svg_for_viewport,
     },
     rate_limit::RateLimiter,
@@ -867,7 +867,23 @@ async fn get_solution_page(
     let job = state.public_job(&requested_id).await?;
     let (body, cache_control) = if let Some(job) = job {
         let canonical_id = public_job_id(&job);
-        let metadata = solution_page_metadata(&state, &headers, &canonical_id, &job);
+        let annotations = if let Some(solution) = job.solution.as_ref() {
+            let query = AnnotationQuery::opengraph();
+            state
+                .annotations_for(
+                    &canonical_id,
+                    &job,
+                    solution,
+                    &job.options,
+                    &query.options(),
+                    query.satellite_tracks,
+                )
+                .await
+                .objects
+        } else {
+            Vec::new()
+        };
+        let metadata = solution_page_metadata(&state, &headers, &canonical_id, &job, &annotations);
         (
             inject_solution_metadata(template, &metadata),
             if matches!(job.status, JobStatus::Queued | JobStatus::Solving) {
@@ -888,10 +904,17 @@ async fn get_solution_page(
 }
 
 struct SolutionPageMetadata {
-    title: &'static str,
+    title: String,
     description: String,
     canonical_url: String,
-    image_url: Option<String>,
+    image: Option<SolutionPageImage>,
+}
+
+struct SolutionPageImage {
+    url: String,
+    width: u32,
+    height: u32,
+    alt: String,
 }
 
 fn solution_page_metadata(
@@ -899,44 +922,186 @@ fn solution_page_metadata(
     headers: &HeaderMap,
     public_id: &str,
     job: &JobRecord,
+    annotations: &[OverlayObject],
 ) -> SolutionPageMetadata {
     let origin = public_origin(state, headers);
     let canonical_url = format!("{origin}/solutions/{public_id}");
+    let target = job
+        .solution
+        .as_ref()
+        .and_then(|solution| prominent_target_name(solution, annotations));
     let (title, description) = match (job.status, job.solution.as_ref()) {
-        (JobStatus::Succeeded, Some(solution)) => (
-            "Solved astronomical field · Seiza",
-            format!(
-                "Plate solved at RA {:.5}°, Dec {:+.5}° with {:.3}″/px scale, {} matched stars, and {:.3}″ RMS.",
-                solution.center_ra_deg,
-                solution.center_dec_deg,
-                solution.pixel_scale_arcsec_per_pixel,
-                solution.matched_stars,
-                solution.rms_arcsec,
-            ),
-        ),
+        (JobStatus::Succeeded, Some(solution)) => {
+            let title = target
+                .as_ref()
+                .map(|target| format!("{target} · Solved with Seiza"))
+                .unwrap_or_else(|| "Solved astronomical field · Seiza".into());
+            (title, solved_field_description(solution, target.as_deref()))
+        }
         (JobStatus::Failed, _) => (
-            "Plate solve result · Seiza",
+            "Plate solve result · Seiza".into(),
             "Seiza could not solve this astronomical image. Open the result to review it or try again with hints."
                 .into(),
         ),
         (JobStatus::Solving, _) => (
-            "Solving an astronomical image · Seiza",
+            "Solving an astronomical image · Seiza".into(),
             "Seiza is plate solving this astronomical image in a background worker.".into(),
         ),
         _ => (
-            "Astronomical image queued · Seiza",
+            "Astronomical image queued · Seiza".into(),
             "This astronomical image is queued for plate solving with Seiza.".into(),
         ),
     };
-    let image_url = (job.status == JobStatus::Succeeded
-        && job.solution.is_some()
-        && state.input_available(job))
-    .then(|| format!("{origin}/api/v1/solves/{public_id}/opengraph.png"));
+    let image = (job.status == JobStatus::Succeeded && state.input_available(job))
+        .then_some(job.solution.as_ref())
+        .flatten()
+        .map(|solution| {
+            let (width, height) = opengraph_dimensions(solution.image_width, solution.image_height);
+            let alt = target
+                .as_ref()
+                .map(|target| format!("Annotated plate solution of {target}, rendered by Seiza"))
+                .unwrap_or_else(|| "Astronomical image with Seiza plate-solution overlays".into());
+            SolutionPageImage {
+                url: format!("{origin}/api/v1/solves/{public_id}/opengraph.png"),
+                width,
+                height,
+                alt,
+            }
+        });
     SolutionPageMetadata {
         title,
         description,
         canonical_url,
-        image_url,
+        image,
+    }
+}
+
+fn solved_field_description(solution: &SolutionResponse, target: Option<&str>) -> String {
+    let field_width_deg =
+        solution.image_width as f64 * solution.pixel_scale_arcsec_per_pixel / 3_600.0;
+    let field_height_deg =
+        solution.image_height as f64 * solution.pixel_scale_arcsec_per_pixel / 3_600.0;
+    let projection = if solution.wcs.sip.is_some() {
+        "TAN-SIP"
+    } else {
+        "TAN"
+    };
+    let mut details = vec![
+        format!("{} × {} px", solution.image_width, solution.image_height),
+        format!(
+            "{} × {} field",
+            format_angular_span(field_width_deg),
+            format_angular_span(field_height_deg)
+        ),
+        format!(
+            "RA {:.5}°, Dec {:+.5}° ICRS/{projection}",
+            solution.center_ra_deg, solution.center_dec_deg
+        ),
+        format!(
+            "{:.3}″/px, {} matched stars, {:.3}″ RMS",
+            solution.pixel_scale_arcsec_per_pixel, solution.matched_stars, solution.rms_arcsec
+        ),
+    ];
+    if let Some(statistics) = &solution.statistics {
+        let mode = match statistics.mode {
+            SolveMode::Blind => "blind",
+            SolveMode::Hinted => "hinted",
+        };
+        details.push(format!(
+            "{mode} solve in {}",
+            format_solve_duration(statistics.total_ms)
+        ));
+        let mut search_scope = format!(
+            "{} detected / {} catalog stars",
+            statistics.detected_stars, statistics.catalog_stars
+        );
+        if let Some(patterns) = statistics.blind_index_patterns {
+            search_scope.push_str(&format!(" / {patterns} blind patterns"));
+        }
+        details.push(search_scope);
+        details.push(format!(
+            "decode {}, detection {}, search {}",
+            format_solve_duration(statistics.decode_ms),
+            format_solve_duration(statistics.detection_ms),
+            format_solve_duration(statistics.search_ms)
+        ));
+    }
+    let subject = target
+        .map(|target| format!("Plate solution for {target}"))
+        .unwrap_or_else(|| "Plate-solved astronomical field".into());
+    format!("{subject}: {}.", details.join(" · "))
+}
+
+fn format_angular_span(degrees: f64) -> String {
+    if degrees >= 1.0 {
+        format!("{degrees:.2}°")
+    } else if degrees * 60.0 >= 1.0 {
+        format!("{:.1}′", degrees * 60.0)
+    } else {
+        format!("{:.1}″", degrees * 3_600.0)
+    }
+}
+
+fn format_solve_duration(milliseconds: f64) -> String {
+    if milliseconds >= 1_000.0 {
+        format!("{:.2} s", milliseconds / 1_000.0)
+    } else {
+        format!("{milliseconds:.0} ms")
+    }
+}
+
+fn prominent_target_name(
+    solution: &SolutionResponse,
+    annotations: &[OverlayObject],
+) -> Option<String> {
+    let width = solution.image_width.max(1) as f64;
+    let height = solution.image_height.max(1) as f64;
+    let short_side = width.min(height);
+    annotations
+        .iter()
+        .filter(|object| {
+            object
+                .source
+                .as_deref()
+                .is_none_or(|source| source == "deep_sky")
+                && !matches!(
+                    object.kind.as_str(),
+                    "star" | "double_star" | "field-star" | "transient"
+                )
+                && object.x.is_finite()
+                && object.y.is_finite()
+                && (0.0..=width).contains(&object.x)
+                && (0.0..=height).contains(&object.y)
+                && object.semi_major_px.is_finite()
+                && object.semi_major_px > 0.0
+        })
+        .filter_map(|object| {
+            let coverage = object.semi_major_px * 2.0 / short_side;
+            (coverage >= 0.10).then(|| {
+                let center_distance = ((object.x - width / 2.0).hypot(object.y - height / 2.0)
+                    / (width.hypot(height) / 2.0))
+                    .clamp(0.0, 1.0);
+                let common_name_bonus = (!object.common_name.trim().is_empty()) as u8 as f64;
+                let score = coverage.min(2.0) * 0.70
+                    + (1.0 - center_distance) * 0.25
+                    + common_name_bonus * 0.05;
+                (object, score)
+            })
+        })
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(object, _)| overlay_object_display_name(object))
+        .filter(|name| !name.is_empty())
+}
+
+fn overlay_object_display_name(object: &OverlayObject) -> String {
+    let name = object.name.trim();
+    let common_name = object.common_name.trim();
+    match (name.is_empty(), common_name.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => common_name.into(),
+        (false, true) => name.into(),
+        (false, false) if name.eq_ignore_ascii_case(common_name) => name.into(),
+        (false, false) => format!("{common_name} ({name})"),
     }
 }
 
@@ -971,10 +1136,10 @@ fn public_origin(state: &AppState, headers: &HeaderMap) -> String {
 }
 
 fn inject_solution_metadata(mut template: String, metadata: &SolutionPageMetadata) -> String {
-    let title = escape_html_attribute(metadata.title);
+    let title = escape_html_attribute(&metadata.title);
     let description = escape_html_attribute(&metadata.description);
     let canonical_url = escape_html_attribute(&metadata.canonical_url);
-    let card = if metadata.image_url.is_some() {
+    let card = if metadata.image.is_some() {
         "summary_large_image"
     } else {
         "summary"
@@ -991,17 +1156,20 @@ fn inject_solution_metadata(mut template: String, metadata: &SolutionPageMetadat
     <meta name="twitter:title" content="{title}" />
     <meta name="twitter:description" content="{description}" />"#,
     );
-    if let Some(image_url) = &metadata.image_url {
-        let image_url = escape_html_attribute(image_url);
+    if let Some(image) = &metadata.image {
+        let image_url = escape_html_attribute(&image.url);
+        let image_alt = escape_html_attribute(&image.alt);
         tags.push_str(&format!(
             r#"
     <meta property="og:image" content="{image_url}" />
     <meta property="og:image:type" content="image/png" />
-    <meta property="og:image:width" content="{OPENGRAPH_WIDTH}" />
-    <meta property="og:image:height" content="{OPENGRAPH_HEIGHT}" />
-    <meta property="og:image:alt" content="Astronomical image with Seiza solution overlays" />
+    <meta property="og:image:width" content="{width}" />
+    <meta property="og:image:height" content="{height}" />
+    <meta property="og:image:alt" content="{image_alt}" />
     <meta name="twitter:image" content="{image_url}" />
-    <meta name="twitter:image:alt" content="Astronomical image with Seiza solution overlays" />"#,
+    <meta name="twitter:image:alt" content="{image_alt}" />"#,
+            width = image.width,
+            height = image.height,
         ));
         if image_url.starts_with("https://") {
             tags.push_str(&format!(
@@ -1530,6 +1698,8 @@ async fn get_solve_opengraph(
     let preview = preview_png(content, job.original_filename)
         .await
         .map_err(ApiError::bad_request)?;
+    let (output_width, output_height) =
+        opengraph_dimensions(solution.image_width, solution.image_height);
     let svg = render_svg_for_viewport(
         &solution,
         &preview,
@@ -1538,8 +1708,8 @@ async fn get_solve_opengraph(
             grid: true,
             outlines: true,
         },
-        OPENGRAPH_WIDTH,
-        OPENGRAPH_HEIGHT,
+        output_width,
+        output_height,
     );
     let png = tokio::task::spawn_blocking(move || render_opengraph_png(&svg))
         .await
@@ -2710,6 +2880,49 @@ mod tests {
         }
     }
 
+    fn deep_sky_fixture(semi_major_px: f64) -> OverlayObject {
+        OverlayObject {
+            stable_id: Some("messier:M51".into()),
+            name: "M 51".into(),
+            common_name: "Whirlpool Galaxy".into(),
+            kind: "galaxy".into(),
+            mag: Some(8.4),
+            x: 600.0,
+            y: 400.0,
+            semi_major_px,
+            semi_minor_px: semi_major_px * 2.0 / 3.0,
+            angle_deg: Some(20.0),
+            source: Some("deep_sky".into()),
+            catalog_source: Some("OpenNGC".into()),
+            aliases: vec!["NGC 5194".into()],
+            parent_ids: Vec::new(),
+            alternate_ids: Vec::new(),
+            alternate_sources: Vec::new(),
+            ra_deg: Some(202.47),
+            dec_deg: Some(47.2),
+            discovered: None,
+            near_capture: None,
+            distance_au: None,
+            motion_arcsec_per_hour: None,
+            direction_pa_deg: None,
+            direction_angle_deg: None,
+            outlines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn social_metadata_names_only_substantial_deep_sky_targets() {
+        let solution = solved_fixture();
+        let large_target = deep_sky_fixture(120.0);
+        assert_eq!(
+            prominent_target_name(&solution, std::slice::from_ref(&large_target)).as_deref(),
+            Some("Whirlpool Galaxy (M 51)")
+        );
+
+        let small_catalog_hit = deep_sky_fixture(20.0);
+        assert_eq!(prominent_target_name(&solution, &[small_catalog_hit]), None);
+    }
+
     #[tokio::test]
     async fn frontend_routes_are_successful_on_refresh_and_unknown_paths_remain_not_found() {
         let root = std::env::temp_dir().join(format!("seiza-api-frontend-{}", Uuid::now_v7()));
@@ -2771,7 +2984,7 @@ mod tests {
         config.public_base_url = Some(Url::parse("https://solve.example.com").unwrap());
         let state = AppState::new(config).await.unwrap();
         let mut preview = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(120, 80)
+        image::DynamicImage::new_rgb8(1_200, 800)
             .write_to(&mut preview, image::ImageFormat::Png)
             .unwrap();
         let object_key = state.new_object_key("social.png");
@@ -2824,15 +3037,24 @@ mod tests {
         assert!(queued_body.contains("<div id=\"root\"></div>"));
 
         let lease = state.repository.claim(None, 60).await.unwrap().unwrap();
+        let mut social_solution = solved_fixture();
+        social_solution.objects = vec![deep_sky_fixture(120.0)];
+        social_solution.statistics = Some(crate::models::SolveStatistics {
+            total_ms: 1_250.0,
+            decode_ms: 50.0,
+            detection_ms: 200.0,
+            search_ms: 1_000.0,
+            mode: SolveMode::Blind,
+            detected_stars: 264,
+            catalog_stars: 10_000,
+            blind_index_patterns: Some(50_000),
+            hint_source: None,
+            hint_keywords: Vec::new(),
+        });
         assert!(
             state
                 .repository
-                .complete(
-                    lease.job_id,
-                    lease.lease_token,
-                    Some(solved_fixture()),
-                    None,
-                )
+                .complete(lease.job_id, lease.lease_token, Some(social_solution), None,)
                 .await
                 .unwrap()
         );
@@ -2858,18 +3080,23 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        assert!(
-            solved_body
-                .contains("property=\"og:title\" content=\"Solved astronomical field · Seiza\"")
-        );
+        assert!(solved_body.contains(
+            "property=\"og:title\" content=\"Whirlpool Galaxy (M 51) · Solved with Seiza\""
+        ));
+        assert!(solved_body.contains("Plate solution for Whirlpool Galaxy (M 51)"));
+        assert!(solved_body.contains("1200 × 800 px"));
+        assert!(solved_body.contains("27.0′ × 18.0′ field"));
+        assert!(solved_body.contains("blind solve in 1.25 s"));
+        assert!(solved_body.contains("264 detected / 10000 catalog stars / 50000 blind patterns"));
         assert!(solved_body.contains(&format!(
             "property=\"og:url\" content=\"https://solve.example.com/solutions/{public_id}\""
         )));
         assert!(solved_body.contains(&format!(
             "property=\"og:image\" content=\"https://solve.example.com/api/v1/solves/{public_id}/opengraph.png\""
         )));
-        assert!(solved_body.contains("content=\"1200\""));
+        assert!(solved_body.contains("content=\"945\""));
         assert!(solved_body.contains("content=\"630\""));
+        assert!(solved_body.contains("Annotated plate solution of Whirlpool Galaxy (M 51)"));
         assert!(solved_body.contains("<div id=\"root\"></div>"));
 
         let social_image = app
@@ -2887,8 +3114,8 @@ mod tests {
             .await
             .unwrap();
         let decoded = image::load_from_memory(&social_image).unwrap();
-        assert_eq!(decoded.width(), OPENGRAPH_WIDTH);
-        assert_eq!(decoded.height(), OPENGRAPH_HEIGHT);
+        assert_eq!(decoded.width(), 945);
+        assert_eq!(decoded.height(), 630);
 
         drop(state);
         std::fs::remove_dir_all(root).unwrap();

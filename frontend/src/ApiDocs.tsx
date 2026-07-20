@@ -156,7 +156,7 @@ export function ApiDocsPage() {
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/annotations">Regenerate projected catalog annotations from the stored WCS.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/preview">Return a retained PNG preview. Add <code>?full=true</code> for native dimensions.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/overlay.svg">Return a self-contained composite SVG for API clients.</Endpoint>
-            <Endpoint method="GET" path="/api/v1/solves/{public_id}/opengraph.png">Return the retained solution and default overlays as a 1200 × 630 PNG used by solution-page social cards.</Endpoint>
+            <Endpoint method="GET" path="/api/v1/solves/{public_id}/opengraph.png">Return the retained solution and default overlays as a social-card PNG. It preserves the source aspect ratio, is capped at 1200 × 630, and never enlarges the original image.</Endpoint>
             <Endpoint method="GET" path="/api/v1/solves/{public_id}/wcs">Download a FITS-compatible, 80-column WCS header.</Endpoint>
           </div>
           <div className="api-note"><strong>HTTP caching and validators</strong><span>Queued and solving job JSON uses <code>no-store</code>. Completed job JSON has a short private cache; annotations cache for five minutes by catalog version; previews and composite SVG overlays use five-minute private caches; the Open Graph PNG has a five-minute public cache; WCS downloads are immutable. Cacheable responses include <code>ETag</code> and honor <code>If-None-Match</code>.</span></div>
