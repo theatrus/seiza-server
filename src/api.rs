@@ -134,16 +134,18 @@ impl AppState {
         if self.satellites.is_enabled() {
             let satellites = self.satellites.clone();
             tokio::spawn(async move {
+                // Prime the durable snapshot history even when the server has no
+                // eligible solves. CelesTrakSource reuses a fresh cached snapshot
+                // and only contacts the provider when its refresh floor permits.
+                satellites.refresh().await;
                 let mut interval = tokio::time::interval(seiza_satellites::CELESTRAK_MIN_REFRESH);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                // The first interval tick is immediate. Consume it so a server that never
-                // receives an eligible exposure also never contacts the catalog service.
+                // The first interval tick is immediate; consume it because the
+                // cache was just primed above.
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    if satellites.has_loaded_catalog() {
-                        satellites.refresh().await;
-                    }
+                    satellites.refresh().await;
                 }
             });
         }
