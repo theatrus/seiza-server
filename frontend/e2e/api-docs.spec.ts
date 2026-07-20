@@ -18,7 +18,7 @@ test('advertises optional satellite lookup without presenting predictions as det
   await page.goto('/')
 
   await expect(page.getByRole('heading', { name: 'Catalog the field—and predict satellite crossings.' })).toBeVisible()
-  await expect(page.getByText('Satellite lookup is optional:', { exact: false })).toBeVisible()
+  await expect(page.getByText('Satellite lookup is optional and off by default', { exact: false })).toBeVisible()
   await expect(page.getByText('orbit predictions, not claims that a trail was detected', { exact: false })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Read the annotation contract' })).toHaveAttribute('href', '/docs/api#responses')
 })

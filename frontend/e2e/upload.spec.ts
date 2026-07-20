@@ -158,9 +158,12 @@ test('places the solve action beside the file selector', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
+  const satelliteTrails = row.getByRole('checkbox', { name: 'Show predicted satellite trails' })
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
 
   await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
+  await expect(satelliteTrails).toBeVisible()
+  await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()
   const fileBox = await fileSelector.boundingBox()
   const buttonBox = await solveButton.boundingBox()
@@ -207,9 +210,10 @@ test('submits manual satellite observation metadata with a JPEG upload', async (
   await page.getByLabel('Observer latitude (° N)').fill('37.3')
   await page.getByLabel('Observer longitude (° E)').fill('-122')
   await page.getByLabel('Observer altitude (m)').fill('50')
+  await page.getByRole('checkbox', { name: 'Show predicted satellite trails' }).check()
   await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
-  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  await expect(page).toHaveURL(`/solutions/${publicId}?satellite_tracks=true`)
   expect(submittedOptions).toMatchObject({
     capture_time: '2026-07-19T04:05:06.000Z',
     exposure_seconds: 30,

@@ -145,17 +145,20 @@ const solution = {
 }
 
 async function mockSolution(page: Page, inputAvailable = true) {
-  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      job_id: publicId,
-      catalog_version: 'objects:test;stars:test',
-      capture_time: '2026-07-13T04:05:06Z',
-      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
-      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
-      objects: baseObjects,
-    }),
-  }))
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => {
+    expect(new URL(route.request().url()).searchParams.get('satellite_tracks')).toBe('false')
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        job_id: publicId,
+        catalog_version: 'objects:test;stars:test',
+        capture_time: '2026-07-13T04:05:06Z',
+        available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
+        counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
+        objects: baseObjects,
+      }),
+    })
+  })
   await page.route(`**/api/v1/solves/${publicId}/preview**`, async (route) => route.fulfill({
     contentType: 'image/svg+xml',
     body: starFieldSvg,
@@ -390,27 +393,30 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
 
 test('draws and explains predicted satellite tracks when exposure metadata is complete', async ({ page }) => {
   await mockSolution(page)
-  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      job_id: publicId,
-      catalog_version: 'objects:test;satellites:test',
-      capture_time: '2026-07-13T04:05:06Z',
-      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, satellite_tracks: true, grid: true },
-      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2, satellite_tracks: 1 },
-      objects: baseObjects,
-      satellite_tracks: [{
-        stable_id: 'satellite:norad:25544', label: 'ISS (ZARYA) [25544]', name: 'ISS (ZARYA)',
-        norad_id: 25544, cospar_id: '1998-067A', source: 'https://celestrak.org/test',
-        element_epoch_utc: '2026-07-13T03:00:00Z', element_age_seconds: 3906,
-        sample_interval_seconds: 1, maximum_apparent_rate_arcsec_per_second: 185.4,
-        segments: [{ start: [110, 780], end: [900, 260] }],
-        risk: { level: 'possible', score: 0.48, maximum_sunlight_fraction: 0.82, minimum_range_km: 612, maximum_elevation_deg: 48.3, clipped_length_px: 945 },
-      }],
-      satellite_search: { catalog_source: 'https://celestrak.org/test', catalog_retrieved_at: '2026-07-13T03:30:00Z', elements_considered: 12000, propagation_failures: 2, stale_elements: 0 },
-    }),
-  }))
-  await page.goto(`/solutions/${publicId}`)
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => {
+    expect(new URL(route.request().url()).searchParams.get('satellite_tracks')).toBe('true')
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        job_id: publicId,
+        catalog_version: 'objects:test;satellites:test',
+        capture_time: '2026-07-13T04:05:06Z',
+        available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, satellite_tracks: true, grid: true },
+        counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2, satellite_tracks: 1 },
+        objects: baseObjects,
+        satellite_tracks: [{
+          stable_id: 'satellite:norad:25544', label: 'ISS (ZARYA) [25544]', name: 'ISS (ZARYA)',
+          norad_id: 25544, cospar_id: '1998-067A', source: 'https://celestrak.org/test',
+          element_epoch_utc: '2026-07-13T03:00:00Z', element_age_seconds: 3906,
+          sample_interval_seconds: 1, maximum_apparent_rate_arcsec_per_second: 185.4,
+          segments: [{ start: [110, 780], end: [900, 260] }],
+          risk: { level: 'possible', score: 0.48, maximum_sunlight_fraction: 0.82, minimum_range_km: 612, maximum_elevation_deg: 48.3, clipped_length_px: 945 },
+        }],
+        satellite_search: { catalog_source: 'https://celestrak.org/test', catalog_retrieved_at: '2026-07-13T03:30:00Z', elements_considered: 12000, propagation_failures: 2, stale_elements: 0 },
+      }),
+    })
+  })
+  await page.goto(`/solutions/${publicId}?satellite_tracks=true`)
 
   const track = page.locator('[data-kind="satellite"]')
   await expect(page.getByRole('button', { name: 'Satellite tracks · 1' })).toBeEnabled()
@@ -462,7 +468,7 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
       objects: baseObjects.filter((object) => object.kind !== 'comet' && object.kind !== 'asteroid'),
     }),
   }))
-  await page.goto(`/solutions/${publicId}`)
+  await page.goto(`/solutions/${publicId}?satellite_tracks=true`)
 
   await expect(page.getByText('Solar system positions require an acquisition time for this image. The minor-body catalog is installed.')).toBeVisible()
   await expect(page.getByText(/Catalog data unavailable for this solution/)).toHaveCount(0)
