@@ -190,6 +190,10 @@ export function AstroOverlay({
       riskLevel: track.risk.level,
       maximumApparentRateArcsecPerSecond: track.maximum_apparent_rate_arcsec_per_second,
       segments: track.segments,
+      pixelAlignment: track.pixel_alignment == null ? null : {
+        status: track.pixel_alignment.status,
+        segments: track.pixel_alignment.segments,
+      },
     })),
   ]
 

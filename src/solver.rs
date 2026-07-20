@@ -22,6 +22,13 @@ use std::{
 
 pub const FITS_HEADER_PROBE_BYTES: usize = 80 * 1_440;
 
+pub(crate) struct MonochromeImage {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<u16>,
+    pub adu_per_stored_unit: f64,
+}
+
 #[derive(Clone)]
 pub struct SolverEngine {
     catalog: Option<Arc<TileCatalog>>,
@@ -137,6 +144,61 @@ async fn encode_png(bytes: Bytes, filename: String, thumbnail: bool) -> Result<B
 pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)> {
     let image = decode_image(bytes, filename)?;
     Ok((image.width(), image.height()))
+}
+
+pub(crate) fn decode_monochrome_u16(bytes: &[u8], filename: &str) -> Result<MonochromeImage> {
+    if looks_like_fits(bytes, filename) {
+        let fits = seiza_fits::FitsImage::from_bytes(bytes)
+            .map_err(|error| anyhow::anyhow!("invalid FITS image: {error}"))?;
+        let adu_per_stored_unit = match &fits.pixels {
+            seiza_fits::Pixels::U8(_) => 1.0 / 256.0,
+            seiza_fits::Pixels::U16(_) => 1.0,
+            seiza_fits::Pixels::I32(values) => {
+                scaled_adu_per_stored_unit(values.iter().map(|&value| value as f64))
+            }
+            seiza_fits::Pixels::F32(values) => {
+                scaled_adu_per_stored_unit(values.iter().map(|&value| value as f64))
+            }
+            seiza_fits::Pixels::F64(values) => scaled_adu_per_stored_unit(values.iter().copied()),
+        };
+        return Ok(MonochromeImage {
+            width: fits.width,
+            height: fits.height,
+            pixels: fits.to_u16().into_owned(),
+            adu_per_stored_unit,
+        });
+    }
+
+    let image = image::load_from_memory(bytes)
+        .context("unsupported or corrupt image; submit FITS, PNG, JPEG, TIFF, or WebP")?;
+    let eight_bit = matches!(
+        image,
+        image::DynamicImage::ImageLuma8(_)
+            | image::DynamicImage::ImageLumaA8(_)
+            | image::DynamicImage::ImageRgb8(_)
+            | image::DynamicImage::ImageRgba8(_)
+    );
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    Ok(MonochromeImage {
+        width,
+        height,
+        pixels: image.to_luma16().into_raw(),
+        adu_per_stored_unit: if eight_bit { 1.0 / 257.0 } else { 1.0 },
+    })
+}
+
+fn scaled_adu_per_stored_unit(values: impl Iterator<Item = f64>) -> f64 {
+    let (minimum, maximum) = values.filter(|value| value.is_finite()).fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+    );
+    let span = maximum - minimum;
+    if span.is_finite() && span > 0.0 {
+        span / u16::MAX as f64
+    } else {
+        1.0
+    }
 }
 
 fn solve_bytes(
@@ -661,12 +723,7 @@ pub fn parse_capture_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> 
 }
 
 fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
-    let looks_like_fits = filename.rsplit('.').next().is_some_and(|extension| {
-        extension.eq_ignore_ascii_case("fits")
-            || extension.eq_ignore_ascii_case("fit")
-            || extension.eq_ignore_ascii_case("fts")
-    }) || bytes.starts_with(b"SIMPLE  ");
-    if looks_like_fits {
+    if looks_like_fits(bytes, filename) {
         let fits = seiza_fits::FitsImage::from_bytes(bytes)
             .map_err(|error| anyhow::anyhow!("invalid FITS image: {error}"))?;
         let pixels = fits.stretch_to_u8(&seiza_fits::StretchParams::default());
@@ -676,6 +733,14 @@ fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
     }
     image::load_from_memory(bytes)
         .context("unsupported or corrupt image; submit FITS, PNG, JPEG, TIFF, or WebP")
+}
+
+fn looks_like_fits(bytes: &[u8], filename: &str) -> bool {
+    filename.rsplit('.').next().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("fits")
+            || extension.eq_ignore_ascii_case("fit")
+            || extension.eq_ignore_ascii_case("fts")
+    }) || bytes.starts_with(b"SIMPLE  ")
 }
 
 #[cfg(test)]
@@ -688,6 +753,21 @@ mod tests {
             header[index * 80..index * 80 + card.len()].copy_from_slice(card.as_bytes());
         }
         header
+    }
+
+    #[test]
+    fn decodes_eight_bit_images_for_pixel_trail_alignment_without_changing_adu_scale() {
+        let pixels = image::GrayImage::from_raw(2, 2, vec![0, 64, 128, 255]).unwrap();
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(pixels)
+            .write_to(&mut encoded, ImageFormat::Png)
+            .unwrap();
+
+        let decoded = decode_monochrome_u16(encoded.get_ref(), "trail.png").unwrap();
+
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(decoded.pixels, [0, 64 * 257, 128 * 257, u16::MAX]);
+        assert_eq!(decoded.adu_per_stored_unit, 1.0 / 257.0);
     }
 
     #[test]

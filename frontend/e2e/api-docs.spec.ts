@@ -14,12 +14,13 @@ test('advertises N.I.N.A. and Siril integrations on the home page', async ({ pag
   await expect(page.getByRole('link', { name: 'Download Seiza' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
 })
 
-test('advertises optional satellite lookup without presenting predictions as detections', async ({ page }) => {
+test('advertises optional satellite lookup with separate pixel evidence', async ({ page }) => {
   await page.goto('/')
 
   await expect(page.getByRole('heading', { name: 'Catalog the field—and predict satellite crossings.' })).toBeVisible()
   await expect(page.getByText('Satellite lookup is optional and off by default', { exact: false })).toBeVisible()
-  await expect(page.getByText('orbit predictions, not claims that a trail was detected', { exact: false })).toBeVisible()
+  await expect(page.getByText('checks predicted corridors for matching trail pixels', { exact: false })).toBeVisible()
+  await expect(page.getByText('does not prove the candidate satellite identity', { exact: false })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Read the annotation contract' })).toHaveAttribute('href', '/docs/api#responses')
 })
 

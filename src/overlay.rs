@@ -66,6 +66,8 @@ pub fn render_svg(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Annotated Seiza plate solution">
 <style>
   .marker {{ fill: none; stroke-width: 2.2; vector-effect: non-scaling-stroke; }}
+  .satellite-predicted {{ stroke-dasharray: 8 5; opacity: .88; }}
+  .satellite-pixel-aligned {{ stroke-width: 2.8; }}
   .label {{ fill: #f8fbff; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 600 15px ui-sans-serif, system-ui, sans-serif; }}
   .detail {{ fill: #c7d5e5; stroke: #05090e; stroke-width: 4; paint-order: stroke; font: 13px ui-monospace, monospace; }}
   .grid-line {{ fill: none; stroke: #7ddbe8; stroke-width: 1.2; stroke-dasharray: 7 5; opacity: .72; vector-effect: non-scaling-stroke; }}
@@ -563,6 +565,15 @@ fn sharpless_designation(name: &str) -> bool {
 
 fn render_outlines(output: &mut String, object: &OverlayObject, color: &str) {
     for outline in &object.outlines {
+        let (class_name, outline_color) = match (object.kind.as_str(), outline.role.as_str()) {
+            ("satellite", "predicted-track") => {
+                ("marker object-outline satellite-predicted", color)
+            }
+            ("satellite", "pixel-aligned-track") => {
+                ("marker object-outline satellite-pixel-aligned", "#7cff6b")
+            }
+            _ => ("marker object-outline", color),
+        };
         for contour in &outline.contours {
             let Some(([first_x, first_y], rest)) = contour.points.split_first() else {
                 continue;
@@ -576,9 +587,11 @@ fn render_outlines(output: &mut String, object: &OverlayObject, color: &str) {
             }
             let _ = write!(
                 output,
-                r#"<path class="marker object-outline" data-geometry-id="{geometry_id}" data-outline-level="{level}" stroke="{color}" d="{path}" />"#,
+                r#"<path class="{class_name}" data-geometry-id="{geometry_id}" data-outline-level="{level}" data-outline-role="{role}" data-outline-quality="{quality}" stroke="{outline_color}" d="{path}" />"#,
                 geometry_id = xml_escape(&outline.geometry_id),
                 level = xml_escape(outline.level.as_deref().unwrap_or("")),
+                role = xml_escape(&outline.role),
+                quality = xml_escape(&outline.quality),
             );
         }
     }
@@ -847,17 +860,30 @@ mod tests {
             motion_arcsec_per_hour: None,
             direction_pa_deg: None,
             direction_angle_deg: None,
-            outlines: vec![OverlayOutline {
-                geometry_id: "satellite:norad:25544:predicted-track".into(),
-                source_record_id: "satellite:norad:25544".into(),
-                role: "predicted-track".into(),
-                quality: "propagated".into(),
-                level: Some("low".into()),
-                contours: vec![OverlayContour {
-                    closed: false,
-                    points: vec![[10.0, 20.0], [30.0, 30.0], [50.0, 40.0]],
-                }],
-            }],
+            outlines: vec![
+                OverlayOutline {
+                    geometry_id: "satellite:norad:25544:predicted-track".into(),
+                    source_record_id: "satellite:norad:25544".into(),
+                    role: "predicted-track".into(),
+                    quality: "propagated".into(),
+                    level: Some("low".into()),
+                    contours: vec![OverlayContour {
+                        closed: false,
+                        points: vec![[10.0, 20.0], [30.0, 30.0], [50.0, 40.0]],
+                    }],
+                },
+                OverlayOutline {
+                    geometry_id: "satellite:norad:25544:pixel-aligned-track".into(),
+                    source_record_id: "satellite:norad:25544".into(),
+                    role: "pixel-aligned-track".into(),
+                    quality: "detected".into(),
+                    level: Some("detected".into()),
+                    contours: vec![OverlayContour {
+                        closed: false,
+                        points: vec![[12.0, 22.0], [32.0, 32.0], [52.0, 42.0]],
+                    }],
+                },
+            ],
         }];
 
         let svg = render_svg(
@@ -866,6 +892,9 @@ mod tests {
             OverlayOptions::default(),
         );
         assert!(svg.contains("stroke=\"#43d9e6\""));
+        assert!(svg.contains("stroke=\"#7cff6b\""));
+        assert!(svg.contains("data-outline-role=\"predicted-track\""));
+        assert!(svg.contains("data-outline-role=\"pixel-aligned-track\""));
         assert!(svg.contains("M 10.00 20.00 L 30.00 30.00 L 50.00 40.00\""));
         assert!(svg.contains(">ISS (ZARYA)</text>"));
         assert!(!svg.contains("ISS (ZARYA) (ISS (ZARYA))"));
@@ -914,9 +943,12 @@ mod tests {
             &Bytes::from_static(b"png"),
             OverlayOptions::default(),
         );
-        assert!(outline_svg.contains(
-            "class=\"marker object-outline\" data-geometry-id=\"openngc:Sh2-101#outline-1\" data-outline-level=\"1\" stroke=\"#ee9a78\""
-        ));
+        assert!(outline_svg.contains("class=\"marker object-outline\""));
+        assert!(outline_svg.contains("data-geometry-id=\"openngc:Sh2-101#outline-1\""));
+        assert!(outline_svg.contains("data-outline-level=\"1\""));
+        assert!(outline_svg.contains("data-outline-role=\"brightness-level\""));
+        assert!(outline_svg.contains("data-outline-quality=\"catalog\""));
+        assert!(outline_svg.contains("stroke=\"#ee9a78\""));
 
         let fallback_svg = render_svg(
             &colored,

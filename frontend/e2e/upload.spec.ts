@@ -153,24 +153,31 @@ function solvedJob(id: string, filename: string) {
   }
 }
 
-test('places the solve action beside the file selector', async ({ page }) => {
+test('places the solve action beside the file selector and satellite opt-in below', async ({ page }) => {
   await page.goto('/solve')
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
+  const controls = page.locator('.upload-controls')
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')
-  const satelliteTrails = row.getByRole('checkbox', { name: 'Show predicted satellite trails' })
+  const satelliteRow = controls.locator('.satellite-trail-opt-in')
+  const satelliteTrails = satelliteRow.getByRole('checkbox', { name: 'Show predicted satellite trails' })
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
 
   await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
+  await expect(satelliteRow).toHaveText('Show predicted satellite trails')
+  await expect(controls.locator('.satellite-trail-requirements')).toHaveText('Requires FITS file with observer and time metadata, or optional fields filled in below.')
   await expect(satelliteTrails).toBeVisible()
   await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()
   const fileBox = await fileSelector.boundingBox()
   const buttonBox = await solveButton.boundingBox()
+  const satelliteBox = await satelliteRow.boundingBox()
   expect(fileBox).not.toBeNull()
   expect(buttonBox).not.toBeNull()
+  expect(satelliteBox).not.toBeNull()
   expect(buttonBox!.x).toBeGreaterThan(fileBox!.x + fileBox!.width)
   expect(Math.abs((buttonBox!.y + buttonBox!.height) - (fileBox!.y + fileBox!.height))).toBeLessThan(2)
+  expect(satelliteBox!.y).toBeGreaterThanOrEqual(fileBox!.y + fileBox!.height)
   const viewport = page.viewportSize()
   expect(viewport).not.toBeNull()
   expect(fileBox!.y + fileBox!.height).toBeLessThan(viewport!.height)
@@ -292,6 +299,16 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
     })
   })
   const job = queuedJob(publicId, 'parallel-field.fits')
+  job.options = {
+    ...job.options,
+    capture_time: '2026-07-19T04:05:06Z',
+    exposure_seconds: 30,
+    observer_latitude_deg: 37.3,
+    observer_longitude_deg: -122,
+    observer_altitude_m: 50,
+    satellite_metadata_source: 'fits_header',
+    satellite_metadata_keywords: ['DATE-OBS', 'EXPTIME', 'SITELAT', 'SITELONG'],
+  }
   await page.route(`**/api/v1/uploads/${finalId}/result`, async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify(job),
@@ -305,7 +322,7 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   await setStableFile(page, 'parallel-field.fits', parallelFileSize)
   await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
-  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  await expect(page).toHaveURL(`/solutions/${publicId}?satellite_tracks=true`)
   expect(partialCreations).toBe(3)
   expect(finalCreations).toBe(1)
   const uploadConcurrency = await page.evaluate(
