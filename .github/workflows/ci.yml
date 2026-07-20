@@ -58,7 +58,10 @@ jobs:
       - name: Install Playwright host dependencies
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium webkit
-      - run: npm run lint
+      - name: ESLint
+        run: npm run lint:js
+      - name: Stylelint
+        run: npm run lint:css
       - run: npm run build
       - run: npm run test:e2e
       - name: Store Playwright diagnostics

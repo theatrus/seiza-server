@@ -943,9 +943,12 @@ mod tests {
             &Bytes::from_static(b"png"),
             OverlayOptions::default(),
         );
-        assert!(outline_svg.contains(
-            "class=\"marker object-outline\" data-geometry-id=\"openngc:Sh2-101#outline-1\" data-outline-level=\"1\" stroke=\"#ee9a78\""
-        ));
+        assert!(outline_svg.contains("class=\"marker object-outline\""));
+        assert!(outline_svg.contains("data-geometry-id=\"openngc:Sh2-101#outline-1\""));
+        assert!(outline_svg.contains("data-outline-level=\"1\""));
+        assert!(outline_svg.contains("data-outline-role=\"brightness-level\""));
+        assert!(outline_svg.contains("data-outline-quality=\"catalog\""));
+        assert!(outline_svg.contains("stroke=\"#ee9a78\""));
 
         let fallback_svg = render_svg(
             &colored,
