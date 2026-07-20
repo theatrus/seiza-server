@@ -5,8 +5,8 @@ use crate::models::{
 };
 use seiza_satellites::{
     BrightTrailRiskLevel, BrightTrailRiskOptions, CelesTrakLoad, CelesTrakSource,
-    ExposureProvenance, ObserverLocation, SatelliteCatalog, SingleExposure, TrackOptions,
-    UtcTimestamp,
+    ExposureProvenance, ObserverLocation, SatelliteCatalog, SatelliteTrackAnalysis, SingleExposure,
+    TrackOptions, UtcTimestamp,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -195,7 +195,8 @@ impl SatelliteEngine {
                 );
             }
         };
-        let tracks = search
+        let analysis = search.into_analysis(&BrightTrailRiskOptions::default(), None);
+        let tracks = analysis
             .tracks
             .into_iter()
             .enumerate()
@@ -209,9 +210,9 @@ impl SatelliteEngine {
                 catalog_retrieved_at: loaded
                     .retrieved_at
                     .map(seiza_satellites::UtcTimestamp::to_rfc3339),
-                elements_considered: search.elements_considered,
-                propagation_failures: search.propagation_failures,
-                stale_elements: search.stale_elements,
+                elements_considered: analysis.elements_considered,
+                propagation_failures: analysis.propagation_failures,
+                stale_elements: analysis.stale_elements,
             },
         };
         self.prediction_cache
@@ -423,9 +424,9 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
         .map_err(|error| error.to_string())
 }
 
-fn track_response(index: usize, track: seiza_satellites::SatelliteTrack) -> SatelliteTrackResponse {
-    let risk = track.bright_trail_risk(&BrightTrailRiskOptions::default());
-    let maximum_apparent_rate_arcsec_per_second = track.maximum_apparent_rate_arcsec_per_second();
+fn track_response(index: usize, track: SatelliteTrackAnalysis) -> SatelliteTrackResponse {
+    let risk = track.bright_trail_risk;
+    let maximum_apparent_rate_arcsec_per_second = track.maximum_apparent_rate_arcsec_per_second;
     let label = track.identity.display_label();
     let stable_id = if let Some(norad_id) = track.identity.norad_id {
         format!("satellite:norad:{norad_id}")

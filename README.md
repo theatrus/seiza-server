@@ -4,8 +4,8 @@ Seiza Server is a queued web service for plate solving. It uses the
 [`seiza`](https://github.com/theatrus/seiza) and
 [`seiza-fits`](https://crates.io/crates/seiza-fits) Rust crates directly—not a
 CLI subprocess—and includes a TypeScript/React frontend. The current source
-pins Seiza to the exact 0.10.0 release-PR revision for satellite-track support;
-that Git dependency can return to a crates.io version after 0.10.0 is published.
+uses the published Seiza 0.10.0 release for satellite-track support and
+`@seiza/astro-overlay` 0.5.0 for risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
 AWS deployments can use DynamoDB. SQLx also accepts PostgreSQL, so it is the

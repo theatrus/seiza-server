@@ -3,6 +3,7 @@ import { AstroOverlay as ReusableAstroOverlay } from '@seiza/astro-overlay/react
 import {
   defaultOverlayDensity,
   defaultOverlayTheme,
+  satelliteTrackOverlayObject,
   suggestedDeepSkyCatalogColors as deepSkyCatalogColors,
   suggestedDeepSkyCatalogForObject as deepSkyCatalogForObject,
   suggestedDeepSkyCatalogLayer as deepSkyCatalogLayer,
@@ -10,6 +11,7 @@ import {
   suggestedDeepSkyColorForObject,
   suggestedDeepSkyLayerForObject,
   type OverlayLayerVisibility,
+  type OverlayObject as PackageOverlayObject,
   type SuggestedDeepSkyCatalogId as DeepSkyCatalogId,
 } from '@seiza/astro-overlay'
 import type { OverlayObject, SatelliteTrack, Solution } from './api'
@@ -169,23 +171,35 @@ export function AstroOverlay({
   hiddenCatalogs: DeepSkyCatalogId[]
   showCatalogOutlines: boolean
 }) {
-  const visibleObjects = objects
-    .filter((object) => {
-      const catalog = deepSkyCatalogForObject(object)
-      return catalog == null || !hiddenCatalogs.includes(catalog)
-    })
-    .map((object) => showCatalogOutlines || (object.outlines?.length ?? 0) === 0
-      ? object
-      : { ...object, outlines: [] })
-    .concat(satelliteTracks.map(satelliteTrackObject))
+  const visibleObjects: PackageOverlayObject[] = [
+    ...objects
+      .filter((object) => {
+        const catalog = deepSkyCatalogForObject(object)
+        return catalog == null || !hiddenCatalogs.includes(catalog)
+      })
+      .map((object) => showCatalogOutlines || (object.outlines?.length ?? 0) === 0
+        ? object
+        : { ...object, outlines: [] }),
+    ...satelliteTracks.map((track) => satelliteTrackOverlayObject({
+      stableId: track.stable_id,
+      label: track.label,
+      noradId: track.norad_id,
+      cosparId: track.cospar_id,
+      source: 'satellite_prediction',
+      catalogSource: track.source,
+      riskLevel: track.risk.level,
+      maximumApparentRateArcsecPerSecond: track.maximum_apparent_rate_arcsec_per_second,
+      segments: track.segments,
+    })),
+  ]
 
   return <ReusableAstroOverlay
     className="sky-overlay"
     solution={solution}
     objects={visibleObjects}
     layers={toPackageLayers(layers)}
-    layerForObject={(object) => object.kind === 'satellite' ? 'satellite_tracks' : suggestedDeepSkyLayerForObject(object)}
-    colorForObject={(object) => object.kind === 'satellite' ? '#ff8f70' : suggestedDeepSkyColorForObject(object)}
+    layerForObject={suggestedDeepSkyLayerForObject}
+    colorForObject={suggestedDeepSkyColorForObject}
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}
   />
@@ -207,43 +221,4 @@ function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
     visibility[deepSkyCatalogLayer(catalog)] = layers.deepSky
   }
   return visibility
-}
-
-function satelliteTrackObject(track: SatelliteTrack): OverlayObject {
-  const representative = track.segments.reduce<typeof track.segments[number] | null>((longest, segment) => {
-    if (!longest) return segment
-    const length = Math.hypot(segment.end[0] - segment.start[0], segment.end[1] - segment.start[1])
-    const longestLength = Math.hypot(longest.end[0] - longest.start[0], longest.end[1] - longest.start[1])
-    return length > longestLength ? segment : longest
-  }, null)
-  return {
-    stable_id: track.stable_id,
-    name: track.label,
-    common_name: '',
-    kind: 'satellite',
-    mag: null,
-    x: representative ? (representative.start[0] + representative.end[0]) / 2 : 0,
-    y: representative ? (representative.start[1] + representative.end[1]) / 2 : 0,
-    semi_major_px: 0,
-    semi_minor_px: 0,
-    angle_deg: null,
-    source: 'satellite_prediction',
-    catalog_source: track.source,
-    aliases: track.cospar_id ? [track.cospar_id] : [],
-    alternate_ids: track.norad_id == null ? [] : [`NORAD ${track.norad_id}`],
-    motion_arcsec_per_hour: track.maximum_apparent_rate_arcsec_per_second == null
-      ? undefined
-      : track.maximum_apparent_rate_arcsec_per_second * 3600,
-    outlines: [{
-      geometry_id: `${track.stable_id}:predicted-track`,
-      source_record_id: track.stable_id,
-      role: 'predicted-track',
-      quality: 'propagated',
-      level: track.risk.level,
-      contours: track.segments.map((segment) => ({
-        closed: false,
-        points: [segment.start, segment.end],
-      })),
-    }],
-  }
 }

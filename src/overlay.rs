@@ -389,7 +389,7 @@ fn render_object(
         "transient" => "#ff4fd8",
         "comet" => "#6df2a2",
         "asteroid" => "#ffad5c",
-        "satellite" => "#ff8f70",
+        "satellite" => satellite_color(object),
         _ => deep_sky_catalog_color(&object.name),
     };
     if object.kind == "field-star" {
@@ -516,6 +516,19 @@ fn deep_sky_catalog_color(name: &str) -> &'static str {
         "#72dfb9"
     } else {
         "#c1d1d3"
+    }
+}
+
+fn satellite_color(object: &OverlayObject) -> &'static str {
+    match object
+        .outlines
+        .iter()
+        .find(|outline| outline.role == "predicted-track")
+        .and_then(|outline| outline.level.as_deref())
+    {
+        Some("high") => "#ff4d5a",
+        Some("possible") => "#ffd166",
+        _ => "#43d9e6",
     }
 }
 
@@ -807,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn satellite_tracks_render_as_open_coral_paths_without_duplicate_labels() {
+    fn satellite_tracks_render_as_open_risk_paths_without_duplicate_labels() {
         let mut tracked = solution();
         tracked.objects = vec![OverlayObject {
             stable_id: Some("satellite:norad:25544".into()),
@@ -852,7 +865,7 @@ mod tests {
             &Bytes::from_static(b"png"),
             OverlayOptions::default(),
         );
-        assert!(svg.contains("stroke=\"#ff8f70\""));
+        assert!(svg.contains("stroke=\"#43d9e6\""));
         assert!(svg.contains("M 10.00 20.00 L 30.00 30.00 L 50.00 40.00\""));
         assert!(svg.contains(">ISS (ZARYA)</text>"));
         assert!(!svg.contains("ISS (ZARYA) (ISS (ZARYA))"));

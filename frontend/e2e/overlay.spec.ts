@@ -415,7 +415,7 @@ test('draws and explains predicted satellite tracks when exposure metadata is co
   const track = page.locator('[data-kind="satellite"]')
   await expect(page.getByRole('button', { name: 'Satellite tracks · 1' })).toBeEnabled()
   await expect(track).toBeVisible()
-  await expect(track.locator('.seiza-overlay__marker--outline')).toHaveCSS('stroke', 'rgb(255, 143, 112)')
+  await expect(track.locator('.seiza-overlay__marker--outline')).toHaveCSS('stroke', 'rgb(255, 209, 102)')
   await expect(page.getByText('Predicted satellite crossings · 1')).toBeVisible()
   await page.getByText('Predicted satellite crossings · 1').click()
   await expect(page.locator('.satellite-track-list strong', { hasText: 'ISS (ZARYA) [25544]' })).toBeVisible()
