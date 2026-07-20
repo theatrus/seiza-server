@@ -140,9 +140,25 @@ fn render_svg_with_display_scale(
     )
 }
 
-/// Rasterize a self-contained overlay into the wide PNG format expected by
-/// Open Graph consumers. The complete field is letterboxed rather than
-/// cropped so edge annotations and the WCS grid remain visible.
+/// Return the largest source-aspect-ratio dimensions that fit inside the
+/// Open Graph limit without enlarging the original image.
+pub fn opengraph_dimensions(source_width: u32, source_height: u32) -> (u32, u32) {
+    let source_width = source_width.max(1);
+    let source_height = source_height.max(1);
+    let scale = (OPENGRAPH_WIDTH as f64 / source_width as f64)
+        .min(OPENGRAPH_HEIGHT as f64 / source_height as f64)
+        .min(1.0);
+    let width = (source_width as f64 * scale).round() as u32;
+    let height = (source_height as f64 * scale).round() as u32;
+    (
+        width.clamp(1, OPENGRAPH_WIDTH.min(source_width)),
+        height.clamp(1, OPENGRAPH_HEIGHT.min(source_height)),
+    )
+}
+
+/// Rasterize a self-contained overlay for Open Graph consumers. The output
+/// preserves the source aspect ratio, fits within 1200 x 630, and is never
+/// larger than the source field.
 pub fn render_opengraph_png(svg: &str) -> Result<Bytes> {
     let font_database = OPENGRAPH_FONT_DATABASE.get_or_init(|| {
         let mut database = resvg::usvg::fontdb::Database::new();
@@ -156,11 +172,16 @@ pub fn render_opengraph_png(svg: &str) -> Result<Bytes> {
     let tree = resvg::usvg::Tree::from_str(svg, &options)
         .context("parsing the generated Open Graph overlay")?;
     let source = tree.size();
-    let scale =
-        (OPENGRAPH_WIDTH as f32 / source.width()).min(OPENGRAPH_HEIGHT as f32 / source.height());
-    let offset_x = (OPENGRAPH_WIDTH as f32 - source.width() * scale) / 2.0;
-    let offset_y = (OPENGRAPH_HEIGHT as f32 - source.height() * scale) / 2.0;
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(OPENGRAPH_WIDTH, OPENGRAPH_HEIGHT)
+    let (output_width, output_height) = opengraph_dimensions(
+        source.width().round() as u32,
+        source.height().round() as u32,
+    );
+    let scale = (output_width as f32 / source.width())
+        .min(output_height as f32 / source.height())
+        .min(1.0);
+    let offset_x = (output_width as f32 - source.width() * scale) / 2.0;
+    let offset_y = (output_height as f32 - source.height() * scale) / 2.0;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(output_width, output_height)
         .context("allocating the Open Graph image")?;
     pixmap.fill(resvg::tiny_skia::Color::from_rgba8(7, 16, 24, 255));
     let transform =
@@ -890,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn opengraph_renderer_produces_a_wide_png_from_the_overlay() {
+    fn opengraph_renderer_preserves_small_source_dimensions() {
         let mut preview = Cursor::new(Vec::new());
         DynamicImage::new_rgb8(100, 80)
             .write_to(&mut preview, ImageFormat::Png)
@@ -907,8 +928,16 @@ mod tests {
         let png = render_opengraph_png(&svg).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         let decoded = image::load_from_memory(&png).unwrap();
-        assert_eq!(decoded.width(), OPENGRAPH_WIDTH);
-        assert_eq!(decoded.height(), OPENGRAPH_HEIGHT);
+        assert_eq!(decoded.width(), 100);
+        assert_eq!(decoded.height(), 80);
+    }
+
+    #[test]
+    fn opengraph_dimensions_fit_large_fields_without_changing_aspect_ratio() {
+        assert_eq!(opengraph_dimensions(2_400, 1_600), (945, 630));
+        assert_eq!(opengraph_dimensions(2_400, 1_000), (1_200, 500));
+        assert_eq!(opengraph_dimensions(800, 1_200), (420, 630));
+        assert_eq!(opengraph_dimensions(640, 480), (640, 480));
     }
 
     #[test]
