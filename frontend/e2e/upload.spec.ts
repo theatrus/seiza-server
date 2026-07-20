@@ -165,6 +165,7 @@ test('places the solve action beside the file selector and satellite opt-in belo
 
   await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
   await expect(satelliteRow).toHaveText('Show predicted satellite trails')
+  await expect(controls.locator('.satellite-trail-requirements')).toHaveText('Requires FITS file with observer and time metadata, or optional fields filled in below.')
   await expect(satelliteTrails).toBeVisible()
   await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()
@@ -298,6 +299,16 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
     })
   })
   const job = queuedJob(publicId, 'parallel-field.fits')
+  job.options = {
+    ...job.options,
+    capture_time: '2026-07-19T04:05:06Z',
+    exposure_seconds: 30,
+    observer_latitude_deg: 37.3,
+    observer_longitude_deg: -122,
+    observer_altitude_m: 50,
+    satellite_metadata_source: 'fits_header',
+    satellite_metadata_keywords: ['DATE-OBS', 'EXPTIME', 'SITELAT', 'SITELONG'],
+  }
   await page.route(`**/api/v1/uploads/${finalId}/result`, async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify(job),
@@ -311,7 +322,7 @@ test('uploads large images as parallel TUS parts and concatenates them', async (
   await setStableFile(page, 'parallel-field.fits', parallelFileSize)
   await page.getByRole('button', { name: 'Solve', exact: true }).click()
 
-  await expect(page).toHaveURL(`/solutions/${publicId}`)
+  await expect(page).toHaveURL(`/solutions/${publicId}?satellite_tracks=true`)
   expect(partialCreations).toBe(3)
   expect(finalCreations).toBe(1)
   const uploadConcurrency = await page.evaluate(

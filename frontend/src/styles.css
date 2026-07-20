@@ -105,6 +105,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #6dd6e2; outline-
 .satellite-trail-option { padding-block: .8rem 1rem; }
 .satellite-trail-opt-in { display: flex; align-items: center; width: fit-content; gap: .65rem; color: #dcebed; font-size: .78rem; line-height: 1.25; cursor: pointer; }
 .satellite-trail-opt-in input { width: 1rem; height: 1rem; margin: 0; padding: 0; accent-color: #75d7e2; }
+.satellite-trail-requirements { margin: .5rem 0 0 1.65rem; }
 .solve-submit-button { align-self: stretch; min-width: 142px; height: 100%; gap: .7rem; white-space: nowrap; font-size: 1rem; }
 .solve-submit-button .go-arrow { font-size: 1.45rem; line-height: 1; transition: transform 140ms ease; }
 .solve-submit-button:hover .go-arrow, .solve-submit-button:focus-visible .go-arrow { transform: translateX(4px); }

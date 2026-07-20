@@ -78,6 +78,16 @@ function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOpt
   return options
 }
 
+function isFitsFilename(filename: string) {
+  return /\.(?:fits|fit|fts)$/i.test(filename)
+}
+
+function hasCompleteSatelliteMetadata(options: SolveOptions) {
+  const hasObserver = options.observer_itrf_m != null
+    || (options.observer_latitude_deg != null && options.observer_longitude_deg != null)
+  return options.capture_time != null && options.exposure_seconds != null && hasObserver
+}
+
 function dateTimeInputValue(value: string | null | undefined, timeZone: CaptureTimeZone) {
   if (!value) return ''
   const date = new Date(value)
@@ -371,7 +381,7 @@ function SolvePage({
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     const file = form.get('file')
-    const showSatelliteTracks = form.get('show_satellite_tracks') === 'on'
+    const satelliteTracksOptedIn = form.get('show_satellite_tracks') === 'on'
     if (!(file instanceof File) || file.size === 0) {
       setError('Choose an image to solve.')
       return
@@ -388,6 +398,8 @@ function SolvePage({
     setError(null)
     try {
       const job = await submitSolve(file, options, setUploadProgress)
+      const showSatelliteTracks = satelliteTracksOptedIn
+        || (isFitsFilename(job.original_filename) && hasCompleteSatelliteMetadata(job.options))
       navigate(`/solutions/${job.id}${showSatelliteTracks ? '?satellite_tracks=true' : ''}`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Upload failed')
@@ -414,6 +426,7 @@ function SolvePage({
           <fieldset className="optional-fields satellite-trail-option">
             <legend>Satellite trails <span className="optional-badge">Optional</span></legend>
             <label className="satellite-trail-opt-in"><input name="show_satellite_tracks" type="checkbox" /><span>Show predicted satellite trails</span></label>
+            <p className="satellite-trail-requirements">Requires FITS file with observer and time metadata, or optional fields filled in below.</p>
           </fieldset>
         </div>
         {submitting && <div className="upload-progress" aria-live="polite">
