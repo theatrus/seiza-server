@@ -939,6 +939,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
+ "zstd",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -3074,9 +3076,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.11.1"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae60585486f1a7014b9742aed92355945d7c230a8c6efc41f78f812c40f5830e"
+checksum = "fd14e5e6e43bd886cd1405b264bad730e473f20f5398ec5bd262aad6ae2cfff2"
 dependencies = [
  "directories",
  "image",
@@ -3093,6 +3095,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "seiza-download"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8adbf5e69a4f516d755283941e1d6734191e6223456d3b4605a1d95c5f1b6753"
+dependencies = [
+ "async-compression",
+ "directories",
+ "fs2",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "seiza-fits"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3103,21 +3124,21 @@ dependencies = [
 
 [[package]]
 name = "seiza-satellites"
-version = "0.3.1"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70209e084b6ad9695971609523e7f43e37c6543c76e155d016c5a07d60d9592b"
+checksum = "4ebec6e24911c969ddba9f55d8b527773217f539f53007ae74f87886658e54a3"
 dependencies = [
  "directories",
  "fs2",
  "reqwest",
  "satkit",
  "seiza",
+ "seiza-download",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "zstd",
 ]
 
 [[package]]
