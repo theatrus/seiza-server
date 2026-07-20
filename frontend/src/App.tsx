@@ -274,6 +274,21 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       </ol>
     </section>
 
+    <section className="about-card" aria-labelledby="optional-sky-context">
+      <div>
+        <p className="eyebrow">OPTIONAL SKY CONTEXT</p>
+        <h2 id="optional-sky-context">Catalog the field—and predict satellite crossings.</h2>
+      </div>
+      <div className="about-copy">
+        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional: when one exposure has a UTC shutter interval and observing site, Seiza can add WCS-clipped predicted tracks from cached orbital elements.</p>
+        <p>These tracks are orbit predictions, not claims that a trail was detected in the pixels. Missing exposure metadata or orbital data never makes the plate solve fail.</p>
+        <div className="text-links">
+          {solveEnabled && <Link to="/solve">Solve with optional sky context <span aria-hidden="true">→</span></Link>}
+          <a href="/docs/api#responses">Read the annotation contract <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
+    </section>
+
     <section className="about-card integration-card" aria-labelledby="application-integrations">
       <div>
         <p className="eyebrow">APPLICATION INTEGRATIONS</p>

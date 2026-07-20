@@ -90,7 +90,7 @@ export function ApiDocsPage() {
       <div>
         <p className="eyebrow">SEIZA SERVER API</p>
         <h1>Plate solving for software, scripts, and observatories.</h1>
-        <p className="intro">Submit an image, leave the solve in the durable queue, and poll an opaque result URL for WCS calibration and catalog metadata. The native API is JSON-first; an Astrometry.net-compatible subset is available for existing clients.</p>
+        <p className="intro">Submit an image, leave the solve in the durable queue, and poll an opaque result URL for WCS calibration, catalog metadata, and optional satellite-track context. The native API is JSON-first; an Astrometry.net-compatible subset is available for existing clients.</p>
       </div>
       <div className="api-base-url" aria-label="API base URL">
         <span>Base URL</span>
