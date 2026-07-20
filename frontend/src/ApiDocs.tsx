@@ -163,11 +163,12 @@ export function ApiDocsPage() {
           <CodeExample label="Contribute a validation image" code={contributionExample} />
           <div className="api-note"><strong>SIP WCS records</strong><span>When distortion is fitted, <code>solution.wcs.sip</code> contains the order and explicit <code>[p, q, value]</code> records for forward <code>A/B</code> and inverse <code>AP/BP</code> polynomials. The axes become <code>RA---TAN-SIP</code> / <code>DEC--TAN-SIP</code>, and the downloadable WCS includes the complete FITS SIP keyword set.</span></div>
           <div className="api-note"><strong>Solar-system motion</strong><span>Comet and asteroid annotations include the unclamped apparent speed as <code>motion_arcsec_per_hour</code>, plus sky and image direction angles. The rendered overlay uses the rate to scale a visible three-hour indicator: anti-solar for comet tails and along apparent motion for asteroid arrows.</span></div>
+          <div className="api-note"><strong>Predicted satellite tracks</strong><span>When one shutter-open interval and an observer location are available, annotations include WCS-clipped <code>satellite_tracks</code> plus element age, illumination, range, elevation, trail-risk, and catalog accounting. These are orbit predictions, not pixel detections. Missing metadata or orbital data leaves the solve successful and reports a specific <code>unavailable_reasons.satellite_tracks</code> message.</span></div>
           <div className="api-note"><strong>Invalid solve reports</strong><span>Set <code>solve_is_invalid: true</code> for an incorrect WCS, a false positive, or a failed solve that should have succeeded. The flag defaults to <code>false</code> and is returned with the contribution metadata.</span></div>
           <div className="api-note"><strong>Validation image permission</strong><span>By setting <code>license_agreed</code>, the contributor attests that they own the image or have authority to contribute it. They retain ownership and give Seiza and its maintainers permission to retain, copy, and process the image as part of Seiza’s validation set, only to test, validate, debug, and improve the Seiza plate solver, including training and evaluating solver-related models. Seiza will not make the validation set public, sell the image, or use it for unrelated purposes. The recorded permission version is <code>seiza-validation-image-grant-v2</code>.</span></div>
           <h3>Annotation and overlay query parameters</h3>
           <div className="option-table">
-            <OptionRow name="deep_sky, named_stars, transients, minor_bodies" defaultValue="true">Enable each installed catalog layer.</OptionRow>
+            <OptionRow name="deep_sky, named_stars, transients, minor_bodies, satellite_tracks" defaultValue="true">Enable each installed catalog or prediction layer.</OptionRow>
             <OptionRow name="outlines" defaultValue="true">Render detailed OpenNGC contours when available; disable it to use catalog ellipses instead.</OptionRow>
             <OptionRow name="star_identifiers, field_stars, historical_transients" defaultValue="false">Enable Tycho-sidecar labels, dense field-star markers, or older transient events.</OptionRow>
             <OptionRow name="star_identifier_mag_limit / max_star_identifiers" defaultValue="10.0 / 150">Limit stellar-identifier labels by magnitude and count.</OptionRow>
@@ -190,7 +191,11 @@ export function ApiDocsPage() {
             <OptionRow name="ignore_border" defaultValue="0">Pixels ignored around every image edge.</OptionRow>
             <OptionRow name="max_stars" defaultValue="500">Bright detections retained for matching.</OptionRow>
             <OptionRow name="sip_order" defaultValue="0">SIP distortion order 2–5; 0 or 1 keeps a linear TAN solution. A fitted polynomial is accepted only when it materially improves the residual.</OptionRow>
-            <OptionRow name="capture_time" defaultValue="FITS DATE-OBS">RFC 3339 acquisition time for transients, comets, and asteroids.</OptionRow>
+            <OptionRow name="capture_time" defaultValue="compatible FITS time">RFC 3339 shutter-open time. FITS DATE-BEG/DATE-END are preferred; DATE-AVG, DATE-OBS, or DATE-END are normalized when a duration is present.</OptionRow>
+            <OptionRow name="exposure_seconds" defaultValue="FITS XPOSURE / EXPTIME / EXPOSURE">Duration of one continuous shutter-open exposure, up to one hour. Do not send a stack integration total.</OptionRow>
+            <OptionRow name="observer_latitude_deg / observer_longitude_deg" defaultValue="FITS OBSGEO or SITE">Geodetic site coordinates for topocentric satellite propagation; supply the pair together. Longitude is east-positive.</OptionRow>
+            <OptionRow name="observer_altitude_m" defaultValue="0">Optional ellipsoid height used with geodetic coordinates.</OptionRow>
+            <OptionRow name="observer_itrf_m" defaultValue="FITS OBSGEO-X/Y/Z">Three-element ITRF meter coordinates. Use this instead of geodetic coordinates, not alongside them.</OptionRow>
           </div>
         </DocSection>
 

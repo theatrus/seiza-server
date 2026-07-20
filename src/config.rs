@@ -171,6 +171,9 @@ pub struct Config {
     pub star_identifier_catalog_path: Option<PathBuf>,
     pub transient_catalog_path: Option<PathBuf>,
     pub minor_body_catalog_path: Option<PathBuf>,
+    pub satellite_tracks_enabled: bool,
+    pub satellite_cache_dir: PathBuf,
+    pub satellite_cache_max_bytes: u64,
     pub job_backend: JobBackend,
     pub sql_database_url: String,
     pub dynamodb_table: Option<String>,
@@ -251,6 +254,18 @@ impl Config {
             bail!("SEIZA_UPLOAD_CLEANUP_INTERVAL_SECONDS must be at least 1");
         }
         let data_dir = PathBuf::from(env_or("SEIZA_DATA_DIR", "data"));
+        let satellite_tracks_enabled = parse_env("SEIZA_SATELLITE_TRACKS", true)?;
+        let satellite_cache_dir = env::var_os("SEIZA_SATELLITE_CACHE_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data_dir.join("satellites"));
+        let satellite_cache_max_bytes = parse_env(
+            "SEIZA_SATELLITE_CACHE_MAX_BYTES",
+            seiza_satellites::DEFAULT_CELESTRAK_CACHE_SIZE_LIMIT_BYTES,
+        )?;
+        if satellite_tracks_enabled && satellite_cache_max_bytes == 0 {
+            bail!("SEIZA_SATELLITE_CACHE_MAX_BYTES must be at least 1");
+        }
         let catalog_path = optional_data_path(data_paths::star_data(None))
             .context("resolving Seiza star catalog")?;
         let blind_index_path =
@@ -387,6 +402,9 @@ impl Config {
             star_identifier_catalog_path,
             transient_catalog_path,
             minor_body_catalog_path,
+            satellite_tracks_enabled,
+            satellite_cache_dir,
+            satellite_cache_max_bytes,
             job_backend,
             sql_database_url,
             dynamodb_table: env::var("SEIZA_DYNAMODB_TABLE")

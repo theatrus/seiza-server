@@ -12,7 +12,7 @@ import {
   type OverlayLayerVisibility,
   type SuggestedDeepSkyCatalogId as DeepSkyCatalogId,
 } from '@seiza/astro-overlay'
-import type { OverlayObject, Solution } from './api'
+import type { OverlayObject, SatelliteTrack, Solution } from './api'
 
 export interface OverlayLayers {
   deepSky: boolean
@@ -21,6 +21,7 @@ export interface OverlayLayers {
   fieldStars: boolean
   transients: boolean
   minorBodies: boolean
+  satelliteTracks: boolean
   historicalTransients: boolean
   grid: boolean
 }
@@ -32,6 +33,7 @@ const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
   ['fieldStars', 'Field stars', 'field_stars'],
   ['transients', 'Transients', 'transients'],
   ['minorBodies', 'Solar system', 'minor_bodies'],
+  ['satelliteTracks', 'Satellite tracks', 'satellite_tracks'],
   ['historicalTransients', 'Older transients', 'historical_transients'],
   ['grid', 'RA / Dec grid', 'grid'],
 ]
@@ -155,12 +157,14 @@ function DeepSkyCatalogMenu({
 export function AstroOverlay({
   solution,
   objects,
+  satelliteTracks,
   layers,
   hiddenCatalogs,
   showCatalogOutlines,
 }: {
   solution: Solution
   objects: OverlayObject[]
+  satelliteTracks: SatelliteTrack[]
   layers: OverlayLayers
   hiddenCatalogs: DeepSkyCatalogId[]
   showCatalogOutlines: boolean
@@ -173,14 +177,15 @@ export function AstroOverlay({
     .map((object) => showCatalogOutlines || (object.outlines?.length ?? 0) === 0
       ? object
       : { ...object, outlines: [] })
+    .concat(satelliteTracks.map(satelliteTrackObject))
 
   return <ReusableAstroOverlay
     className="sky-overlay"
     solution={solution}
     objects={visibleObjects}
     layers={toPackageLayers(layers)}
-    layerForObject={suggestedDeepSkyLayerForObject}
-    colorForObject={suggestedDeepSkyColorForObject}
+    layerForObject={(object) => object.kind === 'satellite' ? 'satellite_tracks' : suggestedDeepSkyLayerForObject(object)}
+    colorForObject={(object) => object.kind === 'satellite' ? '#ff8f70' : suggestedDeepSkyColorForObject(object)}
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}
   />
@@ -194,6 +199,7 @@ function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
     field_stars: layers.fieldStars,
     transients: layers.transients,
     minor_bodies: layers.minorBodies,
+    satellite_tracks: layers.satelliteTracks,
     historical_transients: layers.historicalTransients,
     grid: layers.grid,
   }
@@ -201,4 +207,43 @@ function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
     visibility[deepSkyCatalogLayer(catalog)] = layers.deepSky
   }
   return visibility
+}
+
+function satelliteTrackObject(track: SatelliteTrack): OverlayObject {
+  const representative = track.segments.reduce<typeof track.segments[number] | null>((longest, segment) => {
+    if (!longest) return segment
+    const length = Math.hypot(segment.end[0] - segment.start[0], segment.end[1] - segment.start[1])
+    const longestLength = Math.hypot(longest.end[0] - longest.start[0], longest.end[1] - longest.start[1])
+    return length > longestLength ? segment : longest
+  }, null)
+  return {
+    stable_id: track.stable_id,
+    name: track.label,
+    common_name: '',
+    kind: 'satellite',
+    mag: null,
+    x: representative ? (representative.start[0] + representative.end[0]) / 2 : 0,
+    y: representative ? (representative.start[1] + representative.end[1]) / 2 : 0,
+    semi_major_px: 0,
+    semi_minor_px: 0,
+    angle_deg: null,
+    source: 'satellite_prediction',
+    catalog_source: track.source,
+    aliases: track.cospar_id ? [track.cospar_id] : [],
+    alternate_ids: track.norad_id == null ? [] : [`NORAD ${track.norad_id}`],
+    motion_arcsec_per_hour: track.maximum_apparent_rate_arcsec_per_second == null
+      ? undefined
+      : track.maximum_apparent_rate_arcsec_per_second * 3600,
+    outlines: [{
+      geometry_id: `${track.stable_id}:predicted-track`,
+      source_record_id: track.stable_id,
+      role: 'predicted-track',
+      quality: 'propagated',
+      level: track.risk.level,
+      contours: track.segments.map((segment) => ({
+        closed: false,
+        points: [segment.start, segment.end],
+      })),
+    }],
+  }
 }

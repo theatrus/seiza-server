@@ -1,9 +1,11 @@
 # Seiza Server
 
-Seiza Server is a queued web service for plate solving. It uses the published
-[`seiza`](https://crates.io/crates/seiza) and
+Seiza Server is a queued web service for plate solving. It uses the
+[`seiza`](https://github.com/theatrus/seiza) and
 [`seiza-fits`](https://crates.io/crates/seiza-fits) Rust crates directly—not a
-CLI subprocess—and includes a TypeScript/React frontend.
+CLI subprocess—and includes a TypeScript/React frontend. The current source
+pins Seiza to the exact 0.10.0 release-PR revision for satellite-track support;
+that Git dependency can return to a crates.io version after 0.10.0 is published.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
 AWS deployments can use DynamoDB. SQLx also accepts PostgreSQL, so it is the
@@ -26,7 +28,7 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
   are decoded through `seiza-fits` and autostretched before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.8.1, including catalog-seeded matching for source lists
+  solving with the Seiza 0.10 release candidate, including catalog-seeded matching for source lists
   whose brightness ranking is unreliable. Optional SIP orders 2–5 fit forward
   and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
@@ -52,6 +54,11 @@ disappears on a process restart.
   and its complete WCS and annotation
   metadata remain available. The React UI renders an interactive SVG layer over
   the retained image preview.
+- Optional satellite tracks are predicted after a successful solve when the
+  job has one shutter-open interval and an observer location. FITS may supply
+  those values automatically; JPEG and other image uploads may supply the same
+  optional fields explicitly. CelesTrak orbital elements use a bounded durable
+  snapshot history, and prediction failure never changes the plate-solve result.
 
 ## Quick start
 
@@ -233,7 +240,7 @@ coordinates, so its meridians and parallels reflect field curvature, rotation,
 parity, and RA wraparound. The solution page draws that grid and catalog
 markers as a transparent React SVG over the preview, with independent controls
 for deep-sky objects, named stars, Tycho-sidecar star identifiers, field stars,
-transients, minor bodies, and historical transients. **Download rendered PNG** fetches the retained image at
+transients, minor bodies, predicted satellite tracks, and historical transients. **Download rendered PNG** fetches the retained image at
 full resolution and composites the currently selected layers into a PNG in the
 browser. The exported image carries a small Seiza logo, “Solved with Seiza,”
 and `seiza.fyi` mark; it does not download an SVG.
@@ -247,7 +254,7 @@ annotation JSON.
 `GET /api/v1/solves/:public_id/overlay.svg` remains as an optional self-contained
 image output for API clients. Its query supports `objects`, `grid`,
 `deep_sky`, `named_stars`, `star_identifiers`, `field_stars`, `transients`,
-`minor_bodies`, `historical_transients`, `star_identifier_mag_limit`,
+`minor_bodies`, `satellite_tracks`, `historical_transients`, `star_identifier_mag_limit`,
 `max_star_identifiers`, `field_star_mag_limit`, and `max_field_stars`.
 
 The JSON solution includes the full TAN/ICRS WCS (`CTYPE`, `CUNIT`, `CRVAL`,
@@ -280,12 +287,21 @@ the v4 catalog supplies them. Legacy v1 object catalogs remain readable, but
 their identity/provenance fields are empty and their name lookups require an
 in-memory scan.
 
-FITS `DATE-OBS` is captured automatically. When explicit solve hints are
+Compatible FITS exposure metadata is captured automatically. `DATE-BEG` and
+`DATE-END` are preferred; `DATE-AVG`, `DATE-OBS`, or a lone `DATE-END` are
+normalized to shutter-open time when `XPOSURE`, `EXPTIME`, or `EXPOSURE` gives
+one exposure duration. Standard `OBSGEO-X/Y/Z`, `OBSGEO-B/L/H`, and common
+`SITELAT`/`SITELONG` site coordinates enable topocentric satellite tracks.
+When explicit solve hints are
 absent, the server also promotes a complete FITS position and pixel scale from
 common `RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, WCS, `PIXSCALE`, or camera-geometry
-headers. Non-FITS API clients can provide a RFC 3339 `capture_time` in the
-options JSON. Capture time scopes transient events and propagates comets and
-asteroids to the acquisition instant.
+headers. Non-FITS API clients can provide RFC 3339 `capture_time`, positive
+`exposure_seconds`, and `observer_latitude_deg` / `observer_longitude_deg` in
+the options JSON. Capture time scopes transient events and propagates comets
+and asteroids; the complete observation contract additionally enables
+satellite tracks. Prediction is bounded to one shutter-open exposure of at most
+one hour; stack integration totals are deliberately not accepted as a single
+exposure.
 
 A position hint avoids the whole-sky path:
 
@@ -354,6 +370,9 @@ are currently supported:
 | `SEIZA_STAR_IDENTIFIER_DATA` | unset | Optional Tycho/Bright Star/GCVS/WDS/IAU identifier sidecar; automatic discovery uses `stars-lite-tycho2.ids.bin` |
 | `SEIZA_TRANSIENT_DATA` | unset | Optional reloadable Seiza object catalog containing transient events |
 | `SEIZA_MINOR_BODY_DATA` | unset | Optional reloadable Seiza minor-body orbital-elements catalog |
+| `SEIZA_SATELLITE_TRACKS` | `true` | Enable post-solve satellite-track prediction from cached CelesTrak active-object elements |
+| `SEIZA_SATELLITE_CACHE_DIR` | `data/satellites` | Durable CelesTrak snapshot-history directory; share one persistent directory between API replicas on the same host |
+| `SEIZA_SATELLITE_CACHE_MAX_BYTES` | `5368709120` | Oldest-first snapshot-history ceiling; the newest valid snapshot is always retained |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |

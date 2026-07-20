@@ -170,6 +170,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       completed_at: '2026-07-13T04:00:03Z',
       solve_time_ms: 2000,
       original_filename: 'M31.fits',
+      options: {},
       input_expires_at: '2026-07-14T04:00:00Z',
       input_available: inputAvailable,
       preview_url: inputAvailable ? `/api/v1/solves/${publicId}/preview` : null,
@@ -387,6 +388,44 @@ test('keeps the interactive SVG aligned and filters annotation layers', async ({
   await page.getByRole('button', { name: 'Close' }).click()
 })
 
+test('draws and explains predicted satellite tracks when exposure metadata is complete', async ({ page }) => {
+  await mockSolution(page)
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      job_id: publicId,
+      catalog_version: 'objects:test;satellites:test',
+      capture_time: '2026-07-13T04:05:06Z',
+      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, satellite_tracks: true, grid: true },
+      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2, satellite_tracks: 1 },
+      objects: baseObjects,
+      satellite_tracks: [{
+        stable_id: 'satellite:norad:25544', label: 'ISS (ZARYA) [25544]', name: 'ISS (ZARYA)',
+        norad_id: 25544, cospar_id: '1998-067A', source: 'https://celestrak.org/test',
+        element_epoch_utc: '2026-07-13T03:00:00Z', element_age_seconds: 3906,
+        sample_interval_seconds: 1, maximum_apparent_rate_arcsec_per_second: 185.4,
+        segments: [{ start: [110, 780], end: [900, 260] }],
+        risk: { level: 'possible', score: 0.48, maximum_sunlight_fraction: 0.82, minimum_range_km: 612, maximum_elevation_deg: 48.3, clipped_length_px: 945 },
+      }],
+      satellite_search: { catalog_source: 'https://celestrak.org/test', catalog_retrieved_at: '2026-07-13T03:30:00Z', elements_considered: 12000, propagation_failures: 2, stale_elements: 0 },
+    }),
+  }))
+  await page.goto(`/solutions/${publicId}`)
+
+  const track = page.locator('[data-kind="satellite"]')
+  await expect(page.getByRole('button', { name: 'Satellite tracks · 1' })).toBeEnabled()
+  await expect(track).toBeVisible()
+  await expect(track.locator('.seiza-overlay__marker--outline')).toHaveCSS('stroke', 'rgb(255, 143, 112)')
+  await expect(page.getByText('Predicted satellite crossings · 1')).toBeVisible()
+  await page.getByText('Predicted satellite crossings · 1').click()
+  await expect(page.locator('.satellite-track-list strong', { hasText: 'ISS (ZARYA) [25544]' })).toBeVisible()
+  await expect(page.getByText('possible trail risk')).toBeVisible()
+  await expect(page.getByText(/Checked 12,000 active orbital records/)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Satellite tracks · 1' }).click()
+  await expect(track).toHaveCount(0)
+})
+
 test('explains and disables catalog layers that are unavailable', async ({ page }) => {
   await mockSolution(page)
   await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
@@ -417,8 +456,9 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
       job_id: publicId,
       catalog_version: 'objects:test;stars:test;transients:test;minor-bodies:test',
       capture_time: null,
-      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, grid: true },
-      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0 },
+      available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: false, satellite_tracks: false, grid: true },
+      unavailable_reasons: { satellite_tracks: 'Satellite tracks require the shutter-open date and time for this image.' },
+      counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 0, historical_transients: 0, minor_bodies: 0, satellite_tracks: 0 },
       objects: baseObjects.filter((object) => object.kind !== 'comet' && object.kind !== 'asteroid'),
     }),
   }))
@@ -430,6 +470,12 @@ test('distinguishes a missing acquisition time from a missing solar-system catal
   await expect(page.getByRole('button', { name: 'Solar system · 0' })).toHaveAttribute(
     'title',
     'Solar system positions require an acquisition time for this image',
+  )
+  await expect(page.getByText('Satellite tracks require the shutter-open date and time for this image.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Satellite tracks · 0' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Satellite tracks · 0' })).toHaveAttribute(
+    'title',
+    'Satellite tracks require the shutter-open date and time for this image.',
   )
 })
 

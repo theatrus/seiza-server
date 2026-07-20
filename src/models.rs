@@ -29,6 +29,13 @@ pub enum SolveHintSource {
     FitsHeader,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SatelliteMetadataSource {
+    Explicit,
+    FitsHeader,
+}
+
 impl JobStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -69,9 +76,27 @@ pub struct SolveOptions {
     /// SIP distortion polynomial order. Zero or one keeps a linear TAN
     /// solution; orders 2 through 5 fit SIP when the result improves enough.
     pub sip_order: u8,
-    /// Acquisition time used to scope transients and propagate minor bodies.
-    /// FITS uploads populate this automatically from DATE-OBS when omitted.
+    /// Shutter-open time used to scope transients, propagate minor bodies, and
+    /// predict satellite tracks. FITS uploads populate this automatically when
+    /// an unambiguous single-exposure interval is available.
     pub capture_time: Option<DateTime<Utc>>,
+    /// Duration of this single shutter-open exposure. Stack integration totals
+    /// must not be supplied here.
+    pub exposure_seconds: Option<f64>,
+    /// Observer position for topocentric satellite propagation. Latitude is
+    /// north-positive and longitude is east-positive.
+    pub observer_latitude_deg: Option<f64>,
+    pub observer_longitude_deg: Option<f64>,
+    pub observer_altitude_m: Option<f64>,
+    /// Standard FITS OBSGEO-X/Y/Z coordinates, in ITRF meters. This is the
+    /// lossless representation when a FITS header supplies Cartesian location.
+    pub observer_itrf_m: Option<[f64; 3]>,
+    /// Server-resolved provenance for the satellite observation metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satellite_metadata_source: Option<SatelliteMetadataSource>,
+    /// FITS keywords used to derive the normalized shutter interval and site.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub satellite_metadata_keywords: Vec<String>,
     /// Server-resolved provenance for the position and scale hint. Incoming
     /// values are ignored and replaced while the upload is prepared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +121,13 @@ impl Default for SolveOptions {
             max_stars: 500,
             sip_order: 0,
             capture_time: None,
+            exposure_seconds: None,
+            observer_latitude_deg: None,
+            observer_longitude_deg: None,
+            observer_altitude_m: None,
+            observer_itrf_m: None,
+            satellite_metadata_source: None,
+            satellite_metadata_keywords: Vec::new(),
             hint_source: None,
             hint_keywords: Vec::new(),
         }
@@ -145,6 +177,50 @@ impl SolveOptions {
         }
         if self.sip_order > 5 {
             return Err("sip_order must be between 0 and 5".into());
+        }
+        if let Some(seconds) = self.exposure_seconds
+            && !(seconds.is_finite() && seconds > 0.0)
+        {
+            return Err("exposure_seconds must be positive".into());
+        }
+        match (self.observer_latitude_deg, self.observer_longitude_deg) {
+            (Some(latitude), Some(longitude)) => {
+                if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
+                    return Err("observer_latitude_deg must be between -90 and 90".into());
+                }
+                if !longitude.is_finite() {
+                    return Err("observer_longitude_deg must be finite".into());
+                }
+                if self.observer_itrf_m.is_some() {
+                    return Err(
+                        "provide either geodetic observer coordinates or observer_itrf_m, not both"
+                            .into(),
+                    );
+                }
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(
+                    "observer_latitude_deg and observer_longitude_deg must be supplied together"
+                        .into(),
+                );
+            }
+            (None, None) if self.observer_altitude_m.is_some() => {
+                return Err("observer_altitude_m requires observer latitude and longitude".into());
+            }
+            (None, None) => {}
+        }
+        if let Some(altitude) = self.observer_altitude_m
+            && !altitude.is_finite()
+        {
+            return Err("observer_altitude_m must be finite".into());
+        }
+        if let Some([x, y, z]) = self.observer_itrf_m
+            && (!x.is_finite()
+                || !y.is_finite()
+                || !z.is_finite()
+                || (x == 0.0 && y == 0.0 && z == 0.0))
+        {
+            return Err("observer_itrf_m must be finite and cannot be Earth's center".into());
         }
         Ok(())
     }
@@ -437,8 +513,55 @@ pub struct AnnotationResponse {
     pub catalog_version: String,
     pub capture_time: Option<DateTime<Utc>>,
     pub available: std::collections::BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub unavailable_reasons: std::collections::BTreeMap<String, String>,
     pub counts: std::collections::BTreeMap<String, usize>,
     pub objects: Vec<OverlayObject>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub satellite_tracks: Vec<SatelliteTrackResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satellite_search: Option<SatelliteSearchSummaryResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteSearchSummaryResponse {
+    pub catalog_source: String,
+    pub catalog_retrieved_at: Option<String>,
+    pub elements_considered: usize,
+    pub propagation_failures: usize,
+    pub stale_elements: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteTrackSegment {
+    pub start: [f64; 2],
+    pub end: [f64; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteTrailRiskResponse {
+    pub level: String,
+    pub score: f64,
+    pub maximum_sunlight_fraction: f64,
+    pub minimum_range_km: f64,
+    pub maximum_elevation_deg: f64,
+    pub clipped_length_px: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteTrackResponse {
+    pub stable_id: String,
+    pub label: String,
+    pub name: String,
+    pub norad_id: Option<u32>,
+    pub cospar_id: Option<String>,
+    pub source: String,
+    pub element_epoch_utc: String,
+    pub element_age_seconds: f64,
+    pub sample_interval_seconds: f64,
+    pub maximum_apparent_rate_arcsec_per_second: Option<f64>,
+    pub segments: Vec<SatelliteTrackSegment>,
+    pub risk: SatelliteTrailRiskResponse,
 }
 
 impl SolutionResponse {

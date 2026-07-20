@@ -166,6 +166,16 @@ export function DataSourcesPage() {
         >
           <p>NASA/JPL’s SBDB supplements comet records with historical apparition and orbital data used by Seiza’s minor-body catalogue builder.</p>
         </SourceCard>
+        <SourceCard
+          title="CelesTrak"
+          role="Active satellite orbital elements"
+          links={[
+            { label: 'CelesTrak', href: 'https://celestrak.org/' },
+            { label: 'Current GP data', href: 'https://celestrak.org/NORAD/elements/' },
+          ]}
+        >
+          <p>CelesTrak, maintained by Dr. T.S. Kelso, supplies the active-satellite CCSDS OMM records used for post-solve track predictions. Seiza keeps source, retrieval time, content identity, and element epoch separate so each prediction can be reproduced and its age inspected.</p>
+        </SourceCard>
       </div>
     </section>
 

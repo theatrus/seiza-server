@@ -117,6 +117,7 @@ legend { padding: 0 .4rem; color: #f0f6f7; font-weight: 800; }
 .capture-time-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .7fr); gap: .9rem; }
 .capture-time-note { margin-bottom: 0; }
 .solve-control-note { margin-bottom: 0; }
+.satellite-metadata-grid { margin-top: 1rem; }
 details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } details .form-grid { padding-top: 1rem; }
 .error, .expired-note { margin-top: 1rem; padding: .9rem 1rem; border: 1px solid #763644; border-radius: 5px; color: #ffd6db; background: #471c28; }
 .solution-page { padding-top: 5rem; }
@@ -226,6 +227,19 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
   pointer-events: none;
 }
 .overlay-warning { margin: 1rem 0 0; color: #ffcf8b; font-size: .8rem; }
+.satellite-track-details { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #25414a; }
+.satellite-track-details > summary { color: #f0ded8; font-size: .84rem; font-weight: 750; cursor: pointer; }
+.satellite-track-details > .solve-control-note { max-width: 850px; color: #829da5; font-size: .76rem; line-height: 1.55; }
+.satellite-track-list { display: grid; gap: .7rem; margin-top: 1rem; }
+.satellite-track-list > div { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(280px, 2fr); gap: .8rem 1.2rem; padding: .8rem 0; border-top: 1px solid #213d45; }
+.satellite-track-list > div > div:first-child { display: grid; gap: .28rem; }
+.satellite-track-list strong { color: #ffb09a; font-size: .84rem; }
+.satellite-track-list span, .satellite-search-note { color: #829da5; font-size: .74rem; line-height: 1.5; }
+.satellite-track-metrics { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; }
+.satellite-risk { padding: .18rem .42rem; border: 1px solid #486168; border-radius: 999px; text-transform: capitalize; }
+.satellite-risk.possible { color: #ffd39d; border-color: #8a6343; }
+.satellite-risk.high { color: #ffc0b3; border-color: #a45145; }
+.satellite-search-note { margin: .9rem 0 0; }
 .overlay-options button:disabled { cursor: not-allowed; opacity: .45; }
 .retention-note { margin: 1rem 0 0; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 1.5rem 0; border: 1px solid #25414a; background: #25414a; }
@@ -385,6 +399,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .solution-page-settled .job-meta div { border-right: 1px solid #25414a; }
   .solution-page-settled .job-meta div:nth-child(2n) { border-right: 0; }
   .solution-page-settled .job-meta div:nth-last-child(-n + 2) { border-bottom: 0; }
+  .satellite-track-list > div { grid-template-columns: 1fr; }
 }
 @media (max-width: 600px) {
   .site-nav { min-height: 74px; }

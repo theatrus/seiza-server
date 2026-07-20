@@ -14,6 +14,7 @@ pub mod models;
 pub mod overlay;
 pub mod rate_limit;
 pub mod repository;
+pub mod satellites;
 pub mod solver;
 pub mod sqlx_identity;
 pub mod star_identifiers;

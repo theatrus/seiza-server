@@ -4,12 +4,14 @@ use crate::{
     config::{AuthMode, Config, JobBackend},
     identity::{IdentityRepository, identity_repository},
     models::{
-        AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus, SolutionResponse,
-        SolveOptions, ValidationDonation, ValidationDonationResponse, WorkerCompletion,
+        AnnotationResponse, AstrometryId, JobId, JobLease, JobRecord, JobResponse, JobStatus,
+        SolutionResponse, SolveOptions, ValidationDonation, ValidationDonationResponse,
+        WorkerCompletion,
     },
     overlay::{OverlayOptions, render_svg},
     rate_limit::RateLimiter,
     repository::{JobRepository, job_repository},
+    satellites::{SatelliteEngine, SatellitePrediction, track_overlay_object},
     solver::{
         FITS_HEADER_PROBE_BYTES, SolverEngine, dimensions_from_bytes, full_png,
         prepare_solve_options, preview_png,
@@ -75,6 +77,7 @@ pub struct AppState {
     store: Arc<dyn ObjectStore>,
     solver: SolverEngine,
     annotations: AnnotationEngine,
+    satellites: SatelliteEngine,
     upload_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     embedded_worker_wakeup: Arc<Notify>,
 }
@@ -101,6 +104,14 @@ impl AppState {
             config.transient_catalog_path.as_deref(),
             config.minor_body_catalog_path.as_deref(),
         );
+        let satellites = if config.satellite_tracks_enabled {
+            SatelliteEngine::celestrak(
+                config.satellite_cache_dir.clone(),
+                config.satellite_cache_max_bytes,
+            )?
+        } else {
+            SatelliteEngine::disabled()
+        };
         Ok(Self {
             limiter: RateLimiter::new(config.rate_limit_per_minute, config.rate_limit_burst),
             config: Arc::new(config),
@@ -111,6 +122,7 @@ impl AppState {
             store,
             solver,
             annotations,
+            satellites,
             upload_locks: Arc::new(Mutex::new(HashMap::new())),
             embedded_worker_wakeup: Arc::new(Notify::new()),
         })
@@ -119,6 +131,22 @@ impl AppState {
     pub fn start_background_tasks(&self) {
         let state = self.clone();
         tokio::spawn(async move { state.cleanup_expired_uploads().await });
+        if self.satellites.is_enabled() {
+            let satellites = self.satellites.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(seiza_satellites::CELESTRAK_MIN_REFRESH);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                // The first interval tick is immediate. Consume it so a server that never
+                // receives an eligible exposure also never contacts the catalog service.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if satellites.has_loaded_catalog() {
+                        satellites.refresh().await;
+                    }
+                }
+            });
+        }
         if let Some(identity) = self.identity.clone() {
             let interval_seconds = self.config.upload_cleanup_interval_seconds;
             tokio::spawn(async move {
@@ -400,6 +428,56 @@ impl AppState {
         })
     }
 
+    async fn annotations_for(
+        &self,
+        public_id: &str,
+        solution: &SolutionResponse,
+        options: &SolveOptions,
+        annotation_options: &AnnotationOptions,
+        satellite_tracks: bool,
+    ) -> AnnotationResponse {
+        let mut annotations = self.annotations.annotate(
+            public_id,
+            solution,
+            options.capture_time,
+            annotation_options,
+        );
+        if !satellite_tracks {
+            return annotations;
+        }
+        match self.satellites.predict(public_id, solution, options).await {
+            SatellitePrediction::Unavailable(reason) => {
+                annotations
+                    .unavailable_reasons
+                    .insert("satellite_tracks".into(), reason);
+            }
+            SatellitePrediction::Complete(result) => {
+                let all_elements_stale = result.all_elements_stale();
+                annotations.catalog_version = if annotations.catalog_version == "unconfigured" {
+                    result.catalog_version.clone()
+                } else {
+                    format!("{};{}", annotations.catalog_version, result.catalog_version)
+                };
+                annotations.satellite_search = Some(result.summary);
+                if all_elements_stale {
+                    annotations.unavailable_reasons.insert(
+                        "satellite_tracks".into(),
+                        "No cached orbital elements are close enough to this exposure time.".into(),
+                    );
+                } else {
+                    annotations
+                        .available
+                        .insert("satellite_tracks".into(), true);
+                    annotations
+                        .counts
+                        .insert("satellite_tracks".into(), result.tracks.len());
+                    annotations.satellite_tracks = result.tracks;
+                }
+            }
+        }
+        annotations
+    }
+
     async fn submit(
         &self,
         client: Client,
@@ -558,6 +636,7 @@ impl AppState {
             &header_prefix,
             &upload.original_filename,
         );
+        upload.options.validate().map_err(ApiError::bad_request)?;
         let compose_started = Instant::now();
         upload
             .compose(&self.store)
@@ -885,10 +964,47 @@ async fn resolve_solve(
             "the retained upload is no longer available; upload the image again",
         ));
     }
+    let overrides_satellite_metadata = options
+        .capture_time
+        .is_some_and(|value| Some(value) != job.options.capture_time)
+        || options
+            .exposure_seconds
+            .is_some_and(|value| Some(value) != job.options.exposure_seconds)
+        || options
+            .observer_latitude_deg
+            .is_some_and(|value| Some(value) != job.options.observer_latitude_deg)
+        || options
+            .observer_longitude_deg
+            .is_some_and(|value| Some(value) != job.options.observer_longitude_deg)
+        || options
+            .observer_altitude_m
+            .is_some_and(|value| Some(value) != job.options.observer_altitude_m)
+        || options
+            .observer_itrf_m
+            .is_some_and(|value| Some(value) != job.options.observer_itrf_m);
     if options.capture_time.is_none() {
         options.capture_time = job.options.capture_time;
     }
+    if options.exposure_seconds.is_none() {
+        options.exposure_seconds = job.options.exposure_seconds;
+    }
+    if options.observer_latitude_deg.is_none() {
+        options.observer_latitude_deg = job.options.observer_latitude_deg;
+    }
+    if options.observer_longitude_deg.is_none() {
+        options.observer_longitude_deg = job.options.observer_longitude_deg;
+    }
+    if options.observer_altitude_m.is_none() {
+        options.observer_altitude_m = job.options.observer_altitude_m;
+    }
+    if options.observer_itrf_m.is_none() {
+        options.observer_itrf_m = job.options.observer_itrf_m;
+    }
     prepare_solve_options(&mut options, &[], &job.original_filename);
+    if !overrides_satellite_metadata {
+        options.satellite_metadata_source = job.options.satellite_metadata_source;
+        options.satellite_metadata_keywords = job.options.satellite_metadata_keywords.clone();
+    }
     options.validate().map_err(ApiError::bad_request)?;
     state
         .limiter
@@ -1093,12 +1209,15 @@ async fn get_solve_annotations(
     let solution = job.solution.as_ref().ok_or_else(|| {
         ApiError::artifact_not_ready("the solve has not produced annotations yet")
     })?;
-    let annotations = state.annotations.annotate(
-        &public_id,
-        solution,
-        job.options.capture_time,
-        &query.options(),
-    );
+    let annotations = state
+        .annotations_for(
+            &public_id,
+            solution,
+            &job.options,
+            &query.options(),
+            query.satellite_tracks,
+        )
+        .await;
     cached_json_response(
         &headers,
         "public, max-age=300, stale-while-revalidate=3600",
@@ -1123,15 +1242,22 @@ async fn get_solve_overlay(
         .ok_or_else(|| ApiError::artifact_not_ready("the solve has not produced an overlay yet"))?;
     let mut solution = stored_solution.clone();
     if query.objects {
-        solution.objects = state
-            .annotations
-            .annotate(
+        let annotations = state
+            .annotations_for(
                 &public_id,
                 stored_solution,
-                job.options.capture_time,
+                &job.options,
                 &query.annotations.options(),
+                query.annotations.satellite_tracks,
             )
-            .objects;
+            .await;
+        solution.objects = annotations.objects;
+        solution.objects.extend(
+            annotations
+                .satellite_tracks
+                .iter()
+                .map(track_overlay_object),
+        );
     }
     let content = state
         .store
@@ -1189,6 +1315,8 @@ struct AnnotationQuery {
     transients: bool,
     #[serde(default = "default_true")]
     minor_bodies: bool,
+    #[serde(default = "default_true")]
+    satellite_tracks: bool,
     #[serde(default)]
     historical_transients: bool,
     #[serde(default = "default_field_star_magnitude")]
@@ -3558,6 +3686,9 @@ mod tests {
             star_identifier_catalog_path: None,
             transient_catalog_path: None,
             minor_body_catalog_path: None,
+            satellite_tracks_enabled: false,
+            satellite_cache_dir: root.join("satellites"),
+            satellite_cache_max_bytes: seiza_satellites::DEFAULT_CELESTRAK_CACHE_SIZE_LIMIT_BYTES,
             job_backend: JobBackend::Sqlx,
             sql_database_url: format!("sqlite://{}?mode=rwc", root.join("jobs.sqlite3").display()),
             dynamodb_table: None,
