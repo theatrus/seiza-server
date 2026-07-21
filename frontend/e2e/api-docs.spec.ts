@@ -5,13 +5,15 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
-test('advertises macOS, Python, N.I.N.A., and Siril integrations on the home page', async ({ page }) => {
+test('advertises macOS, PSF Guard, Python, N.I.N.A., and Siril integrations on the home page', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page.getByRole('heading', { name: 'A native Mac app, Python bindings, and tools you already use.' })).toBeVisible()
-  await expect(page.getByText('signed, notarized app for Apple silicon and Intel Macs', { exact: false })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'A fast Mac app, PSF Guard, Python, and tools you already use.' })).toBeVisible()
+  await expect(page.getByText('lets you step through them instantly', { exact: false })).toBeVisible()
+  await expect(page.getByText('fresh astrometric quality screening across N.I.N.A. imaging sequences', { exact: false })).toBeVisible()
   await expect(page.getByText('pip install seiza', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Seiza for macOS' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac')
+  await expect(page.getByRole('link', { name: 'PSF Guard' })).toHaveAttribute('href', 'https://github.com/theatrus/psf-guard')
   await expect(page.getByRole('link', { name: 'Python bindings' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/tree/main/seiza-py')
   await expect(page.getByRole('link', { name: 'Explore every integration' })).toHaveAttribute('href', '/docs/api#integrations')
 })
@@ -94,10 +96,13 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByText('/api/v1/account/api-keys', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/internal/worker/claim', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'macOS, Python, N.I.N.A., Siril, and persistent clients.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'macOS, PSF Guard, Python, N.I.N.A., and Siril.' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Seiza for macOS: native browsing and plate solving' })).toBeVisible()
   await expect(page.getByText('Apple silicon and Intel on macOS 15 or later', { exact: false })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Seiza for macOS releases' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac/releases/latest')
+  await expect(page.getByRole('heading', { name: 'PSF Guard: solve, overlay, and grade imaging sequences' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'PSF Guard' })).toHaveAttribute('href', 'https://github.com/theatrus/psf-guard')
+  await expect(page.getByText('find off-target frames, pointing jumps, and drift', { exact: false })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Python: install the Seiza engine with pip' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'pip install seiza' })).toHaveAttribute('href', 'https://pypi.org/project/seiza/')
   await expect(page.getByText('Binary ABI3 wheels support every CPython from 3.9 onward', { exact: false })).toBeVisible()

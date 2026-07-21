@@ -310,13 +310,14 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
     <section className="about-card integration-card" aria-labelledby="application-integrations">
       <div>
         <p className="eyebrow">APPLICATION INTEGRATIONS</p>
-        <h2 id="application-integrations">A native Mac app, Python bindings, and tools you already use.</h2>
+        <h2 id="application-integrations">A fast Mac app, PSF Guard, Python, and tools you already use.</h2>
       </div>
       <div className="about-copy">
-        <p><strong>Seiza for macOS</strong> is a signed, notarized app for Apple silicon and Intel Macs. Browse FITS and common image formats, inspect headers and statistics, use Finder Quick Look, and plate solve into the same WCS and catalog overlays shown here.</p>
-        <p>Developers can <code>pip install seiza</code> for Rust-backed Python solving and stacking on Linux, macOS, and Windows. N.I.N.A. and Siril can use the pre-built Seiza CLI through their existing ASTAP and Astrometry.net integrations—no plugin required.</p>
+        <p><strong>Seiza for macOS</strong> opens one image or a whole night of captures and lets you step through them instantly. Browse mixed FITS and image folders with native thumbnails, inspect headers and statistics, preview FITS files in Finder with Quick Look, and plate solve locally only when you ask.</p>
+        <p><strong>PSF Guard</strong> embeds Seiza for on-demand plate solving, persistent WCS and catalog overlays, and fresh astrometric quality screening across N.I.N.A. imaging sequences. Developers can <code>pip install seiza</code>, while N.I.N.A. and Siril can use the pre-built CLI through their existing integrations.</p>
         <div className="text-links">
           <a href="https://github.com/theatrus/seiza-mac">Seiza for macOS <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/psf-guard">PSF Guard <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza/tree/main/seiza-py">Python bindings <span aria-hidden="true">↗</span></a>
           <a href="/docs/api#integrations">Explore every integration <span aria-hidden="true">→</span></a>
         </div>
