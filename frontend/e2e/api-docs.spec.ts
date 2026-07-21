@@ -5,13 +5,15 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
-test('advertises N.I.N.A. and Siril integrations on the home page', async ({ page }) => {
+test('advertises macOS, Python, N.I.N.A., and Siril integrations on the home page', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page.getByRole('heading', { name: 'Use Seiza in N.I.N.A. or Siril—no plugin required.' })).toBeVisible()
-  await expect(page.getByText('guided catalog setup', { exact: false })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Set up integrations' })).toHaveAttribute('href', '/docs/api#integrations')
-  await expect(page.getByRole('link', { name: 'Download Seiza' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/releases')
+  await expect(page.getByRole('heading', { name: 'A native Mac app, Python bindings, and tools you already use.' })).toBeVisible()
+  await expect(page.getByText('signed, notarized app for Apple silicon and Intel Macs', { exact: false })).toBeVisible()
+  await expect(page.getByText('pip install seiza', { exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Seiza for macOS' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac')
+  await expect(page.getByRole('link', { name: 'Python bindings' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/tree/main/seiza-py')
+  await expect(page.getByRole('link', { name: 'Explore every integration' })).toHaveAttribute('href', '/docs/api#integrations')
 })
 
 test('advertises optional satellite lookup with separate pixel evidence', async ({ page }) => {
@@ -92,8 +94,14 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByText('/api/v1/account/api-keys', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/internal/worker/claim', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'N.I.N.A., Siril, and persistent clients.' })).toBeVisible()
-  await expect(page.getByText('Neither application needs a Seiza-specific plugin or a Rust toolchain.', { exact: false })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'macOS, Python, N.I.N.A., Siril, and persistent clients.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Seiza for macOS: native browsing and plate solving' })).toBeVisible()
+  await expect(page.getByText('Apple silicon and Intel on macOS 15 or later', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Seiza for macOS releases' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac/releases/latest')
+  await expect(page.getByRole('heading', { name: 'Python: install the Seiza engine with pip' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'pip install seiza' })).toHaveAttribute('href', 'https://pypi.org/project/seiza/')
+  await expect(page.getByText('Binary ABI3 wheels support every CPython from 3.9 onward', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'seiza-py guide and source' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/tree/main/seiza-py')
   await expect(page.getByText('seiza-cli-…-windows-x86_64.msi', { exact: true })).toBeVisible()
   await expect(page.getByText('Start → Seiza → Seiza Catalog Setup', { exact: false })).toBeVisible()
   await expect(page.getByText('seiza setup', { exact: true }).first()).toBeVisible()

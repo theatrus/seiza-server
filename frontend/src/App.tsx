@@ -310,13 +310,15 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
     <section className="about-card integration-card" aria-labelledby="application-integrations">
       <div>
         <p className="eyebrow">APPLICATION INTEGRATIONS</p>
-        <h2 id="application-integrations">Use Seiza in N.I.N.A. or Siril—no plugin required.</h2>
+        <h2 id="application-integrations">A native Mac app, Python bindings, and tools you already use.</h2>
       </div>
       <div className="about-copy">
-        <p>The Windows installer includes guided catalog setup. Point N.I.N.A.’s ASTAP integration at <code>seiza.exe</code>, or install Seiza’s <code>solve-field</code>-compatible layout for Siril.</p>
+        <p><strong>Seiza for macOS</strong> is a signed, notarized app for Apple silicon and Intel Macs. Browse FITS and common image formats, inspect headers and statistics, use Finder Quick Look, and plate solve into the same WCS and catalog overlays shown here.</p>
+        <p>Developers can <code>pip install seiza</code> for Rust-backed Python solving and stacking on Linux, macOS, and Windows. N.I.N.A. and Siril can use the pre-built Seiza CLI through their existing ASTAP and Astrometry.net integrations—no plugin required.</p>
         <div className="text-links">
-          <a href="/docs/api#integrations">Set up integrations <span aria-hidden="true">→</span></a>
-          <a href="https://github.com/theatrus/seiza/releases">Download Seiza <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/seiza-mac">Seiza for macOS <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/seiza/tree/main/seiza-py">Python bindings <span aria-hidden="true">↗</span></a>
+          <a href="/docs/api#integrations">Explore every integration <span aria-hidden="true">→</span></a>
         </div>
       </div>
     </section>
