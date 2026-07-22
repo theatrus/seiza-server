@@ -307,9 +307,9 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         </article>
         <article className="desktop-app-card">
           <span className="desktop-app-icon windows"><WindowsAppIcon /></span>
-          <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live FITS processing, image stacks, local plate solving, catalog overlays, and full-size exports.</p></div>
-          <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-win/releases"><DownloadIcon />Windows releases</a>
-          <small>No public release yet; watch this page for the first x64 MSI</small>
+          <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live image processing, image stacks, local plate solving, catalog overlays, and full-size exports.</p></div>
+          <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-win/releases/latest"><DownloadIcon />Download for Windows</a>
+          <small>Available now · Windows 11 24H2 or newer · self-contained x64 MSI</small>
         </article>
       </div>
     </section>
