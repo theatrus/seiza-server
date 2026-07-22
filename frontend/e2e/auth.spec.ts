@@ -220,7 +220,7 @@ test('accounts mode keeps anonymous solves available', async ({ page }) => {
   await page.goto('http://localhost:4173/solve')
   await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
   await expect(page.getByText('Public solves remain available and use the normal queue.')).toBeVisible()
-  await expect(page.getByLabel('FITS or image file')).toBeVisible()
+  await expect(page.getByLabel('FITS, XISF, or image file')).toBeVisible()
 })
 
 test('email sign-in honors the server resend cooldown', async ({ page }) => {
@@ -291,5 +291,5 @@ test('public browser and API solve access are presented independently', async ({
   await expect(page.getByText('This deployment still accepts public API submissions.')).toBeVisible()
   await expect(page.getByRole('main').getByRole('link', { name: 'Sign in' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Use the API' })).toBeVisible()
-  await expect(page.getByLabel('FITS or image file')).toHaveCount(0)
+  await expect(page.getByLabel('FITS, XISF, or image file')).toHaveCount(0)
 })

@@ -26,7 +26,7 @@ export interface SolveOptions {
   observer_longitude_deg?: number | null
   observer_altitude_m?: number | null
   observer_itrf_m?: [number, number, number] | null
-  satellite_metadata_source?: 'explicit' | 'fits_header'
+  satellite_metadata_source?: 'explicit' | 'fits_header' | 'xisf_header'
   satellite_metadata_keywords?: string[]
 }
 
@@ -109,7 +109,7 @@ export interface Solution {
     detected_stars: number
     catalog_stars: number
     blind_index_patterns?: number
-    hint_source?: 'explicit' | 'fits_header'
+    hint_source?: 'explicit' | 'fits_header' | 'xisf_header'
     hint_keywords?: string[]
   }
 }

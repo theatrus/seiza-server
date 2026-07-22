@@ -460,7 +460,7 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
         (None, None, Some([x, y, z])) => ObserverLocation::itrf_meters(x, y, z),
         _ => {
             return Err(
-                "Satellite tracks require the observer latitude and longitude (or FITS OBSGEO coordinates)."
+                "Satellite tracks require the observer latitude and longitude (or FITS/XISF OBSGEO coordinates)."
                     .into(),
             );
         }
@@ -471,7 +471,7 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
     )
     .map_err(|error| error.to_string())?;
     let provenance = match options.satellite_metadata_source {
-        Some(SatelliteMetadataSource::FitsHeader)
+        Some(SatelliteMetadataSource::FitsHeader | SatelliteMetadataSource::XisfHeader)
             if options
                 .satellite_metadata_keywords
                 .iter()
@@ -483,7 +483,7 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
         {
             ExposureProvenance::FitsBounds
         }
-        Some(SatelliteMetadataSource::FitsHeader)
+        Some(SatelliteMetadataSource::FitsHeader | SatelliteMetadataSource::XisfHeader)
             if options
                 .satellite_metadata_keywords
                 .iter()
@@ -491,7 +491,7 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
         {
             ExposureProvenance::FitsDateAvgAndExposure
         }
-        Some(SatelliteMetadataSource::FitsHeader)
+        Some(SatelliteMetadataSource::FitsHeader | SatelliteMetadataSource::XisfHeader)
             if options
                 .satellite_metadata_keywords
                 .iter()
@@ -499,7 +499,9 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
         {
             ExposureProvenance::FitsEndAndExposure
         }
-        Some(SatelliteMetadataSource::FitsHeader) => ExposureProvenance::FitsDateObsAndExposure,
+        Some(SatelliteMetadataSource::FitsHeader | SatelliteMetadataSource::XisfHeader) => {
+            ExposureProvenance::FitsDateObsAndExposure
+        }
         _ => ExposureProvenance::Explicit,
     };
     SingleExposure::from_start_and_duration(timestamp, duration, observer, provenance)
