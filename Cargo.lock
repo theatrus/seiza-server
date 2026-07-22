@@ -3368,7 +3368,7 @@ dependencies = [
  "cookie",
  "email_address",
  "getrandom 0.4.3",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "http 1.4.2",
  "image",
  "lettre",
