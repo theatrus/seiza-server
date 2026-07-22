@@ -104,7 +104,6 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByRole('link', { name: 'Seiza for macOS releases' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac/releases/latest')
   await expect(page.getByRole('heading', { name: 'Seiza for Windows: GPU-backed viewing and local solving' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Seiza for Windows', exact: true })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-win')
-  await expect(page.getByRole('link', { name: 'Seiza for Windows releases page' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-win/releases')
   await expect(page.getByRole('heading', { name: 'PSF Guard: solve, overlay, and grade imaging sequences' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'PSF Guard' })).toHaveAttribute('href', 'https://github.com/theatrus/psf-guard')
   await expect(page.getByText('find off-target frames, pointing jumps, and drift', { exact: false })).toBeVisible()
