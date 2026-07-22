@@ -2,9 +2,11 @@
 
 Seiza Server is a queued web service for plate solving. It uses the
 [`seiza`](https://github.com/theatrus/seiza) and
-[`seiza-fits`](https://crates.io/crates/seiza-fits) Rust crates directly—not a
-CLI subprocess—and includes a TypeScript/React frontend. The current source
-uses the published Seiza 0.11.1 release for satellite-track support and
+[`seiza-fits`](https://crates.io/crates/seiza-fits) and
+[`seiza-xisf`](https://github.com/theatrus/seiza/tree/main/seiza-xisf) Rust
+crates directly—not a CLI subprocess—and includes a TypeScript/React frontend.
+The current source pins Seiza at `b9bdcd1` for its post-0.11.2 solver,
+FITS, XISF, and satellite APIs, and uses
 `@seiza/astro-overlay` 0.5.0 for risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
@@ -25,10 +27,11 @@ disappears on a process restart.
 - Astrometry.net-compatible API subset: `POST /api/login`, `POST /api/upload`,
   `GET /api/submissions/:id`, `GET /api/jobs/:id`,
   `GET /api/jobs/:id/calibration`, and `GET /api/jobs/:id/info`.
-- FITS (`.fit`, `.fits`, `.fts`), PNG, JPEG, TIFF, and WebP input. FITS files
-  are decoded through `seiza-fits` and autostretched before source detection.
+- FITS (`.fit`, `.fits`, `.fts`), XISF (`.xisf`), PNG, JPEG, TIFF, and WebP
+  input. FITS and XISF files share Seiza's decoded image type and autostretch
+  before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.11.1, including catalog-seeded matching for source
+  solving with pinned post-0.11.2 Seiza, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
   forward and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
@@ -55,8 +58,8 @@ disappears on a process restart.
   metadata remain available. The React UI renders an interactive SVG layer over
   the retained image preview.
 - Optional satellite tracks are predicted after a successful solve when the
-  job has one shutter-open interval and an observer location. FITS may supply
-  those values automatically; JPEG and other image uploads may supply the same
+  job has one shutter-open interval and an observer location. FITS and XISF may
+  supply those values automatically; JPEG and other image uploads may supply the same
   optional fields explicitly. Seiza resolves epoch-appropriate orbital elements
   on demand from the durable cache, current CelesTrak data, its rolling mirror,
   or IAU SatChecker. While the uploaded image is retained, Seiza also checks
@@ -292,7 +295,7 @@ the v4 catalog supplies them. Legacy v1 object catalogs remain readable, but
 their identity/provenance fields are empty and their name lookups require an
 in-memory scan.
 
-Compatible FITS exposure metadata is captured automatically. `DATE-BEG` and
+Compatible FITS and XISF exposure metadata is captured automatically. `DATE-BEG` and
 `DATE-END` are preferred; `DATE-AVG`, `DATE-OBS`, or a lone `DATE-END` are
 normalized to shutter-open time when `XPOSURE`, `EXPTIME`, or `EXPOSURE` gives
 one exposure duration. Standard `OBSGEO-X/Y/Z`, `OBSGEO-B/L/H`, and common
@@ -300,7 +303,7 @@ one exposure duration. Standard `OBSGEO-X/Y/Z`, `OBSGEO-B/L/H`, and common
 When explicit solve hints are
 absent, the server also promotes a complete FITS position and pixel scale from
 common `RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, WCS, `PIXSCALE`, or camera-geometry
-headers. Non-FITS API clients can provide RFC 3339 `capture_time`, positive
+headers. Raster-image API clients can provide RFC 3339 `capture_time`, positive
 `exposure_seconds`, and `observer_latitude_deg` / `observer_longitude_deg` in
 the options JSON. Capture time scopes transient events and propagates comets
 and asteroids; the complete observation contract additionally enables

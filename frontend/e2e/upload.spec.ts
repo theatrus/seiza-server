@@ -88,7 +88,7 @@ function defaultSolveOptions() {
 }
 
 async function setStableFile(page: Page, name: string, size: number, type = 'application/fits') {
-  await page.getByLabel('FITS or image file').evaluate((node, file) => {
+  await page.getByLabel('FITS, XISF, or image file').evaluate((node, file) => {
     const input = node as HTMLInputElement
     const bytes = new Uint8Array(file.size)
     bytes.fill(42)
@@ -163,9 +163,9 @@ test('places the solve action beside the file selector and satellite opt-in belo
   const satelliteTrails = satelliteRow.getByRole('checkbox', { name: 'Show predicted satellite trails' })
   const solveButton = row.getByRole('button', { name: 'Solve', exact: true })
 
-  await expect(fileSelector.getByLabel('FITS or image file')).toBeVisible()
+  await expect(fileSelector.getByLabel('FITS, XISF, or image file')).toBeVisible()
   await expect(satelliteRow).toHaveText('Show predicted satellite trails')
-  await expect(controls.locator('.satellite-trail-requirements')).toHaveText('Requires FITS file with observer and time metadata, or optional fields filled in below.')
+  await expect(controls.locator('.satellite-trail-requirements')).toHaveText('Requires FITS or XISF observer and time metadata, or optional fields filled in below.')
   await expect(satelliteTrails).toBeVisible()
   await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()

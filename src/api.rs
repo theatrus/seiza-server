@@ -19,7 +19,8 @@ use crate::{
     },
     solver::{
         FITS_HEADER_PROBE_BYTES, SolverEngine, dimensions_from_bytes, full_png,
-        prepare_solve_options, preview_png,
+        image_header_probe_bytes, prepare_solve_options, prepare_solve_options_from_prefix,
+        preview_png,
     },
     star_identifiers::StarIdentifierMatch,
     storage::{ObjectStore, object_store},
@@ -661,14 +662,23 @@ impl AppState {
             .map_err(ApiError::internal)?;
             return job.ok_or_else(|| ApiError::internal("completed upload job is missing"));
         }
-        let header_prefix = upload
+        let mut header_prefix = upload
             .read_prefix(&self.store, FITS_HEADER_PROBE_BYTES)
             .await
             .map_err(resumable_api_error)?;
-        prepare_solve_options(
+        let header_probe_bytes =
+            image_header_probe_bytes(&header_prefix, &upload.original_filename);
+        if header_probe_bytes > header_prefix.len() {
+            header_prefix = upload
+                .read_prefix(&self.store, header_probe_bytes)
+                .await
+                .map_err(resumable_api_error)?;
+        }
+        prepare_solve_options_from_prefix(
             &mut upload.options,
             &header_prefix,
             &upload.original_filename,
+            upload.total_size,
         );
         upload.options.validate().map_err(ApiError::bad_request)?;
         let compose_started = Instant::now();
@@ -2508,6 +2518,7 @@ fn safe_extension(filename: &str) -> &'static str {
         .as_str()
     {
         "fit" | "fits" | "fts" => "fits",
+        "xisf" => "xisf",
         "jpg" | "jpeg" => "jpg",
         "png" => "png",
         "tif" | "tiff" => "tiff",
@@ -3460,6 +3471,78 @@ mod tests {
         assert_eq!(
             result.options.hint_source,
             Some(crate::models::SolveHintSource::FitsHeader)
+        );
+        assert_eq!(result.options.hint_keywords, ["RA", "DEC", "PIXSCALE"]);
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resumable_xisf_headers_promote_a_hinted_solve_before_queueing() {
+        use seiza_fits::{F32ImageData, HeaderValue as FitsHeaderValue, WriteHeaderCard};
+
+        let root = std::env::temp_dir().join(format!("seiza-api-xisf-hint-{}", Uuid::now_v7()));
+        let mut config = test_config(&root);
+        config.max_upload_bytes = 8_192;
+        let state = AppState::new(config).await.unwrap();
+        let mut xisf = Vec::new();
+        seiza_xisf::write_f32_image_to(
+            &mut xisf,
+            2,
+            2,
+            F32ImageData::Mono(&[0.0, 0.25, 0.5, 1.0]),
+            &[
+                WriteHeaderCard::new("RA", FitsHeaderValue::Float(202.5)),
+                WriteHeaderCard::new("DEC", FitsHeaderValue::Float(47.2)),
+                WriteHeaderCard::new("PIXSCALE", FitsHeaderValue::Float(1.25)),
+            ],
+        )
+        .unwrap();
+        let metadata = [("filename", "hinted.xisf"), ("options", "{}")]
+            .map(|(key, value)| {
+                format!(
+                    "{key} {}",
+                    base64::engine::general_purpose::STANDARD.encode(value)
+                )
+            })
+            .join(",");
+        let mut headers = tus_request_headers();
+        headers.insert(
+            "upload-length",
+            HeaderValue::from_str(&xisf.len().to_string()).unwrap(),
+        );
+        headers.insert("upload-metadata", HeaderValue::from_str(&metadata).unwrap());
+        let response = create_resumable_upload(State(state.clone()), headers)
+            .await
+            .unwrap();
+        let upload_id = response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        patch_resumable_upload(
+            State(state.clone()),
+            Path(upload_id.clone()),
+            chunk_headers(0),
+            Bytes::from(xisf),
+        )
+        .await
+        .unwrap();
+        let Json(result) =
+            get_resumable_upload_result(State(state.clone()), Path(upload_id), HeaderMap::new())
+                .await
+                .unwrap();
+
+        assert_eq!(result.options.center_ra_deg, Some(202.5));
+        assert_eq!(result.options.center_dec_deg, Some(47.2));
+        assert_eq!(result.options.scale_arcsec_per_pixel, Some(1.25));
+        assert_eq!(
+            result.options.hint_source,
+            Some(crate::models::SolveHintSource::XisfHeader)
         );
         assert_eq!(result.options.hint_keywords, ["RA", "DEC", "PIXSCALE"]);
 

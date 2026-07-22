@@ -14,13 +14,37 @@ use seiza::{
 };
 use std::{
     collections::BTreeMap,
-    io::Cursor,
+    io::{Cursor, Write},
     path::Path,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
 pub const FITS_HEADER_PROBE_BYTES: usize = 80 * 1_440;
+const XISF_PREAMBLE_BYTES: usize = 16;
+const XISF_MAX_HEADER_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+enum ImageHeaderSource {
+    Fits,
+    Xisf,
+}
+
+impl ImageHeaderSource {
+    const fn hint_source(self) -> SolveHintSource {
+        match self {
+            Self::Fits => SolveHintSource::FitsHeader,
+            Self::Xisf => SolveHintSource::XisfHeader,
+        }
+    }
+
+    const fn satellite_source(self) -> SatelliteMetadataSource {
+        match self {
+            Self::Fits => SatelliteMetadataSource::FitsHeader,
+            Self::Xisf => SatelliteMetadataSource::XisfHeader,
+        }
+    }
+}
 
 pub(crate) struct MonochromeImage {
     pub width: usize,
@@ -147,9 +171,7 @@ pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)>
 }
 
 pub(crate) fn decode_monochrome_u16(bytes: &[u8], filename: &str) -> Result<MonochromeImage> {
-    if looks_like_fits(bytes, filename) {
-        let fits = seiza_fits::FitsImage::from_bytes(bytes)
-            .map_err(|error| anyhow::anyhow!("invalid FITS image: {error}"))?;
+    if let Some(fits) = decode_astronomy_image(bytes, filename)? {
         let adu_per_stored_unit = match &fits.pixels {
             seiza_fits::Pixels::U8(_) => 1.0 / 256.0,
             seiza_fits::Pixels::U16(_) => 1.0,
@@ -170,7 +192,7 @@ pub(crate) fn decode_monochrome_u16(bytes: &[u8], filename: &str) -> Result<Mono
     }
 
     let image = image::load_from_memory(bytes)
-        .context("unsupported or corrupt image; submit FITS, PNG, JPEG, TIFF, or WebP")?;
+        .context("unsupported or corrupt image; submit FITS, XISF, PNG, JPEG, TIFF, or WebP")?;
     let eight_bit = matches!(
         image,
         image::DynamicImage::ImageLuma8(_)
@@ -344,16 +366,28 @@ pub fn capture_time_from_bytes(
     bytes: &[u8],
     filename: &str,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    fits_headers(bytes, filename)?
+    image_headers(bytes, filename, bytes.len() as u64)?
+        .0
         .get("DATE-OBS")?
         .as_str()
         .and_then(parse_capture_time)
 }
 
-/// Promote acquisition metadata from a FITS header into solve options. User
+/// Promote acquisition metadata from an astronomy image header into solve options. User
 /// supplied hints always win; automatic hinted solving is enabled only when a
 /// complete center and pixel scale can be derived safely.
 pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename: &str) {
+    prepare_solve_options_from_prefix(options, bytes, filename, bytes.len() as u64);
+}
+
+/// Promote image metadata when `bytes` may contain only the header prefix of a
+/// larger upload.
+pub fn prepare_solve_options_from_prefix(
+    options: &mut SolveOptions,
+    bytes: &[u8],
+    filename: &str,
+    file_size: u64,
+) {
     options.hint_source = None;
     options.hint_keywords.clear();
     options.satellite_metadata_keywords.clear();
@@ -368,10 +402,15 @@ pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename:
         options.hint_source = Some(SolveHintSource::Explicit);
     }
 
-    let Some(headers) = fits_headers(bytes, filename) else {
+    let Some((headers, header_source)) = image_headers(bytes, filename, file_size) else {
         return;
     };
-    prepare_satellite_metadata(options, &headers, explicit_satellite_metadata);
+    prepare_satellite_metadata(
+        options,
+        &headers,
+        header_source,
+        explicit_satellite_metadata,
+    );
     if has_complete_explicit_hint
         || options.center_ra_deg.is_some()
         || options.center_dec_deg.is_some()
@@ -399,7 +438,7 @@ pub fn prepare_solve_options(options: &mut SolveOptions, bytes: &[u8], filename:
     options.center_ra_deg = Some(ra);
     options.center_dec_deg = Some(dec);
     options.scale_arcsec_per_pixel = Some(scale);
-    options.hint_source = Some(SolveHintSource::FitsHeader);
+    options.hint_source = Some(header_source.hint_source());
     options.hint_keywords = center_keywords
         .into_iter()
         .chain(scale_keywords)
@@ -419,6 +458,7 @@ fn satellite_metadata_present(options: &SolveOptions) -> bool {
 fn prepare_satellite_metadata(
     options: &mut SolveOptions,
     headers: &BTreeMap<String, seiza_fits::HeaderValue>,
+    header_source: ImageHeaderSource,
     explicit_satellite_metadata: bool,
 ) {
     let explicit_time = options.capture_time.is_some();
@@ -546,7 +586,7 @@ fn prepare_satellite_metadata(
         options.satellite_metadata_source = Some(if explicit_satellite_metadata {
             SatelliteMetadataSource::Explicit
         } else {
-            SatelliteMetadataSource::FitsHeader
+            header_source.satellite_source()
         });
     }
 }
@@ -579,7 +619,24 @@ fn push_keyword(keywords: &mut Vec<String>, keyword: &str) {
     }
 }
 
-fn fits_headers(bytes: &[u8], filename: &str) -> Option<BTreeMap<String, seiza_fits::HeaderValue>> {
+fn image_headers(
+    bytes: &[u8],
+    filename: &str,
+    file_size: u64,
+) -> Option<(BTreeMap<String, seiza_fits::HeaderValue>, ImageHeaderSource)> {
+    if looks_like_xisf(bytes, filename) {
+        let header_bytes = xisf_header_prefix_bytes(bytes)?;
+        if bytes.len() < header_bytes || file_size < header_bytes as u64 {
+            return None;
+        }
+        let mut temporary = tempfile::NamedTempFile::new().ok()?;
+        temporary.write_all(&bytes[..header_bytes]).ok()?;
+        temporary.flush().ok()?;
+        temporary.as_file_mut().set_len(file_size).ok()?;
+        let headers = seiza_xisf::read_header(temporary.path()).ok()?;
+        return Some((headers.into_iter().collect(), ImageHeaderSource::Xisf));
+    }
+
     let looks_like_fits = filename.rsplit('.').next().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("fits")
             || extension.eq_ignore_ascii_case("fit")
@@ -593,7 +650,7 @@ fn fits_headers(bytes: &[u8], filename: &str) -> Option<BTreeMap<String, seiza_f
     for card in bytes.chunks_exact(80).take(FITS_HEADER_PROBE_BYTES / 80) {
         let keyword = std::str::from_utf8(&card[..8]).ok()?.trim();
         if keyword == "END" {
-            return Some(headers);
+            return Some((headers, ImageHeaderSource::Fits));
         }
         if keyword.is_empty() || &card[8..10] != b"= " {
             continue;
@@ -723,16 +780,28 @@ pub fn parse_capture_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> 
 }
 
 fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
-    if looks_like_fits(bytes, filename) {
-        let fits = seiza_fits::FitsImage::from_bytes(bytes)
-            .map_err(|error| anyhow::anyhow!("invalid FITS image: {error}"))?;
+    if let Some(fits) = decode_astronomy_image(bytes, filename)? {
         let pixels = fits.stretch_to_u8(&seiza_fits::StretchParams::default());
         let buffer = image::GrayImage::from_raw(fits.width as u32, fits.height as u32, pixels)
             .context("FITS dimensions do not match decoded pixels")?;
         return Ok(image::DynamicImage::ImageLuma8(buffer));
     }
     image::load_from_memory(bytes)
-        .context("unsupported or corrupt image; submit FITS, PNG, JPEG, TIFF, or WebP")
+        .context("unsupported or corrupt image; submit FITS, XISF, PNG, JPEG, TIFF, or WebP")
+}
+
+fn decode_astronomy_image(bytes: &[u8], filename: &str) -> Result<Option<seiza_fits::FitsImage>> {
+    if looks_like_fits(bytes, filename) {
+        return seiza_fits::FitsImage::from_bytes(bytes)
+            .map(Some)
+            .map_err(|error| anyhow::anyhow!("invalid FITS image: {error}"));
+    }
+    if looks_like_xisf(bytes, filename) {
+        return seiza_xisf::from_bytes(bytes)
+            .map(Some)
+            .map_err(|error| anyhow::anyhow!("invalid XISF image: {error}"));
+    }
+    Ok(None)
 }
 
 fn looks_like_fits(bytes: &[u8], filename: &str) -> bool {
@@ -741,6 +810,33 @@ fn looks_like_fits(bytes: &[u8], filename: &str) -> bool {
             || extension.eq_ignore_ascii_case("fit")
             || extension.eq_ignore_ascii_case("fts")
     }) || bytes.starts_with(b"SIMPLE  ")
+}
+
+fn looks_like_xisf(bytes: &[u8], filename: &str) -> bool {
+    filename
+        .rsplit('.')
+        .next()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xisf"))
+        || bytes.starts_with(b"XISF0100")
+}
+
+fn xisf_header_prefix_bytes(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < XISF_PREAMBLE_BYTES || !bytes.starts_with(b"XISF0100") {
+        return None;
+    }
+    let header_bytes = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
+    if header_bytes == 0 || header_bytes > XISF_MAX_HEADER_BYTES {
+        return None;
+    }
+    XISF_PREAMBLE_BYTES.checked_add(header_bytes)
+}
+
+pub fn image_header_probe_bytes(bytes: &[u8], filename: &str) -> usize {
+    if looks_like_xisf(bytes, filename) {
+        xisf_header_prefix_bytes(bytes).unwrap_or(XISF_PREAMBLE_BYTES)
+    } else {
+        FITS_HEADER_PROBE_BYTES
+    }
 }
 
 #[cfg(test)]
@@ -753,6 +849,19 @@ mod tests {
             header[index * 80..index * 80 + card.len()].copy_from_slice(card.as_bytes());
         }
         header
+    }
+
+    fn xisf_image(headers: &[seiza_fits::WriteHeaderCard]) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        seiza_xisf::write_f32_image_to(
+            &mut encoded,
+            2,
+            2,
+            seiza_fits::F32ImageData::Mono(&[0.0, 0.25, 0.5, 1.0]),
+            headers,
+        )
+        .unwrap();
+        encoded
     }
 
     #[test]
@@ -782,6 +891,62 @@ mod tests {
                 .unwrap()
                 .to_rfc3339(),
             "2026-07-13T04:05:06.250+00:00"
+        );
+    }
+
+    #[test]
+    fn decodes_xisf_pixels_and_dimensions() {
+        let encoded = xisf_image(&[]);
+
+        assert_eq!(
+            dimensions_from_bytes(&encoded, "capture.xisf").unwrap(),
+            (2, 2)
+        );
+        let decoded = decode_monochrome_u16(&encoded, "capture.xisf").unwrap();
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(decoded.pixels, [0, 16_383, 32_767, u16::MAX]);
+    }
+
+    #[test]
+    fn promotes_xisf_metadata_to_a_hinted_solve() {
+        use seiza_fits::{HeaderValue, WriteHeaderCard};
+
+        let encoded = xisf_image(&[
+            WriteHeaderCard::new("RA", HeaderValue::Float(202.469575)),
+            WriteHeaderCard::new("DEC", HeaderValue::Float(47.195258)),
+            WriteHeaderCard::new("PIXSCALE", HeaderValue::Float(1.35)),
+            WriteHeaderCard::new(
+                "DATE-OBS",
+                HeaderValue::String("2026-07-13T04:05:06Z".into()),
+            ),
+            WriteHeaderCard::new("EXPTIME", HeaderValue::Float(30.0)),
+            WriteHeaderCard::new("OBSGEO-B", HeaderValue::Float(37.3)),
+            WriteHeaderCard::new("OBSGEO-L", HeaderValue::Float(-122.0)),
+            WriteHeaderCard::new("OBSGEO-H", HeaderValue::Float(0.0)),
+        ]);
+        let header_bytes =
+            image_header_probe_bytes(&encoded[..XISF_PREAMBLE_BYTES], "capture.xisf");
+        assert!(header_bytes < encoded.len());
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options_from_prefix(
+            &mut options,
+            &encoded[..header_bytes],
+            "capture.xisf",
+            encoded.len() as u64,
+        );
+
+        assert_eq!(options.center_ra_deg, Some(202.469575));
+        assert_eq!(options.center_dec_deg, Some(47.195258));
+        assert_eq!(options.scale_arcsec_per_pixel, Some(1.35));
+        assert_eq!(options.hint_source, Some(SolveHintSource::XisfHeader));
+        assert_eq!(options.hint_keywords, ["RA", "DEC", "PIXSCALE"]);
+        assert_eq!(options.exposure_seconds, Some(30.0));
+        assert_eq!(options.observer_latitude_deg, Some(37.3));
+        assert_eq!(options.observer_longitude_deg, Some(-122.0));
+        assert_eq!(
+            options.satellite_metadata_source,
+            Some(SatelliteMetadataSource::XisfHeader)
         );
     }
 

@@ -125,11 +125,14 @@ export function ApiDocsPage() {
           <div className="api-note"><strong>Your images remain yours.</strong><span>Ordinary uploads are stored only temporarily to provide the solve. Seiza does not claim ownership and does not retain the image long-term unless the user explicitly contributes it.</span></div>
         </DocSection>
 
-        <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="macOS, PSF Guard, Python, N.I.N.A., and Siril.">
-          <p>Browse and solve images in a fast native app, grade whole imaging sequences with PSF Guard, embed Seiza’s Rust-backed Python API, or connect existing imaging software to the pre-built CLI.</p>
+        <DocSection id="integrations" eyebrow="APPLICATION INTEGRATIONS" title="macOS, Windows, PSF Guard, Python, N.I.N.A., and Siril.">
+          <p>Browse and solve images in a desktop app, grade whole imaging sequences with PSF Guard, embed Seiza’s Rust-backed Python API, or connect existing imaging software to the pre-built CLI.</p>
           <h3>Seiza for macOS: native browsing and plate solving</h3>
           <p><a href="https://github.com/theatrus/seiza-mac">Seiza for macOS</a> opens one image or a whole night of captures and lets you step through them instantly. Its native SwiftUI and AppKit interface browses mixed FITS, JPEG, PNG, and TIFF folders with cached thumbnails, fast automatic stretching, header and image-statistics inspection, and responsive zoom and pan. Everything runs locally, and Seiza never solves an image until you ask; completed solves render the WCS grid, field center, named stars, deep-sky catalogs, transients, comets, and asteroids directly over the image. The universal app supports Apple silicon and Intel on macOS 15 or later.</p>
           <div className="api-note"><strong>Quick FITS browsing, including Finder</strong><span>The app bundles a FITS Quick Look preview extension for Finder and other system Quick Look clients, so inspecting a frame does not require opening or importing it first. Download the current app from <a href="https://github.com/theatrus/seiza-mac/releases/latest">Seiza for macOS releases</a>. Previewing does not need catalogs; solving uses a complete catalog directory selected in the app’s Settings.</span></div>
+          <h3>Seiza for Windows: GPU-backed viewing and local solving</h3>
+          <p><a href="https://github.com/theatrus/seiza-win">Seiza for Windows</a> opens FITS and common image files in a WinUI 3 app with a GPU-backed viewport. It provides live FITS stretches and processing, image stacks, headers, statistics, histograms, local plate solving, catalog overlays, and full-size image exports. The current x64 MSI targets Windows 11 24H2 or newer.</p>
+          <div className="api-note"><strong>Windows releases are being prepared</strong><span>There is no public installer yet. Watch the <a href="https://github.com/theatrus/seiza-win/releases">Seiza for Windows releases page</a> for the first self-contained x64 MSI.</span></div>
           <h3>PSF Guard: solve, overlay, and grade imaging sequences</h3>
           <p><a href="https://github.com/theatrus/psf-guard">PSF Guard</a> embeds Seiza in its image-grading workflow for N.I.N.A. Target Scheduler. It can solve FITS pixels on demand from header or mount hints, fall back to a blind index, persist WCS per database, and draw catalog labels, outlines, the coordinate grid, and target offset directly on each frame.</p>
           <div className="api-note"><strong>Fresh astrometry for quality screening</strong><span>PSF Guard also runs fresh Seiza solves across imaging sequences to find off-target frames, pointing jumps, and drift, while keeping catalog-only context separate from pixel-derived evidence. Predicted satellite crossings can be projected through an exposure and checked against nearby trail pixels before PSF Guard proposes a rejection.</span></div>
@@ -189,7 +192,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="solve-options" eyebrow="SOLVER INPUT" title="Blind by default, hinted when you know the field.">
-          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS uploads use compatible position and scale headers automatically; other images use blind solving.</p>
+          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS and XISF uploads use compatible position and scale headers automatically; other images use blind solving.</p>
           <div className="option-table">
             <OptionRow name="center_ra_deg / center_dec_deg" defaultValue="unset">ICRS center hint in degrees; RA 0–360 and Dec −90–90.</OptionRow>
             <OptionRow name="radius_deg" defaultValue="2.0">Position-hint search radius.</OptionRow>
@@ -201,11 +204,11 @@ export function ApiDocsPage() {
             <OptionRow name="ignore_border" defaultValue="0">Pixels ignored around every image edge.</OptionRow>
             <OptionRow name="max_stars" defaultValue="500">Bright detections retained for matching.</OptionRow>
             <OptionRow name="sip_order" defaultValue="0">SIP distortion order 2–5; 0 or 1 keeps a linear TAN solution. A fitted polynomial is accepted only when it materially improves the residual.</OptionRow>
-            <OptionRow name="capture_time" defaultValue="compatible FITS time">RFC 3339 shutter-open time. FITS DATE-BEG/DATE-END are preferred; DATE-AVG, DATE-OBS, or DATE-END are normalized when a duration is present.</OptionRow>
-            <OptionRow name="exposure_seconds" defaultValue="FITS XPOSURE / EXPTIME / EXPOSURE">Duration of one continuous shutter-open exposure, up to one hour. Do not send a stack integration total.</OptionRow>
-            <OptionRow name="observer_latitude_deg / observer_longitude_deg" defaultValue="FITS OBSGEO or SITE">Geodetic site coordinates for topocentric satellite propagation; supply the pair together. Longitude is east-positive.</OptionRow>
+            <OptionRow name="capture_time" defaultValue="compatible FITS/XISF time">RFC 3339 shutter-open time. DATE-BEG/DATE-END are preferred; DATE-AVG, DATE-OBS, or DATE-END are normalized when a duration is present.</OptionRow>
+            <OptionRow name="exposure_seconds" defaultValue="FITS/XISF XPOSURE / EXPTIME / EXPOSURE">Duration of one continuous shutter-open exposure, up to one hour. Do not send a stack integration total.</OptionRow>
+            <OptionRow name="observer_latitude_deg / observer_longitude_deg" defaultValue="FITS/XISF OBSGEO or SITE">Geodetic site coordinates for topocentric satellite propagation; supply the pair together. Longitude is east-positive.</OptionRow>
             <OptionRow name="observer_altitude_m" defaultValue="0">Optional ellipsoid height used with geodetic coordinates.</OptionRow>
-            <OptionRow name="observer_itrf_m" defaultValue="FITS OBSGEO-X/Y/Z">Three-element ITRF meter coordinates. Use this instead of geodetic coordinates, not alongside them.</OptionRow>
+            <OptionRow name="observer_itrf_m" defaultValue="FITS/XISF OBSGEO-X/Y/Z">Three-element ITRF meter coordinates. Use this instead of geodetic coordinates, not alongside them.</OptionRow>
           </div>
         </DocSection>
 

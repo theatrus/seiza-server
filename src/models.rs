@@ -27,6 +27,7 @@ pub enum JobStatus {
 pub enum SolveHintSource {
     Explicit,
     FitsHeader,
+    XisfHeader,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub enum SolveHintSource {
 pub enum SatelliteMetadataSource {
     Explicit,
     FitsHeader,
+    XisfHeader,
 }
 
 impl JobStatus {

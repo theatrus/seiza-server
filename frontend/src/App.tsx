@@ -78,8 +78,8 @@ function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOpt
   return options
 }
 
-function isFitsFilename(filename: string) {
-  return /\.(?:fits|fit|fts)$/i.test(filename)
+function hasAstronomyMetadata(filename: string) {
+  return /\.(?:fits|fit|fts|xisf)$/i.test(filename)
 }
 
 function hasCompleteSatelliteMetadata(options: SolveOptions) {
@@ -115,7 +115,7 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
   return <>
     <fieldset className="optional-fields">
       <legend>Position and scale <span className="optional-badge">Optional</span></legend>
-      <p><strong>No coordinates are required.</strong> Compatible FITS headers supply position and scale automatically; other images solve blind. If you add a position hint, provide all three values.</p>
+      <p><strong>No coordinates are required.</strong> Compatible FITS and XISF headers supply position and scale automatically; other images solve blind. If you add a position hint, provide all three values.</p>
       <div className="form-grid">
         <label>RA (degrees)<input name="center_ra_deg" type="number" min="0" max="360" step="any" placeholder="Optional · 210.802" defaultValue={defaults?.center_ra_deg ?? ''} /></label>
         <label>Dec (degrees)<input name="center_dec_deg" type="number" min="-90" max="90" step="any" placeholder="Optional · 54.349" defaultValue={defaults?.center_dec_deg ?? ''} /></label>
@@ -125,7 +125,7 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
     </fieldset>
     <fieldset className="optional-fields">
       <legend>Exposure and observing site <span className="optional-badge">Optional</span></legend>
-      <p><strong>Compatible FITS timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in below the file selector to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
+      <p><strong>Compatible FITS and XISF timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in below the file selector to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
       <div className="capture-time-grid">
         <label>Date and time<input name="capture_time" type="datetime-local" step="1" value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
         <label>Time zone<select name="capture_time_zone" value={captureTimeZone} aria-describedby={captureTimeHelpId} onChange={(event) => {
@@ -260,6 +260,18 @@ function SiteHeader({ accountsEnabled, account, solveEnabled }: { accountsEnable
   </nav>
 }
 
+function DownloadIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 15v4h14v-4" /></svg>
+}
+
+function MacAppIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="5" width="26" height="19" rx="2" /><path d="M3 10h26M8 8h.01M12 8h.01M13 28h6M16 24v4" /></svg>
+}
+
+function WindowsAppIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5l12-1v11H3V5Zm14-1 12-1v12H17V4ZM3 17h12v11L3 27V17Zm14 0h12v12l-12-1V17Z" /></svg>
+}
+
 function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
   return <main>
     <section className="hero">
@@ -280,13 +292,35 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       </div>
     </section>
 
+    <section className="desktop-apps" aria-labelledby="desktop-apps-heading">
+      <div className="desktop-apps-intro">
+        <p className="eyebrow">DESKTOP APPS</p>
+        <h2 id="desktop-apps-heading">Browse and solve on your own computer.</h2>
+        <p>Both apps use Seiza’s Rust core and keep image work local.</p>
+      </div>
+      <div className="desktop-app-grid">
+        <article className="desktop-app-card">
+          <span className="desktop-app-icon"><MacAppIcon /></span>
+          <div><h3>Seiza for macOS</h3><p>Open whole folders at once, browse FITS files fast, inspect headers and statistics, stack images, and solve with local catalogs.</p></div>
+          <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-mac/releases"><DownloadIcon />macOS releases</a>
+          <small>Universal downloads for Apple silicon and Intel</small>
+        </article>
+        <article className="desktop-app-card">
+          <span className="desktop-app-icon windows"><WindowsAppIcon /></span>
+          <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live FITS processing, image stacks, local plate solving, catalog overlays, and full-size exports.</p></div>
+          <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-win/releases"><DownloadIcon />Windows releases</a>
+          <small>No public release yet; watch this page for the first x64 MSI</small>
+        </article>
+      </div>
+    </section>
+
     <section className="story-grid" aria-labelledby="how-it-works">
       <div>
         <p className="eyebrow">HOW IT WORKS</p>
         <h2 id="how-it-works">Geometry, not guesswork.</h2>
       </div>
       <ol className="steps">
-        <li><span>01</span><div><strong>Detect</strong><p>Seiza finds reliable star centroids in FITS and common image formats.</p></div></li>
+        <li><span>01</span><div><strong>Detect</strong><p>Seiza finds reliable star centroids in FITS, XISF, and common image formats.</p></div></li>
         <li><span>02</span><div><strong>Match</strong><p>Geometric star patterns are compared with a compact sky catalog, blind or with an optional hint.</p></div></li>
         <li><span>03</span><div><strong>Calibrate</strong><p>A tangent-plane WCS maps every pixel to ICRS sky coordinates and enables a catalog overlay.</p></div></li>
       </ol>
@@ -298,8 +332,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <h2 id="optional-sky-context">Catalog the field—and predict satellite crossings.</h2>
       </div>
       <div className="about-copy">
-        <p>A completed WCS can be enriched with stars, deep-sky objects, transients, comets, and asteroids. Satellite lookup is optional and off by default in the browser: opt in below the file selector when one exposure has a UTC shutter interval and observing site, and Seiza can add WCS-clipped predicted tracks from epoch-appropriate orbital elements.</p>
-        <p>While the image is retained, Seiza separately checks predicted corridors for matching trail pixels. Pixel evidence improves confidence in the geometry but does not prove the candidate satellite identity. Missing exposure metadata, orbital data, or pixel evidence never makes the plate solve fail.</p>
+        <p>A completed WCS can add stars, deep-sky objects, transients, comets, asteroids, and satellite tracks. Satellite lookup is optional and off by default. While the image remains on the server, Seiza checks predicted corridors for matching trail pixels. Pixel evidence helps check the geometry but does not prove the candidate satellite identity. Missing sky data or pixel evidence never makes the plate solve fail.</p>
         <div className="text-links">
           {solveEnabled && <Link to="/solve">Solve with optional sky context <span aria-hidden="true">→</span></Link>}
           <a href="/docs/api#responses">Read the annotation contract <span aria-hidden="true">→</span></a>
@@ -310,13 +343,11 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
     <section className="about-card integration-card" aria-labelledby="application-integrations">
       <div>
         <p className="eyebrow">APPLICATION INTEGRATIONS</p>
-        <h2 id="application-integrations">A fast Mac app, PSF Guard, Python, and tools you already use.</h2>
+        <h2 id="application-integrations">Use Seiza in the tools you already have.</h2>
       </div>
       <div className="about-copy">
-        <p><strong>Seiza for macOS</strong> opens one image or a whole night of captures and lets you step through them instantly. Browse mixed FITS and image folders with native thumbnails, inspect headers and statistics, preview FITS files in Finder with Quick Look, and plate solve locally only when you ask.</p>
-        <p><strong>PSF Guard</strong> embeds Seiza for on-demand plate solving, persistent WCS and catalog overlays, and fresh astrometric quality screening across N.I.N.A. imaging sequences. Developers can <code>pip install seiza</code>, while N.I.N.A. and Siril can use the pre-built CLI through their existing integrations.</p>
+        <p><strong>PSF Guard</strong> uses Seiza for image grading, plate solving, WCS overlays, and astrometric checks across N.I.N.A. sequences. Developers can <code>pip install seiza</code>. N.I.N.A. and Siril can use the pre-built CLI.</p>
         <div className="text-links">
-          <a href="https://github.com/theatrus/seiza-mac">Seiza for macOS <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/psf-guard">PSF Guard <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza/tree/main/seiza-py">Python bindings <span aria-hidden="true">↗</span></a>
           <a href="/docs/api#integrations">Explore every integration <span aria-hidden="true">→</span></a>
@@ -402,7 +433,7 @@ function SolvePage({
     try {
       const job = await submitSolve(file, options, setUploadProgress)
       const showSatelliteTracks = satelliteTracksOptedIn
-        || (isFitsFilename(job.original_filename) && hasCompleteSatelliteMetadata(job.options))
+        || (hasAstronomyMetadata(job.original_filename) && hasCompleteSatelliteMetadata(job.options))
       navigate(`/solutions/${job.id}${showSatelliteTracks ? '?satellite_tracks=true' : ''}`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Upload failed')
@@ -423,13 +454,13 @@ function SolvePage({
       <form onSubmit={onSubmit}>
         <div className="upload-controls">
           <div className="file-submit-row">
-            <label className="file-input"><span>FITS or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,image/png,image/jpeg,image/tiff,image/webp" required /></label>
+            <label className="file-input"><span>FITS, XISF, or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,.xisf,image/png,image/jpeg,image/tiff,image/webp" required /></label>
             <button className="button solve-submit-button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : <><span>Solve</span><span className="go-arrow" aria-hidden="true">→</span></>}</button>
           </div>
           <fieldset className="optional-fields satellite-trail-option">
             <legend>Satellite trails <span className="optional-badge">Optional</span></legend>
             <label className="satellite-trail-opt-in"><input name="show_satellite_tracks" type="checkbox" /><span>Show predicted satellite trails</span></label>
-            <p className="satellite-trail-requirements">Requires FITS file with observer and time metadata, or optional fields filled in below.</p>
+            <p className="satellite-trail-requirements">Requires FITS or XISF observer and time metadata, or optional fields filled in below.</p>
           </fieldset>
         </div>
         {submitting && <div className="upload-progress" aria-live="polite">
@@ -656,7 +687,9 @@ function SolverStatistics({ job }: { job: Job }) {
     ? 'Blind solve'
     : stats.hint_source === 'fits_header'
       ? `Hinted · FITS ${stats.hint_keywords?.join(', ') ?? 'headers'}`
-      : 'Hinted solve'
+      : stats.hint_source === 'xisf_header'
+        ? `Hinted · XISF ${stats.hint_keywords?.join(', ') ?? 'headers'}`
+        : 'Hinted solve'
   return <section className="solver-stats">
     <div className="section-heading"><div><p className="eyebrow">SOLVER TELEMETRY</p><h2>Nerd stats</h2></div></div>
     <div className="metric-grid">
