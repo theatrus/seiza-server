@@ -1,13 +1,13 @@
 # Seiza Server
 
 Seiza Server is a queued web service for plate solving. It uses the
-[`seiza`](https://github.com/theatrus/seiza) and
-[`seiza-fits`](https://crates.io/crates/seiza-fits) and
-[`seiza-xisf`](https://github.com/theatrus/seiza/tree/main/seiza-xisf) Rust
+[`seiza`](https://crates.io/crates/seiza),
+[`seiza-fits`](https://crates.io/crates/seiza-fits), and
+[`seiza-xisf`](https://crates.io/crates/seiza-xisf) Rust
 crates directly—not a CLI subprocess—and includes a TypeScript/React frontend.
-The current source pins Seiza at `b9bdcd1` for its post-0.11.2 solver,
-FITS, XISF, and satellite APIs, and uses
-`@seiza/astro-overlay` 0.5.0 for risk- and alignment-aware rendering.
+Current versions are Seiza 0.12.0, seiza-fits 0.2.0, seiza-satellites 0.4.2,
+and seiza-xisf 0.1.0. The frontend uses `@seiza/astro-overlay` 0.5.0 for
+risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
 AWS deployments can use DynamoDB. SQLx also accepts PostgreSQL, so it is the
@@ -31,7 +31,7 @@ disappears on a process restart.
   input. FITS and XISF files share Seiza's decoded image type and autostretch
   before source detection.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with pinned post-0.11.2 Seiza, including catalog-seeded matching for source
+  solving with Seiza 0.12.0, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
   forward and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and
