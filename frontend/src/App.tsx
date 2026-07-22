@@ -309,7 +309,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <span className="desktop-app-icon windows"><WindowsAppIcon /></span>
           <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live image processing, image stacks, local plate solving, catalog overlays, and full-size exports.</p></div>
           <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-win/releases/latest"><DownloadIcon />Download for Windows</a>
-          <small>Available now · Windows 11 24H2 or newer · self-contained x64 MSI</small>
+          <small>Windows 11 24H2+ · x64 MSI</small>
         </article>
       </div>
     </section>
