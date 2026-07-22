@@ -277,8 +277,8 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
     <section className="hero">
       <div>
         <p className="eyebrow">OPEN-SOURCE ASTROMETRY</p>
-        <h1>Find exactly where your image meets the sky.</h1>
-        <p className="intro">Seiza is a fast plate-solving library written in Rust. It recognizes star patterns, determines an image’s celestial coordinates, and returns a complete, standards-friendly WCS solution.</p>
+        <h1>Map your image to the sky.</h1>
+        <p className="intro">Seiza is a Rust toolkit for astronomical images. It includes a very fast plate solver, FITS and XISF I/O, image processing and stacking, and sky catalog tools.</p>
         <div className="actions">
           {solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
