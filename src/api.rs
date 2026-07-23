@@ -56,7 +56,7 @@ use tokio::sync::{Mutex, Notify};
 use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
-    services::{ServeDir, ServeFile},
+    services::ServeDir,
     trace::TraceLayer,
 };
 use uuid::Uuid;
@@ -719,7 +719,11 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     let frontend_dir = state.config.frontend_dir.clone();
-    let frontend_index = frontend_dir.join("index.html");
+    let fallback_state = state.clone();
+    let frontend_not_found = get(move |headers: HeaderMap| {
+        let state = fallback_state.clone();
+        async move { frontend_document(&state, &headers, StatusCode::NOT_FOUND, "no-store").await }
+    });
     let cors = cors_layer(&state);
     Router::new()
         .route("/api/v1/health", get(get_health))
@@ -849,21 +853,49 @@ pub fn router(state: AppState) -> Router {
         // Known client-side routes must return a successful document response
         // when loaded directly or refreshed. The final fallback keeps the SPA's
         // rendered not-found page while preserving its 404 status.
-        .route_service("/", ServeFile::new(frontend_index.clone()))
-        .route_service("/solve", ServeFile::new(frontend_index.clone()))
-        .route_service("/docs/api", ServeFile::new(frontend_index.clone()))
-        .route_service("/data-sources", ServeFile::new(frontend_index.clone()))
-        .route_service("/signin", ServeFile::new(frontend_index.clone()))
-        .route_service("/account", ServeFile::new(frontend_index.clone()))
+        .route("/", get(get_frontend_document))
+        .route("/index.html", get(get_frontend_document))
+        .route("/solve", get(get_frontend_document))
+        .route("/docs/api", get(get_frontend_document))
+        .route("/data-sources", get(get_frontend_document))
+        .route("/signin", get(get_frontend_document))
+        .route("/account", get(get_frontend_document))
         .route("/solutions/{job_id}", get(get_solution_page))
-        .fallback_service(
-            ServeDir::new(&frontend_dir).not_found_service(ServeFile::new(frontend_index)),
-        )
+        .fallback_service(ServeDir::new(&frontend_dir).not_found_service(frontend_not_found))
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .layer(RequestBodyLimitLayer::new(state.config.max_upload_bytes))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn get_frontend_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    frontend_document(&state, &headers, StatusCode::OK, "no-cache").await
+}
+
+async fn frontend_document(
+    state: &AppState,
+    headers: &HeaderMap,
+    status: StatusCode,
+    cache_control: &'static str,
+) -> Result<Response, ApiError> {
+    let template = tokio::fs::read_to_string(state.config.frontend_dir.join("index.html"))
+        .await
+        .map_err(ApiError::internal)?;
+    let body = inject_site_head_html(template, state.config.site_head_html.as_deref())?;
+    let mut response = cached_body_response(
+        headers,
+        "text/html; charset=utf-8",
+        cache_control,
+        Bytes::from(body),
+    );
+    if response.status() != StatusCode::NOT_MODIFIED {
+        *response.status_mut() = status;
+    }
+    Ok(response)
 }
 
 async fn get_solution_page(
@@ -874,6 +906,7 @@ async fn get_solution_page(
     let template = tokio::fs::read_to_string(state.config.frontend_dir.join("index.html"))
         .await
         .map_err(ApiError::internal)?;
+    let template = inject_site_head_html(template, state.config.site_head_html.as_deref())?;
     let job = state.public_job(&requested_id).await?;
     let (body, cache_control) = if let Some(job) = job {
         let canonical_id = public_job_id(&job);
@@ -911,6 +944,21 @@ async fn get_solution_page(
         cache_control,
         Bytes::from(body),
     ))
+}
+
+fn inject_site_head_html(
+    mut template: String,
+    site_head_html: Option<&str>,
+) -> Result<String, ApiError> {
+    let Some(site_head_html) = site_head_html else {
+        return Ok(template);
+    };
+    let head_end = template
+        .rfind("</head>")
+        .ok_or_else(|| ApiError::internal("frontend index has no closing head tag"))?;
+    let snippet = format!("\n{site_head_html}\n");
+    template.insert_str(head_end, &snippet);
+    Ok(template)
 }
 
 struct SolutionPageMetadata {
@@ -2982,6 +3030,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_site_head_html_is_injected_into_every_frontend_document() {
+        let root = std::env::temp_dir().join(format!("seiza-api-site-head-{}", Uuid::now_v7()));
+        let frontend_dir = root.join("frontend");
+        std::fs::create_dir_all(&frontend_dir).unwrap();
+        std::fs::write(
+            frontend_dir.join("index.html"),
+            "<html><head><title>Seiza</title></head><body><div id=\"root\"></div></body></html>",
+        )
+        .unwrap();
+        std::fs::write(frontend_dir.join("app.js"), "console.log('seiza');").unwrap();
+        let mut config = test_config(&root);
+        config.site_head_html = crate::config::SiteHeadHtml::inline(
+            "<script defer src=\"https://tracking.example/site.js\"></script>",
+        )
+        .unwrap();
+        let app = router(AppState::new(config).await.unwrap());
+
+        for (path, expected_status) in [
+            ("/", StatusCode::OK),
+            ("/index.html", StatusCode::OK),
+            ("/solve", StatusCode::OK),
+            ("/docs/api", StatusCode::OK),
+            ("/data-sources", StatusCode::OK),
+            ("/signin", StatusCode::OK),
+            ("/account", StatusCode::OK),
+            (
+                "/solutions/550e8400-e29b-41d4-a716-446655440000",
+                StatusCode::OK,
+            ),
+            ("/not-a-real-page", StatusCode::NOT_FOUND),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status, "loading {path}");
+            let body = String::from_utf8(
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert_eq!(
+                body.matches("tracking.example/site.js").count(),
+                1,
+                "{path}"
+            );
+            assert!(
+                body.find("tracking.example/site.js").unwrap() < body.find("</head>").unwrap(),
+                "{path}"
+            );
+        }
+
+        let asset = app
+            .oneshot(
+                Request::builder()
+                    .uri("/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(
+            &to_bytes(asset.into_body(), usize::MAX).await.unwrap()[..],
+            b"console.log('seiza');"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn solution_page_exposes_server_rendered_social_metadata_and_overlay_png() {
         let root = std::env::temp_dir().join(format!("seiza-api-og-{}", Uuid::now_v7()));
         let frontend_dir = root.join("frontend");
@@ -4449,6 +4571,7 @@ mod tests {
         Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             frontend_dir: root.join("frontend"),
+            site_head_html: Default::default(),
             data_dir: root.to_owned(),
             catalog_path: None,
             blind_index_path: None,
