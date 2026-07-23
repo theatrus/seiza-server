@@ -1,12 +1,14 @@
 use anyhow::{Context, Result, bail};
 use seiza::data_paths::{self, DataPathError};
 use std::{
-    env, fmt,
+    env, fmt, fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
 };
 use url::Url;
+
+const MAX_SITE_HEAD_HTML_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Default)]
 pub(crate) struct PriorityApiKeys(Vec<String>);
@@ -46,6 +48,52 @@ impl fmt::Debug for PriorityApiKeys {
         formatter
             .debug_struct("PriorityApiKeys")
             .field("count", &self.0.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SiteHeadHtml(Option<String>);
+
+impl SiteHeadHtml {
+    fn from_sources(inline: Option<String>, file: Option<PathBuf>) -> Result<Self> {
+        if inline.is_some() && file.is_some() {
+            bail!("SEIZA_SITE_HEAD_HTML and SEIZA_SITE_HEAD_HTML_FILE are mutually exclusive");
+        }
+        let html = match (inline, file) {
+            (Some(html), None) => Some(html),
+            (None, Some(path)) => Some(fs::read_to_string(&path).with_context(|| {
+                format!("reading SEIZA_SITE_HEAD_HTML_FILE {}", path.display())
+            })?),
+            (None, None) => None,
+            (Some(_), Some(_)) => unreachable!("handled above"),
+        }
+        .filter(|html| !html.trim().is_empty());
+        if html
+            .as_ref()
+            .is_some_and(|html| html.len() > MAX_SITE_HEAD_HTML_BYTES)
+        {
+            bail!("site head HTML must not exceed {MAX_SITE_HEAD_HTML_BYTES} bytes");
+        }
+        Ok(Self(html))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline(html: impl Into<String>) -> Result<Self> {
+        Self::from_sources(Some(html.into()), None)
+    }
+
+    pub(crate) fn as_deref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+impl fmt::Debug for SiteHeadHtml {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SiteHeadHtml")
+            .field("configured", &self.0.is_some())
+            .field("bytes", &self.0.as_ref().map_or(0, String::len))
             .finish()
     }
 }
@@ -164,6 +212,7 @@ impl FromStr for StorageBackend {
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub frontend_dir: PathBuf,
+    pub(crate) site_head_html: SiteHeadHtml,
     pub data_dir: PathBuf,
     pub catalog_path: Option<PathBuf>,
     pub blind_index_path: Option<PathBuf>,
@@ -395,6 +444,14 @@ impl Config {
         Ok(Self {
             bind_addr,
             frontend_dir: PathBuf::from(env_or("SEIZA_FRONTEND_DIR", "frontend/dist")),
+            site_head_html: SiteHeadHtml::from_sources(
+                env::var("SEIZA_SITE_HEAD_HTML")
+                    .ok()
+                    .filter(|value| !value.is_empty()),
+                env::var_os("SEIZA_SITE_HEAD_HTML_FILE")
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from),
+            )?,
             data_dir,
             catalog_path,
             blind_index_path,
@@ -628,6 +685,47 @@ mod tests {
         assert_eq!(keys.queue_weight(Some("missing"), 2), 1.0);
         assert_eq!(keys.queue_weight(None, 2), 1.0);
         assert_eq!(format!("{keys:?}"), "PriorityApiKeys { count: 2 }");
+    }
+
+    #[test]
+    fn site_head_html_is_bounded_mutually_exclusive_and_redacted() {
+        let html = SiteHeadHtml::from_sources(
+            Some("<meta name=\"site-tag\" content=\"test\">".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            html.as_deref(),
+            Some("<meta name=\"site-tag\" content=\"test\">")
+        );
+        assert_eq!(
+            format!("{html:?}"),
+            "SiteHeadHtml { configured: true, bytes: 37 }"
+        );
+
+        let directory =
+            std::env::temp_dir().join(format!("seiza-server-site-head-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("site-head.html");
+        std::fs::write(&path, "<script defer src=\"/tracking.js\"></script>").unwrap();
+        let file_html = SiteHeadHtml::from_sources(None, Some(path)).unwrap();
+        assert_eq!(
+            file_html.as_deref(),
+            Some("<script defer src=\"/tracking.js\"></script>")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+
+        assert!(
+            SiteHeadHtml::from_sources(
+                Some("<meta name=\"site-tag\">".into()),
+                Some(PathBuf::from("site-head.html")),
+            )
+            .is_err()
+        );
+        assert!(
+            SiteHeadHtml::from_sources(Some("x".repeat(MAX_SITE_HEAD_HTML_BYTES + 1)), None,)
+                .is_err()
+        );
     }
 
     #[test]

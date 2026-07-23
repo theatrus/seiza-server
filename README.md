@@ -390,6 +390,8 @@ are currently supported:
 | `SEIZA_SATELLITE_CACHE_DIR` | `data/satellites` | Durable shared cache for current CelesTrak, Seiza mirror, and IAU SatChecker snapshots; share one persistent directory between API replicas on the same host |
 | `SEIZA_SATELLITE_CACHE_MAX_BYTES` | `5368709120` | Oldest-first orbital-cache ceiling; the newest valid current snapshot is always retained |
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
+| `SEIZA_SITE_HEAD_HTML` | unset | Trusted inline HTML inserted before `</head>` in every frontend document |
+| `SEIZA_SITE_HEAD_HTML_FILE` | unset | UTF-8 file containing trusted HTML to insert before `</head>`; mutually exclusive with `SEIZA_SITE_HEAD_HTML` |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |
 | `SEIZA_QUEUE_DATABASE` | `data/jobs.sqlite3` | Default SQLite path when no SQL URL is set |
@@ -431,6 +433,13 @@ are currently supported:
 | `SEIZA_SQS_PRIORITY_QUEUE_URL` | unset | Optional second standard queue for jobs whose durable queue weight is above `1.0` |
 | `SEIZA_SQS_PRIORITY_WEIGHT` | `2` | Priority jobs per normal job while both SQS queues are backlogged (`2`–`100`); also becomes the configured priority client's durable queue weight |
 | `SEIZA_PRIORITY_API_KEYS` | unset | Comma-separated, server-controlled API keys whose submitted jobs use the priority queue; values are redacted from `Config` debug output |
+
+Site head HTML can hold analytics scripts, ownership-verification tags, or
+other deployment-specific markup. The server inserts it into normal routes,
+solution pages, and the rendered 404 document, but not static assets. The
+markup is trusted and is not sanitized; do not let untrusted users control
+either setting. Each form has a 64 KiB limit, and changes require a server
+restart. Prefer `SEIZA_SITE_HEAD_HTML_FILE` for multiline tags.
 
 The bundled frontend marks its solve requests with `X-Seiza-Client: web`, while
 unmarked native requests and all Astrometry-compatible submissions use the API
