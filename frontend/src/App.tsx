@@ -303,7 +303,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <span className="desktop-app-icon"><MacAppIcon /></span>
           <div><h3>Seiza for macOS</h3><p>Open whole folders at once, browse FITS files fast, inspect headers and statistics, stack images, and solve with local catalogs.</p></div>
           <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-mac/releases"><DownloadIcon />macOS releases</a>
-          <small>Universal downloads for Apple silicon and Intel</small>
+          <small>Universal downloads for Apple silicon and Intel · or <code>brew install --cask theatrus/seiza/seiza-mac</code></small>
         </article>
         <article className="desktop-app-card">
           <span className="desktop-app-icon windows"><WindowsAppIcon /></span>
@@ -346,7 +346,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <h2 id="application-integrations">Use Seiza in the tools you already have.</h2>
       </div>
       <div className="about-copy">
-        <p><strong>PSF Guard</strong> uses Seiza for image grading, plate solving, WCS overlays, and astrometric checks across N.I.N.A. sequences. Developers can <code>pip install seiza</code>. N.I.N.A. and Siril can use the pre-built CLI.</p>
+        <p><strong>PSF Guard</strong> uses Seiza for image grading, plate solving, WCS overlays, and astrometric checks across N.I.N.A. sequences. Developers can <code>pip install seiza</code>. N.I.N.A. and Siril can use the pre-built CLI, and Homebrew users can <code>brew install theatrus/seiza/seiza</code>.</p>
         <div className="text-links">
           <a href="https://github.com/theatrus/psf-guard">PSF Guard <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza/tree/main/seiza-py">Python bindings <span aria-hidden="true">↗</span></a>
