@@ -33,11 +33,19 @@ RUN if [ "${TARGET}" = "al2023" ]; then \
     && dnf clean all
 
 # AL2023's system Rust can lag the edition/toolchain required by the server.
-# Install one current toolchain in a world-readable location so the container
-# can build as the host user rather than leaving root-owned artifacts behind.
+# Preinstall the repository's exact toolchain in a world-readable location so
+# the unprivileged RPM build does not need to mutate the root-owned rustup home.
 ENV RUSTUP_HOME=/opt/rustup
 ENV CARGO_HOME=/opt/cargo
 ENV PATH=/opt/cargo/bin:${PATH}
+COPY rust-toolchain.toml /tmp/rust-toolchain.toml
 RUN mkdir -p "${RUSTUP_HOME}" "${CARGO_HOME}" \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && rust_version="$(sed -n 's/^channel = "\(.*\)"$/\1/p' /tmp/rust-toolchain.toml)" \
+    && test -n "${rust_version}" \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain none \
+    && rustup toolchain install "${rust_version}" --profile minimal \
+        --component clippy --component rustfmt \
+    && rustup default "${rust_version}" \
+    && rm /tmp/rust-toolchain.toml \
     && chmod -R a+rX "${RUSTUP_HOME}" "${CARGO_HOME}"
