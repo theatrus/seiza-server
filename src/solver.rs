@@ -263,52 +263,35 @@ fn solve_bytes(
         options.center_dec_deg,
         options.scale_arcsec_per_pixel,
     ) {
-        (Some(ra), Some(dec), Some(scale)) => (
-            solve(
-                &detected,
-                catalog,
-                &SolveHint {
-                    center: (ra, dec),
-                    radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
-                    scale_arcsec_px: scale,
-                    scale_tolerance: options.scale_tolerance,
-                    sip_order: options.sip_order,
-                },
-                dimensions,
-            )
-            .context("hinted Seiza solve failed")?,
-            SolveMode::Hinted,
-            None,
-        ),
-        _ => {
-            let index = blind_index.get_or_init(|| {
-                let params = BlindParams::default();
-                tracing::warn!(
-                    index_mag_limit = params.index_mag_limit,
-                    "no prebuilt Seiza blind index is configured; building a legacy index once for this worker"
-                );
-                let index = BlindIndex::build(catalog, &params);
-                tracing::info!(
-                    patterns = index.pattern_count(),
-                    "built and cached legacy Seiza blind index"
-                );
-                Arc::new(index)
-            });
-            let params = BlindParams {
-                min_scale_arcsec_px: options.min_scale_arcsec_per_pixel,
-                max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
-                index_mag_limit: index.index_mag_limit(),
-                max_pattern_deg: index.max_pattern_deg(),
+        (Some(ra), Some(dec), Some(scale)) => match solve(
+            &detected,
+            catalog,
+            &SolveHint {
+                center: (ra, dec),
+                radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
+                scale_arcsec_px: scale,
+                scale_tolerance: options.scale_tolerance,
                 sip_order: options.sip_order,
-                ..Default::default()
-            };
-            (
-                solve_blind(&detected, catalog, index, &params, dimensions)
-                    .context("blind Seiza solve failed")?,
-                SolveMode::Blind,
-                Some(index.pattern_count()),
-            )
-        }
+            },
+            dimensions,
+        ) {
+            Ok(solution) => (solution, SolveMode::Hinted, None),
+            Err(hinted_error) if automatic_hint_allows_blind_fallback(options.hint_source) => {
+                tracing::warn!(
+                    %hinted_error,
+                    hint_source = ?options.hint_source,
+                    "automatic header hint failed; retrying as a broad blind solve"
+                );
+                solve_blind_with_options(&detected, catalog, blind_index, options, dimensions)
+                    .with_context(|| {
+                        format!(
+                            "hinted Seiza solve failed: {hinted_error}; blind fallback also failed"
+                        )
+                    })?
+            }
+            Err(error) => return Err(error).context("hinted Seiza solve failed"),
+        },
+        _ => solve_blind_with_options(&detected, catalog, blind_index, options, dimensions)?,
     };
     let search_duration = search_started.elapsed();
     let (center_ra_deg, center_dec_deg) = solution
@@ -356,6 +339,49 @@ fn solve_bytes(
         capture_time: options.capture_time,
         statistics: Some(statistics),
     })
+}
+
+fn automatic_hint_allows_blind_fallback(hint_source: Option<SolveHintSource>) -> bool {
+    matches!(
+        hint_source,
+        Some(SolveHintSource::FitsHeader | SolveHintSource::XisfHeader)
+    )
+}
+
+fn solve_blind_with_options(
+    detected: &[seiza::DetectedStar],
+    catalog: &TileCatalog,
+    blind_index: &OnceLock<Arc<BlindIndex>>,
+    options: &SolveOptions,
+    dimensions: (u32, u32),
+) -> Result<(seiza::solve::Solution, SolveMode, Option<usize>)> {
+    let index = blind_index.get_or_init(|| {
+        let params = BlindParams::default();
+        tracing::warn!(
+            index_mag_limit = params.index_mag_limit,
+            "no prebuilt Seiza blind index is configured; building a legacy index once for this worker"
+        );
+        let index = BlindIndex::build(catalog, &params);
+        tracing::info!(
+            patterns = index.pattern_count(),
+            "built and cached legacy Seiza blind index"
+        );
+        Arc::new(index)
+    });
+    let params = BlindParams {
+        min_scale_arcsec_px: options.min_scale_arcsec_per_pixel,
+        max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
+        index_mag_limit: index.index_mag_limit(),
+        max_pattern_deg: index.max_pattern_deg(),
+        sip_order: options.sip_order,
+        ..Default::default()
+    };
+    Ok((
+        solve_blind(detected, catalog, index, &params, dimensions)
+            .context("blind Seiza solve failed")?,
+        SolveMode::Blind,
+        Some(index.pattern_count()),
+    ))
 }
 
 fn duration_ms(duration: Duration) -> f64 {
@@ -746,14 +772,14 @@ fn fits_pixel_scale(
 
     let pixel_size_um = header_f64(headers, "XPIXSZ")?;
     let focal_length_mm = header_f64(headers, "FOCALLEN")?;
-    let binning = header_f64(headers, "XBINNING").unwrap_or(1.0);
-    let scale = 206.264_806_247 * pixel_size_um * binning / focal_length_mm;
+    // XPIXSZ is the image pixel width after binning. Capture programs such as
+    // N.I.N.A. therefore write both XPIXSZ=4.63 and XBINNING=2 for the native
+    // 4144x2822 mode of an ASI294MM. Multiplying the two again doubles the
+    // scale hint and can leave an otherwise valid field outside the solver's
+    // tolerance.
+    let scale = 206.264_806_247 * pixel_size_um / focal_length_mm;
     if scale.is_finite() && scale > 0.0 {
-        let mut keywords = vec!["XPIXSZ", "FOCALLEN"];
-        if headers.contains_key("XBINNING") {
-            keywords.push("XBINNING");
-        }
-        return Some((scale, keywords));
+        return Some((scale, vec!["XPIXSZ", "FOCALLEN"]));
     }
     None
 }
@@ -842,6 +868,20 @@ pub fn image_header_probe_bytes(bytes: &[u8], filename: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_automatic_header_hints_fall_back_to_blind_solving() {
+        assert!(automatic_hint_allows_blind_fallback(Some(
+            SolveHintSource::FitsHeader
+        )));
+        assert!(automatic_hint_allows_blind_fallback(Some(
+            SolveHintSource::XisfHeader
+        )));
+        assert!(!automatic_hint_allows_blind_fallback(Some(
+            SolveHintSource::Explicit
+        )));
+        assert!(!automatic_hint_allows_blind_fallback(None));
+    }
 
     fn fits_header(cards: &[&str]) -> Vec<u8> {
         let mut header = vec![b' '; 2_880];
@@ -1088,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_sexagesimal_object_coordinates_and_camera_geometry() {
+    fn treats_xpixsz_as_the_effective_binned_pixel_size() {
         let header = fits_header(&[
             "SIMPLE  =                    T",
             "OBJCTRA = '13:29:52.7'",
@@ -1104,8 +1144,38 @@ mod tests {
 
         assert!((options.center_ra_deg.unwrap() - 202.46958333333333).abs() < 1e-9);
         assert!((options.center_dec_deg.unwrap() + 47.195277777777775).abs() < 1e-9);
-        assert!((options.scale_arcsec_per_pixel.unwrap() - 3.8777783574436).abs() < 1e-9);
+        assert!((options.scale_arcsec_per_pixel.unwrap() - 1.9388891787218).abs() < 1e-9);
         assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+        assert_eq!(
+            options.hint_keywords,
+            ["OBJCTRA", "OBJCTDEC", "XPIXSZ", "FOCALLEN"]
+        );
+    }
+
+    #[test]
+    fn derives_nina_asi294_scale_without_double_counting_binning() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "NAXIS1  =                 4144",
+            "NAXIS2  =                 2822",
+            "RA      =     315.147297524169",
+            "DEC     =     45.1289918743763",
+            "XPIXSZ  =                 4.63",
+            "YPIXSZ  =                 4.63",
+            "XBINNING=                    2",
+            "YBINNING=                    2",
+            "FOCALLEN=               1000.0",
+            "INSTRUME= 'ZWO ASI294MM Pro'",
+            "SWCREATE= 'N.I.N.A. 3.2.0.9001 (x64)'",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert!((options.scale_arcsec_per_pixel.unwrap() - 0.955_006_052_923_61).abs() < 1e-12);
+        assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+        assert_eq!(options.hint_keywords, ["RA", "DEC", "XPIXSZ", "FOCALLEN"]);
     }
 
     #[test]
