@@ -263,52 +263,35 @@ fn solve_bytes(
         options.center_dec_deg,
         options.scale_arcsec_per_pixel,
     ) {
-        (Some(ra), Some(dec), Some(scale)) => (
-            solve(
-                &detected,
-                catalog,
-                &SolveHint {
-                    center: (ra, dec),
-                    radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
-                    scale_arcsec_px: scale,
-                    scale_tolerance: options.scale_tolerance,
-                    sip_order: options.sip_order,
-                },
-                dimensions,
-            )
-            .context("hinted Seiza solve failed")?,
-            SolveMode::Hinted,
-            None,
-        ),
-        _ => {
-            let index = blind_index.get_or_init(|| {
-                let params = BlindParams::default();
-                tracing::warn!(
-                    index_mag_limit = params.index_mag_limit,
-                    "no prebuilt Seiza blind index is configured; building a legacy index once for this worker"
-                );
-                let index = BlindIndex::build(catalog, &params);
-                tracing::info!(
-                    patterns = index.pattern_count(),
-                    "built and cached legacy Seiza blind index"
-                );
-                Arc::new(index)
-            });
-            let params = BlindParams {
-                min_scale_arcsec_px: options.min_scale_arcsec_per_pixel,
-                max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
-                index_mag_limit: index.index_mag_limit(),
-                max_pattern_deg: index.max_pattern_deg(),
+        (Some(ra), Some(dec), Some(scale)) => match solve(
+            &detected,
+            catalog,
+            &SolveHint {
+                center: (ra, dec),
+                radius_deg: options.radius_deg.unwrap_or(2.0).clamp(0.1, 180.0),
+                scale_arcsec_px: scale,
+                scale_tolerance: options.scale_tolerance,
                 sip_order: options.sip_order,
-                ..Default::default()
-            };
-            (
-                solve_blind(&detected, catalog, index, &params, dimensions)
-                    .context("blind Seiza solve failed")?,
-                SolveMode::Blind,
-                Some(index.pattern_count()),
-            )
-        }
+            },
+            dimensions,
+        ) {
+            Ok(solution) => (solution, SolveMode::Hinted, None),
+            Err(hinted_error) if automatic_hint_allows_blind_fallback(options.hint_source) => {
+                tracing::warn!(
+                    %hinted_error,
+                    hint_source = ?options.hint_source,
+                    "automatic header hint failed; retrying as a broad blind solve"
+                );
+                solve_blind_with_options(&detected, catalog, blind_index, options, dimensions)
+                    .with_context(|| {
+                        format!(
+                            "hinted Seiza solve failed: {hinted_error}; blind fallback also failed"
+                        )
+                    })?
+            }
+            Err(error) => return Err(error).context("hinted Seiza solve failed"),
+        },
+        _ => solve_blind_with_options(&detected, catalog, blind_index, options, dimensions)?,
     };
     let search_duration = search_started.elapsed();
     let (center_ra_deg, center_dec_deg) = solution
@@ -356,6 +339,49 @@ fn solve_bytes(
         capture_time: options.capture_time,
         statistics: Some(statistics),
     })
+}
+
+fn automatic_hint_allows_blind_fallback(hint_source: Option<SolveHintSource>) -> bool {
+    matches!(
+        hint_source,
+        Some(SolveHintSource::FitsHeader | SolveHintSource::XisfHeader)
+    )
+}
+
+fn solve_blind_with_options(
+    detected: &[seiza::DetectedStar],
+    catalog: &TileCatalog,
+    blind_index: &OnceLock<Arc<BlindIndex>>,
+    options: &SolveOptions,
+    dimensions: (u32, u32),
+) -> Result<(seiza::solve::Solution, SolveMode, Option<usize>)> {
+    let index = blind_index.get_or_init(|| {
+        let params = BlindParams::default();
+        tracing::warn!(
+            index_mag_limit = params.index_mag_limit,
+            "no prebuilt Seiza blind index is configured; building a legacy index once for this worker"
+        );
+        let index = BlindIndex::build(catalog, &params);
+        tracing::info!(
+            patterns = index.pattern_count(),
+            "built and cached legacy Seiza blind index"
+        );
+        Arc::new(index)
+    });
+    let params = BlindParams {
+        min_scale_arcsec_px: options.min_scale_arcsec_per_pixel,
+        max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
+        index_mag_limit: index.index_mag_limit(),
+        max_pattern_deg: index.max_pattern_deg(),
+        sip_order: options.sip_order,
+        ..Default::default()
+    };
+    Ok((
+        solve_blind(detected, catalog, index, &params, dimensions)
+            .context("blind Seiza solve failed")?,
+        SolveMode::Blind,
+        Some(index.pattern_count()),
+    ))
 }
 
 fn duration_ms(duration: Duration) -> f64 {
@@ -842,6 +868,20 @@ pub fn image_header_probe_bytes(bytes: &[u8], filename: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_automatic_header_hints_fall_back_to_blind_solving() {
+        assert!(automatic_hint_allows_blind_fallback(Some(
+            SolveHintSource::FitsHeader
+        )));
+        assert!(automatic_hint_allows_blind_fallback(Some(
+            SolveHintSource::XisfHeader
+        )));
+        assert!(!automatic_hint_allows_blind_fallback(Some(
+            SolveHintSource::Explicit
+        )));
+        assert!(!automatic_hint_allows_blind_fallback(None));
+    }
 
     fn fits_header(cards: &[&str]) -> Vec<u8> {
         let mut header = vec![b' '; 2_880];
