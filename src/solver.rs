@@ -746,14 +746,14 @@ fn fits_pixel_scale(
 
     let pixel_size_um = header_f64(headers, "XPIXSZ")?;
     let focal_length_mm = header_f64(headers, "FOCALLEN")?;
-    let binning = header_f64(headers, "XBINNING").unwrap_or(1.0);
-    let scale = 206.264_806_247 * pixel_size_um * binning / focal_length_mm;
+    // XPIXSZ is the image pixel width after binning. Capture programs such as
+    // N.I.N.A. therefore write both XPIXSZ=4.63 and XBINNING=2 for the native
+    // 4144x2822 mode of an ASI294MM. Multiplying the two again doubles the
+    // scale hint and can leave an otherwise valid field outside the solver's
+    // tolerance.
+    let scale = 206.264_806_247 * pixel_size_um / focal_length_mm;
     if scale.is_finite() && scale > 0.0 {
-        let mut keywords = vec!["XPIXSZ", "FOCALLEN"];
-        if headers.contains_key("XBINNING") {
-            keywords.push("XBINNING");
-        }
-        return Some((scale, keywords));
+        return Some((scale, vec!["XPIXSZ", "FOCALLEN"]));
     }
     None
 }
@@ -1088,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_sexagesimal_object_coordinates_and_camera_geometry() {
+    fn treats_xpixsz_as_the_effective_binned_pixel_size() {
         let header = fits_header(&[
             "SIMPLE  =                    T",
             "OBJCTRA = '13:29:52.7'",
@@ -1104,8 +1104,38 @@ mod tests {
 
         assert!((options.center_ra_deg.unwrap() - 202.46958333333333).abs() < 1e-9);
         assert!((options.center_dec_deg.unwrap() + 47.195277777777775).abs() < 1e-9);
-        assert!((options.scale_arcsec_per_pixel.unwrap() - 3.8777783574436).abs() < 1e-9);
+        assert!((options.scale_arcsec_per_pixel.unwrap() - 1.9388891787218).abs() < 1e-9);
         assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+        assert_eq!(
+            options.hint_keywords,
+            ["OBJCTRA", "OBJCTDEC", "XPIXSZ", "FOCALLEN"]
+        );
+    }
+
+    #[test]
+    fn derives_nina_asi294_scale_without_double_counting_binning() {
+        let header = fits_header(&[
+            "SIMPLE  =                    T",
+            "NAXIS1  =                 4144",
+            "NAXIS2  =                 2822",
+            "RA      =     315.147297524169",
+            "DEC     =     45.1289918743763",
+            "XPIXSZ  =                 4.63",
+            "YPIXSZ  =                 4.63",
+            "XBINNING=                    2",
+            "YBINNING=                    2",
+            "FOCALLEN=               1000.0",
+            "INSTRUME= 'ZWO ASI294MM Pro'",
+            "SWCREATE= 'N.I.N.A. 3.2.0.9001 (x64)'",
+            "END",
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &header, "capture.fits");
+
+        assert!((options.scale_arcsec_per_pixel.unwrap() - 0.955_006_052_923_61).abs() < 1e-12);
+        assert_eq!(options.hint_source, Some(SolveHintSource::FitsHeader));
+        assert_eq!(options.hint_keywords, ["RA", "DEC", "XPIXSZ", "FOCALLEN"]);
     }
 
     #[test]
