@@ -28,18 +28,63 @@ test.describe('acquisition time zone', () => {
     await page.goto('/solve')
     const captureTime = page.getByLabel('Date and time')
     const timeZone = page.getByLabel('Time zone')
+    const note = page.locator('.capture-time-note')
 
     await expect(timeZone).toHaveValue('local')
-    await captureTime.fill('2026-07-16T12:30')
+    await expect(note).toContainText('this browser will interpret the value as America/Los_Angeles (UTC-07:00)')
+    await captureTime.fill('2026-07-16 12:30')
     await expect(timeZone.locator('option:checked')).toContainText('America/Los_Angeles (UTC-07:00)')
-    await expect(page.locator('.capture-time-note')).toContainText('this browser will interpret the value as America/Los_Angeles (UTC-07:00)')
+    await expect(note).toContainText('2026-07-16 12:30:00 in America/Los_Angeles (UTC-07:00), which is 2026-07-16T19:30:00Z')
 
     await timeZone.selectOption('utc')
-    await expect(captureTime).toHaveValue('2026-07-16T19:30')
-    await expect(page.locator('.capture-time-note')).toContainText('Coordinated Universal Time, with no local offset')
+    await expect(captureTime).toHaveValue('2026-07-16 19:30:00')
+    await expect(note).toContainText('this reads as 2026-07-16T19:30:00Z')
 
     await timeZone.selectOption('local')
-    await expect(captureTime).toHaveValue('2026-07-16T12:30')
+    await expect(captureTime).toHaveValue('2026-07-16 12:30:00')
+  })
+
+  test('shows a neutral hint while the text is incomplete instead of a validation error', async ({ page }) => {
+    await page.goto('/solve')
+    const captureTime = page.getByLabel('Date and time')
+    const note = page.locator('.capture-time-note')
+
+    await captureTime.pressSequentially('2026-07-16 12:3')
+    await expect(note).toContainText('Still incomplete')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(captureTime).toHaveJSProperty('validity.valid', true)
+
+    await captureTime.pressSequentially('0')
+    await expect(note).toContainText('which is 2026-07-16T19:30:00Z')
+
+    await captureTime.pressSequentially(':45.250')
+    await expect(note).toContainText('2026-07-16 12:30:45.250 in America/Los_Angeles (UTC-07:00), which is 2026-07-16T19:30:45.250Z')
+  })
+
+  test('lets a pasted offset override the time zone selector', async ({ page }) => {
+    await page.goto('/solve')
+    const captureTime = page.getByLabel('Date and time')
+    const timeZone = page.getByLabel('Time zone')
+    const note = page.locator('.capture-time-note')
+
+    await captureTime.fill('2026-07-16T19:30:45Z')
+    await expect(note).toContainText('the trailing Z or offset wins over the time zone selector, so this reads as 2026-07-16T19:30:45Z')
+
+    await timeZone.selectOption('utc')
+    await expect(captureTime).toHaveValue('2026-07-16T19:30:45Z')
+
+    await captureTime.fill('2026-07-16 21:30:45+02:00')
+    await expect(note).toContainText('this reads as 2026-07-16T19:30:45Z')
+  })
+
+  test('reports unreadable text on submit without a browser validation bubble', async ({ page }) => {
+    await page.goto('/solve')
+    await page.getByLabel('FITS, XISF, or image file').setInputFiles({ name: 'sky.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('jpeg') })
+    await page.getByLabel('Date and time').fill('2026-13-40 12:30')
+    await page.getByRole('button', { name: 'Solve', exact: true }).click()
+
+    await expect(page.getByRole('alert')).toContainText('The date and time was not understood. Enter the date and time as YYYY-MM-DD HH:MM:SS')
+    await expect(page).toHaveURL(/\/solve$/)
   })
 })
 

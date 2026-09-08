@@ -22,15 +22,63 @@ const defaultOverlayLayers: OverlayLayers = {
 
 type CaptureTimeZone = 'local' | 'utc'
 
+interface ParsedCaptureTime {
+  instant: Date
+  /** The text carried its own Z or ±HH:MM offset, which wins over the time zone selector. */
+  explicitOffset: boolean
+}
+
+const CAPTURE_TIME_EXAMPLE = '2026-07-16 21:45:30'
+const CAPTURE_TIME_FORMAT_HINT = `Enter the date and time as YYYY-MM-DD HH:MM:SS, for example ${CAPTURE_TIME_EXAMPLE}. Seconds are optional.`
+
+// Date, then T or a space, hours and minutes, optional seconds and fraction, optional Z or ±HH:MM.
+const CAPTURE_TIME_PATTERN = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[Tt]|\s+)(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,3}))?)?\s*(?:([Zz])|([+-])(\d{2}):?(\d{2}))?$/
+
 function numberOrUndefined(value: FormDataEntryValue | null): number | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function parseCaptureDateTime(value: string, timeZone: CaptureTimeZone) {
-  const parsed = new Date(timeZone === 'utc' ? `${value}Z` : value)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
+function parseCaptureTime(text: string, timeZone: CaptureTimeZone): ParsedCaptureTime | null {
+  const match = CAPTURE_TIME_PATTERN.exec(text.trim())
+  if (!match) return null
+  const [, year, month, day, hour, minute, second = '0', fraction = '', zulu, offsetSign, offsetHours, offsetMinutes] = match
+  const [y, m, d, h, mi, sec, ms] = [Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(fraction.padEnd(3, '0'))]
+  if (m < 0 || m > 11 || d < 1 || h > 23 || mi > 59 || sec > 59) return null
+
+  if (zulu || offsetSign) {
+    const offsetHoursValue = Number(offsetHours ?? 0)
+    const offsetMinutesValue = Number(offsetMinutes ?? 0)
+    if (offsetHoursValue > 23 || offsetMinutesValue > 59) return null
+    const offsetMs = (offsetSign === '-' ? -1 : 1) * (offsetHoursValue * 60 + offsetMinutesValue) * 60_000
+    const utc = new Date(Date.UTC(y, m, d, h, mi, sec, ms))
+    if (utc.getUTCMonth() !== m || utc.getUTCDate() !== d) return null
+    return { instant: new Date(utc.getTime() - offsetMs), explicitOffset: true }
+  }
+  if (timeZone === 'utc') {
+    const utc = new Date(Date.UTC(y, m, d, h, mi, sec, ms))
+    if (utc.getUTCMonth() !== m || utc.getUTCDate() !== d) return null
+    return { instant: utc, explicitOffset: false }
+  }
+  const local = new Date(0)
+  local.setFullYear(y, m, d)
+  local.setHours(h, mi, sec, ms)
+  if (local.getMonth() !== m || local.getDate() !== d) return null
+  return { instant: local, explicitOffset: false }
+}
+
+function formatCaptureTime(date: Date, timeZone: CaptureTimeZone) {
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0')
+  const [year, month, day, hours, minutes, seconds, millis] = timeZone === 'utc'
+    ? [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds()]
+    : [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours(), date.getMinutes(), date.getSeconds(), date.getMilliseconds()]
+  const fraction = millis ? `.${pad(millis, 3)}` : ''
+  return `${pad(year, 4)}-${pad(month)}-${pad(day)} ${pad(hours)}:${pad(minutes)}:${pad(seconds)}${fraction}`
+}
+
+function formatCaptureInstant(date: Date) {
+  return `${formatCaptureTime(date, 'utc').replace(' ', 'T')}Z`
 }
 
 function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOptions {
@@ -71,9 +119,9 @@ function solveOptionsFromForm(form: FormData, defaults?: SolveOptions): SolveOpt
     if (captureTimeZone !== 'local' && captureTimeZone !== 'utc') {
       throw new Error('Choose whether the acquisition time is local time or UTC.')
     }
-    const parsed = parseCaptureDateTime(captureTime, captureTimeZone)
-    if (!parsed) throw new Error('Acquisition time is not a valid date and time.')
-    options.capture_time = parsed.toISOString()
+    const parsed = parseCaptureTime(captureTime, captureTimeZone)
+    if (!parsed) throw new Error(`The date and time was not understood. ${CAPTURE_TIME_FORMAT_HINT}`)
+    options.capture_time = parsed.instant.toISOString()
   }
   return options
 }
@@ -88,17 +136,15 @@ function hasCompleteSatelliteMetadata(options: SolveOptions) {
   return options.capture_time != null && options.exposure_seconds != null && hasObserver
 }
 
-function dateTimeInputValue(value: string | null | undefined, timeZone: CaptureTimeZone) {
+function captureTimeInputValue(value: string | null | undefined, timeZone: CaptureTimeZone) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  if (timeZone === 'utc') return date.toISOString().slice(0, 19)
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-  return local.toISOString().slice(0, 19)
+  return formatCaptureTime(date, timeZone)
 }
 
-function localTimeZoneDescription(value: string) {
-  const date = parseCaptureDateTime(value, 'local') ?? new Date()
+function localTimeZoneDescription(instant: Date | null) {
+  const date = instant ?? new Date()
   const offsetMinutes = -date.getTimezoneOffset()
   const sign = offsetMinutes >= 0 ? '+' : '-'
   const hours = String(Math.floor(Math.abs(offsetMinutes) / 60)).padStart(2, '0')
@@ -107,10 +153,29 @@ function localTimeZoneDescription(value: string) {
   return `${zoneName} (UTC${sign}${hours}:${minutes})`
 }
 
+function CaptureTimeNote({ id, text, timeZone, parsed }: { id: string, text: string, timeZone: CaptureTimeZone, parsed: ParsedCaptureTime | null }) {
+  let reading: ReactNode
+  if (text.trim() === '') {
+    reading = timeZone === 'local'
+      ? <><strong>Local entry:</strong> this browser will interpret the value as {localTimeZoneDescription(null)}. {CAPTURE_TIME_FORMAT_HINT}</>
+      : <><strong>UTC entry:</strong> the value will be interpreted as Coordinated Universal Time, with no local offset. {CAPTURE_TIME_FORMAT_HINT}</>
+  } else if (!parsed) {
+    reading = <><strong>Still incomplete:</strong> {CAPTURE_TIME_FORMAT_HINT}</>
+  } else if (parsed.explicitOffset) {
+    reading = <><strong>Offset in the text:</strong> the trailing Z or offset wins over the time zone selector, so this reads as {formatCaptureInstant(parsed.instant)}.</>
+  } else if (timeZone === 'local') {
+    reading = <><strong>Local entry:</strong> {formatCaptureTime(parsed.instant, 'local')} in {localTimeZoneDescription(parsed.instant)}, which is {formatCaptureInstant(parsed.instant)}.</>
+  } else {
+    reading = <><strong>UTC entry:</strong> this reads as {formatCaptureInstant(parsed.instant)}.</>
+  }
+  return <p id={id} className="capture-time-note">{reading} Seiza submits and stores the instant in UTC.</p>
+}
+
 function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
   const [captureTimeZone, setCaptureTimeZone] = useState<CaptureTimeZone>('local')
-  const [captureTime, setCaptureTime] = useState(() => dateTimeInputValue(defaults?.capture_time, 'local'))
+  const [captureTime, setCaptureTime] = useState(() => captureTimeInputValue(defaults?.capture_time, 'local'))
   const captureTimeHelpId = useId()
+  const parsedCaptureTime = parseCaptureTime(captureTime, captureTimeZone)
 
   return <>
     <fieldset className="optional-fields">
@@ -127,20 +192,17 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
       <legend>Exposure and observing site <span className="optional-badge">Optional</span></legend>
       <p><strong>Compatible FITS and XISF timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in below the file selector to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
       <div className="capture-time-grid">
-        <label>Date and time<input name="capture_time" type="datetime-local" step="1" value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
+        <label>Date and time<input name="capture_time" type="text" placeholder={`Optional · ${CAPTURE_TIME_EXAMPLE}`} autoComplete="off" spellCheck={false} value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
         <label>Time zone<select name="capture_time_zone" value={captureTimeZone} aria-describedby={captureTimeHelpId} onChange={(event) => {
           const nextTimeZone = event.target.value as CaptureTimeZone
-          const instant = captureTime ? parseCaptureDateTime(captureTime, captureTimeZone) : null
           setCaptureTimeZone(nextTimeZone)
-          if (instant) setCaptureTime(dateTimeInputValue(instant.toISOString(), nextTimeZone))
+          if (parsedCaptureTime && !parsedCaptureTime.explicitOffset) setCaptureTime(formatCaptureTime(parsedCaptureTime.instant, nextTimeZone))
         }}>
-          <option value="local">Local · {localTimeZoneDescription(captureTime)}</option>
+          <option value="local">Local · {localTimeZoneDescription(parsedCaptureTime?.instant ?? null)}</option>
           <option value="utc">UTC · Coordinated Universal Time</option>
         </select></label>
       </div>
-      <p id={captureTimeHelpId} className="capture-time-note">{captureTimeZone === 'local'
-        ? <><strong>Local entry:</strong> this browser will interpret the value as {localTimeZoneDescription(captureTime)}.</>
-        : <><strong>UTC entry:</strong> the value will be interpreted as Coordinated Universal Time, with no local offset.</>} Seiza submits and stores the instant in UTC.</p>
+      <CaptureTimeNote id={captureTimeHelpId} text={captureTime} timeZone={captureTimeZone} parsed={parsedCaptureTime} />
       <div className="form-grid satellite-metadata-grid">
         <label>Exposure (seconds)<input name="exposure_seconds" type="number" min="0.001" max="3600" step="any" placeholder="Optional · 30" defaultValue={defaults?.exposure_seconds ?? ''} /></label>
         <label>Observer latitude (° N)<input name="observer_latitude_deg" type="number" min="-90" max="90" step="any" placeholder="Optional · 37.3" defaultValue={defaults?.observer_latitude_deg ?? ''} /></label>
