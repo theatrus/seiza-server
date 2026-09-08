@@ -2281,9 +2281,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
-version = "0.11.6"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 dependencies = [
  "twox-hash",
 ]
@@ -2770,9 +2770,9 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
-version = "0.38.4"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
 ]
@@ -3212,9 +3212,9 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "safe_arch"
-version = "1.0.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f7caad094bd561859bcd467734a720c3c1f5d1f338995351fefe2190c45efed"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
 dependencies = [
  "bytemuck",
 ]
@@ -3286,9 +3286,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.12.0"
+version = "0.18.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "692368a038b482ccdd1eda4af18dd57a4703eb96e11ef15aeb722ee344d4c0ee"
+checksum = "ac6487e888f70918c5b6fc4e5e6eca050f20a272a42bde4ccc2c16e83d559d12"
 dependencies = [
  "directories",
  "image",
@@ -3297,12 +3297,25 @@ dependencies = [
  "postcard",
  "rayon",
  "rustc-hash",
+ "seiza-calibration",
  "seiza-stats",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "wide",
+]
+
+[[package]]
+name = "seiza-calibration"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419436f51a849d5302fa32b14138c24a0ffea85abf17e08ca607d3f97c76edf7"
+dependencies = [
+ "seiza-imgproc",
+ "seiza-stats",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3326,9 +3339,9 @@ dependencies = [
 
 [[package]]
 name = "seiza-fits"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83f9f198ba3b87cd50c90f7f87e70ad1de615b0c5b2f87324705af5f64d8b133"
+checksum = "96da9f0d675870e540417cb4c0268ae6f8b0841f16131b9cd39fb6a21f653a8f"
 dependencies = [
  "multiversion",
  "seiza-stretch",
@@ -3336,10 +3349,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "seiza-satellites"
-version = "0.4.2"
+name = "seiza-imgproc"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "299bcbcee1382d3a7b9eab050cd44c1e4ac06507ae374c3e21b5859fb3f7329f"
+checksum = "43903045bca0b629b5bda14bfda11b26758bbb3fd51d24dedb253c0155020f1d"
+
+[[package]]
+name = "seiza-satellites"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bcf6ca61f3a241d99ebc202d7b1c5c2ea64acc5b6e18b06d2a006cee86c5aa4"
 dependencies = [
  "directories",
  "fs2",
@@ -3409,9 +3428,9 @@ checksum = "02427eea0eebef160eba79502519b73272924ccea855462292006af2320ef9e2"
 
 [[package]]
 name = "seiza-stretch"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f0b6b7172999270f4b4a4446179fcf29be4d289406ef362a6a2b83acb9889de"
+checksum = "33bdfe46bd6c8433637ae4aed63b409b795549cab5be6ea5d00b9c046955f078"
 dependencies = [
  "rayon",
  "seiza-stats",
@@ -3421,15 +3440,15 @@ dependencies = [
 
 [[package]]
 name = "seiza-xisf"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99c58629034c4197cf415a86ad91fc044dbf9f1ea892ec5617d611e530af990c"
+checksum = "d8bc46f350b99abb68c689aa947c6b805e22675fb69fe799572aa5e6d00b4eb0"
 dependencies = [
  "flate2",
  "lz4_flex",
  "quick-xml",
  "seiza-fits",
- "sha1 0.10.7",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
@@ -4671,9 +4690,9 @@ checksum = "998767ef88740d1f5b0682a9c53c24431453923962269c2db68ee43788c5a40d"
 
 [[package]]
 name = "wide"
-version = "1.5.0"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfdfe6a32973f2d1b268b8895845a8a96cac2f0191e72c27cc929036060dbf89"
+checksum = "8cf05ca94c9fba0c51316899caa1d1e74a064fc310a5efa7375e614343d415be"
 dependencies = [
  "bytemuck",
  "safe_arch",
