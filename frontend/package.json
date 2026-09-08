@@ -22,7 +22,7 @@
     "vite": "latest"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.0",
     "@typescript/native": "npm:typescript@7.0.2",
     "@types/react": "latest",
     "@types/react-dom": "latest",
