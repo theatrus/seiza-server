@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test('advertises desktop downloads, PSF Guard, Python, N.I.N.A., and Siril on the home page', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page.getByRole('heading', { name: 'Browse and solve on your own computer.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Browse, solve, and edit on your own computer.' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Seiza for macOS' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Seiza for Windows' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'macOS releases' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac/releases')

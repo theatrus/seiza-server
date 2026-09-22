@@ -35,9 +35,9 @@ button:disabled { cursor: wait; opacity: .65; }
 .hero-mark img { width: min(270px, 68vw); filter: drop-shadow(0 2rem 4rem rgb(51 190 207 / 16%)); }
 .kanji { margin-top: .7rem; color: #f4f7f7; font-family: 'Hiragino Mincho ProN', 'Yu Mincho', serif; font-size: clamp(3.4rem, 8vw, 6rem); letter-spacing: .12em; }
 .hiragana { color: #7fa3ad; font-size: .76rem; letter-spacing: .16em; text-transform: uppercase; }
-.desktop-apps { display: grid; grid-template-columns: minmax(230px, .65fr) minmax(0, 1.35fr); gap: clamp(2rem, 6vw, 5rem); padding: 2rem 0 5rem; }
-.desktop-apps-intro > p:last-child { max-width: 360px; color: #91a8b0; line-height: 1.65; }
-.desktop-app-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.desktop-apps { display: grid; gap: 2rem; padding: 2rem 0 5rem; }
+.desktop-apps-intro > p:last-child { max-width: 600px; color: #91a8b0; line-height: 1.65; }
+.desktop-app-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
 .desktop-app-card { display: grid; grid-template-rows: auto 1fr auto auto; gap: 1rem; min-width: 0; padding: 1.5rem; border: 1px solid #31515b; border-radius: 8px; background: linear-gradient(145deg, rgb(12 39 47 / 90%), rgb(9 26 33 / 80%)); }
 .desktop-app-icon { display: grid; place-items: center; width: 2.7rem; height: 2.7rem; border: 1px solid #456b76; border-radius: 7px; color: #9ce6ee; background: #102a32; }
 .desktop-app-icon svg { width: 1.7rem; fill: none; stroke: currentcolor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -398,6 +398,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
 .footer-links a:hover { color: #d5f6f9; }
 
 @media (width <= 800px) {
+  .desktop-app-grid { grid-template-columns: 1fr; }
   .hero, .desktop-apps, .story-grid, .about-card { grid-template-columns: 1fr; }
   .auth-grid { grid-template-columns: 1fr; }
   .api-hero { grid-template-columns: 1fr; }

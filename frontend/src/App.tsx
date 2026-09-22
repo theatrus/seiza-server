@@ -334,6 +334,10 @@ function WindowsAppIcon() {
   return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5l12-1v11H3V5Zm14-1 12-1v12H17V4ZM3 17h12v11L3 27V17Zm14 0h12v12l-12-1V17Z" /></svg>
 }
 
+function ImagePluginIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4" width="24" height="24" rx="2" /><circle cx="11" cy="11" r="2" /><path d="m4 23 7-7 5 5 5-8 7 10" /></svg>
+}
+
 function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
   return <main>
     <section className="hero">
@@ -356,9 +360,9 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
 
     <section className="desktop-apps" aria-labelledby="desktop-apps-heading">
       <div className="desktop-apps-intro">
-        <p className="eyebrow">DESKTOP APPS</p>
-        <h2 id="desktop-apps-heading">Browse and solve on your own computer.</h2>
-        <p>Both apps use Seiza’s Rust core and keep image work local.</p>
+        <p className="eyebrow">DESKTOP APPS &amp; PLUGINS</p>
+        <h2 id="desktop-apps-heading">Browse, solve, and edit on your own computer.</h2>
+        <p>Seiza’s desktop apps and Photoshop plugins keep image work local.</p>
       </div>
       <div className="desktop-app-grid">
         <article className="desktop-app-card">
@@ -372,6 +376,12 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live image processing, image stacks, local plate solving, catalog overlays, and full-size exports.</p></div>
           <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-win/releases/latest"><DownloadIcon />Download for Windows</a>
           <small>Windows 11 24H2+ · x64 MSI</small>
+        </article>
+        <article className="desktop-app-card">
+          <span className="desktop-app-icon"><ImagePluginIcon /></span>
+          <div><h3>FITS and XISF for Photoshop</h3><p>Open astronomy images as Float32 or rescaled 16-bit integer, optionally debayer to RGB, and save at the document’s depth while retaining source metadata in the same format.</p></div>
+          <a className="button secondary desktop-download" href="https://github.com/theatrus/xisf-photoshop/releases/latest"><DownloadIcon />Download Photoshop plugins</a>
+          <small>Windows x64 installer · universal macOS ZIP · signed plugins for both platforms</small>
         </article>
       </div>
     </section>
@@ -409,10 +419,8 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       </div>
       <div className="about-copy">
         <p><strong>PSF Guard</strong> uses Seiza for image grading, plate solving, WCS overlays, and astrometric checks across N.I.N.A. sequences. Developers can <code>pip install seiza</code>. N.I.N.A. and Siril can use the pre-built CLI, and Homebrew users can <code>brew install theatrus/seiza/seiza</code>.</p>
-        <p><strong>FITS and XISF for Photoshop</strong> brings Seiza’s image codecs into Photoshop on Windows and macOS. Open astronomy images as Float32 or rescaled 16-bit integer, optionally debayer to RGB, and save at the document’s depth. Processing stays on your computer.</p>
         <div className="text-links">
           <a href="https://github.com/theatrus/psf-guard">PSF Guard <span aria-hidden="true">↗</span></a>
-          <a href="https://github.com/theatrus/xisf-photoshop/releases/latest">Download Photoshop plugins <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza/tree/main/seiza-py">Python bindings <span aria-hidden="true">↗</span></a>
           <a href="/docs/api#integrations">Explore every integration <span aria-hidden="true">→</span></a>
         </div>
