@@ -381,7 +381,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <span className="desktop-app-icon"><ImagePluginIcon /></span>
           <div><h3>FITS and XISF for Photoshop</h3><p>Open astronomy images as Float32 or rescaled 16-bit integer, optionally debayer to RGB, and save at the document’s depth while retaining source metadata in the same format.</p></div>
           <a className="button secondary desktop-download" href="https://github.com/theatrus/xisf-photoshop/releases/latest"><DownloadIcon />Download Photoshop plugins</a>
-          <small>Windows x64 installer · universal macOS ZIP · signed plugins for both platforms</small>
+          <small>Windows x64 installer · drag-and-drop macOS DMG · signed plugins for both platforms</small>
         </article>
       </div>
     </section>

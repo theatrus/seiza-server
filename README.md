@@ -73,7 +73,7 @@ disappears on a process restart.
 The separate [FITS and XISF Photoshop plugins](https://github.com/theatrus/xisf-photoshop)
 use Seiza's image codecs to open and save astronomy images directly in Photoshop.
 [Download the latest release](https://github.com/theatrus/xisf-photoshop/releases/latest)
-for the Windows x64 installer or ZIP, or the signed and notarized universal macOS ZIP.
+for the Windows x64 installer or ZIP, or the signed and notarized universal macOS DMG.
 Both formats are included, and image processing runs locally without this server.
 
 Import as Float32 or rescaled 16-bit integer, optionally debayer Bayer mosaics to
