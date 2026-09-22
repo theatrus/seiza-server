@@ -79,8 +79,11 @@ Both formats are included, and image processing runs locally without this server
 Import as Float32 or rescaled 16-bit integer, optionally debayer Bayer mosaics to
 RGB, and save at the document's 16- or 32-bit depth by default. Configure defaults
 in **Help → About Plug-In → FITS/XISF** on Windows or
-**Photoshop → About Plug-In → FITS/XISF** on macOS. Keep the scientific originals:
-plugin saves flatten pixels and do not preserve WCS or other source metadata.
+**Photoshop → About Plug-In → FITS/XISF** on macOS. Starting with plugin 0.5.0,
+same-format saves retain source headers and metadata; switching formats copies
+compatible FITS keywords on a best-effort basis. Keep the scientific originals:
+16-bit import loses absolute scale and precision, and geometric edits require
+fresh astrometry. See the [metadata retention limits](https://github.com/theatrus/xisf-photoshop#metadata-retention).
 
 ## Quick start
 
