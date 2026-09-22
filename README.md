@@ -68,6 +68,20 @@ disappears on a process restart.
   candidates to N2YO. The server bounds lookup to 15 seconds, and prediction or
   pixel-check failure never changes the plate-solve result.
 
+## FITS and XISF in Photoshop
+
+The separate [FITS and XISF Photoshop plugins](https://github.com/theatrus/xisf-photoshop)
+use Seiza's image codecs to open and save astronomy images directly in Photoshop.
+[Download the latest release](https://github.com/theatrus/xisf-photoshop/releases/latest)
+for the Windows x64 installer or ZIP, or the signed and notarized universal macOS ZIP.
+Both formats are included, and image processing runs locally without this server.
+
+Import as Float32 or rescaled 16-bit integer, optionally debayer Bayer mosaics to
+RGB, and save at the document's 16- or 32-bit depth by default. Configure defaults
+in **Help → About Plug-In → FITS/XISF** on Windows or
+**Photoshop → About Plug-In → FITS/XISF** on macOS. Keep the scientific originals:
+plugin saves flatten pixels and do not preserve WCS or other source metadata.
+
 ## Quick start
 
 Install Seiza CLI 0.8.1 or newer, then get the prebuilt catalogs and maintained

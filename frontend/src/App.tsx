@@ -409,8 +409,10 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       </div>
       <div className="about-copy">
         <p><strong>PSF Guard</strong> uses Seiza for image grading, plate solving, WCS overlays, and astrometric checks across N.I.N.A. sequences. Developers can <code>pip install seiza</code>. N.I.N.A. and Siril can use the pre-built CLI, and Homebrew users can <code>brew install theatrus/seiza/seiza</code>.</p>
+        <p><strong>FITS and XISF for Photoshop</strong> brings Seiza’s image codecs into Photoshop on Windows and macOS. Open astronomy images as Float32 or rescaled 16-bit integer, optionally debayer to RGB, and save at the document’s depth. Processing stays on your computer.</p>
         <div className="text-links">
           <a href="https://github.com/theatrus/psf-guard">PSF Guard <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/xisf-photoshop/releases/latest">Download Photoshop plugins <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza/tree/main/seiza-py">Python bindings <span aria-hidden="true">↗</span></a>
           <a href="/docs/api#integrations">Explore every integration <span aria-hidden="true">→</span></a>
         </div>

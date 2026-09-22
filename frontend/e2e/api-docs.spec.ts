@@ -98,7 +98,7 @@ test('documents the public, catalog, compatibility, and worker APIs', async ({ p
   await expect(page.getByText('/api/v1/account/api-keys', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('/api/jobs/{job_id}/calibration', { exact: true })).toBeVisible()
   await expect(page.getByText('/api/v1/internal/worker/claim', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'macOS, Windows, PSF Guard, Python, N.I.N.A., and Siril.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Desktop apps, Photoshop, PSF Guard, Python, N.I.N.A., and Siril.' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Seiza for macOS: native browsing and plate solving' })).toBeVisible()
   await expect(page.getByText('Apple silicon and Intel on macOS 15 or later', { exact: false })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Seiza for macOS releases' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza-mac/releases/latest')
