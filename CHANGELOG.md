@@ -9,8 +9,9 @@ All notable changes to Seiza Server are documented here. Versions follow
   that accepts `YYYY-MM-DD HH:MM[:SS]` or an ISO timestamp with an offset, shows
   how the entry will be read while typing, and no longer rejects a time whose
   seconds or AM/PM segment was left blank.
-- Upgrade to Seiza 0.18.11, seiza-fits 0.2.2, seiza-satellites 0.7.0, and
-  seiza-xisf 0.2.1.
+- Upgrade to Seiza 0.18.16, seiza-fits 0.2.2, seiza-satellites 0.7.0, and
+  seiza-xisf 0.3.0. XISF uploads now follow XISF 1.0 Revision 1, including
+  embedded, inline and normal-storage images and compression subblocks.
 
 ## 0.3.0 - 2026-07-18
 
