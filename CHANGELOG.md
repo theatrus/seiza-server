@@ -3,7 +3,7 @@
 All notable changes to Seiza Server are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.4.0 - 2026-09-29
 
 - Replace the browser date picker for the acquisition time with a typed field
   that accepts `YYYY-MM-DD HH:MM[:SS]` or an ISO timestamp with an offset, shows
