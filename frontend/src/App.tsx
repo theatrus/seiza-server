@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
-import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
+import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, PixelCoordinates, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { DataSourcesPage } from './DataSources'
@@ -180,7 +180,7 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
   return <>
     <fieldset className="optional-fields">
       <legend>Position and scale <span className="optional-badge">Optional</span></legend>
-      <p><strong>No coordinates are required.</strong> Compatible FITS and XISF headers supply position and scale automatically; other images solve blind. If you add a position hint, provide all three values.</p>
+      <p><strong>No coordinates are required.</strong> Compatible FITS and XISF headers supply position and scale automatically. Other images solve blind; a photo’s EXIF focal length narrows the scale search first. If you add a position hint, provide all three values.</p>
       <div className="form-grid">
         <label>RA (degrees)<input name="center_ra_deg" type="number" min="0" max="360" step="any" placeholder="Optional · 210.802" defaultValue={defaults?.center_ra_deg ?? ''} /></label>
         <label>Dec (degrees)<input name="center_dec_deg" type="number" min="-90" max="90" step="any" placeholder="Optional · 54.349" defaultValue={defaults?.center_dec_deg ?? ''} /></label>
@@ -190,7 +190,7 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
     </fieldset>
     <fieldset className="optional-fields">
       <legend>Exposure and observing site <span className="optional-badge">Optional</span></legend>
-      <p><strong>Compatible FITS and XISF timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> For JPEG and other images, fill in the shutter-open time, one exposure duration, and observing site, then opt in below the file selector to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
+      <p><strong>Compatible FITS and XISF timestamps, exposure length, and OBSGEO or site coordinates are used automatically.</strong> Photo EXIF supplies the capture time and GPS site but never the exposure, since a phone may merge several frames. For photos and other images, fill in what is missing, then opt in below the file selector to predict satellite tracks. The time alone also positions comets and asteroids and scopes transient events.</p>
       <div className="capture-time-grid">
         <label>Date and time<input name="capture_time" type="text" placeholder={`Optional · ${CAPTURE_TIME_EXAMPLE}`} autoComplete="off" spellCheck={false} value={captureTime} aria-describedby={captureTimeHelpId} onChange={(event) => setCaptureTime(event.target.value)} /></label>
         <label>Time zone<select name="capture_time_zone" value={captureTimeZone} aria-describedby={captureTimeHelpId} onChange={(event) => {
@@ -214,8 +214,8 @@ function SolveOptionsFields({ defaults }: { defaults?: SolveOptions }) {
     <details>
       <summary>Advanced solve controls <span className="optional-badge">Optional</span></summary>
       <div className="form-grid">
-        <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="0.1" defaultValue={defaults?.min_scale_arcsec_per_pixel ?? ''} /></label>
-        <label>Maximum scale (arcsec/px)<input name="max_scale" type="number" min="0.01" step="any" placeholder="20" defaultValue={defaults?.max_scale_arcsec_per_pixel ?? ''} /></label>
+        <label>Minimum scale (arcsec/px)<input name="min_scale" type="number" min="0.01" step="any" placeholder="Auto · EXIF or 0.1" defaultValue={defaults?.min_scale_arcsec_per_pixel ?? ''} /></label>
+        <label>Maximum scale (arcsec/px)<input name="max_scale" type="number" min="0.01" step="any" placeholder="Auto · EXIF or 20" defaultValue={defaults?.max_scale_arcsec_per_pixel ?? ''} /></label>
         <label>Hint scale tolerance<input name="scale_tolerance" type="number" min="0.01" max="1" step="0.01" placeholder="0.2" defaultValue={defaults?.scale_tolerance ?? ''} /></label>
         <label>SIP distortion order<select name="sip_order" defaultValue={String(defaults?.sip_order ?? 0)}>
           <option value="0">Linear TAN only</option>
@@ -532,7 +532,7 @@ function SolvePage({
           <fieldset className="optional-fields satellite-trail-option">
             <legend>Satellite trails <span className="optional-badge">Optional</span></legend>
             <label className="satellite-trail-opt-in"><input name="show_satellite_tracks" type="checkbox" /><span>Show predicted satellite trails</span></label>
-            <p className="satellite-trail-requirements">Requires FITS or XISF observer and time metadata, or optional fields filled in below.</p>
+            <p className="satellite-trail-requirements">Requires FITS or XISF observer and time metadata, or photo EXIF time and GPS plus an exposure, or the optional fields below.</p>
           </fieldset>
         </div>
         {submitting && <div className="upload-progress" aria-live="polite">
@@ -755,8 +755,13 @@ function SolverStatistics({ job }: { job: Job }) {
   const indexDetail = stats.blind_index_patterns != null
     ? ` · ${stats.blind_index_patterns.toLocaleString()} blind-index patterns`
     : ''
+  const scaleRange = stats.blind_scale_range
+    ? ` · scale ${stats.blind_scale_range.map((bound) => bound.toPrecision(3)).join('–')}″/px`
+    : ''
   const strategy = stats.mode === 'blind'
-    ? 'Blind solve'
+    ? stats.hint_source === 'exif'
+      ? `Blind solve · EXIF ${stats.hint_keywords?.join(', ') ?? 'focal length'}`
+      : 'Blind solve'
     : stats.hint_source === 'fits_header'
       ? `Hinted · FITS ${stats.hint_keywords?.join(', ') ?? 'headers'}`
       : stats.hint_source === 'xisf_header'
@@ -771,7 +776,7 @@ function SolverStatistics({ job }: { job: Job }) {
       <Metric label="Match yield" value={matchYield} />
     </div>
     <p className="solver-phase-breakdown">
-      Decode {formatDurationMs(stats.decode_ms)} · detect {formatDurationMs(stats.detection_ms)} · search and fit {formatDurationMs(stats.search_ms)} · {solution.image_width.toLocaleString()}×{solution.image_height.toLocaleString()} px · {stats.catalog_stars.toLocaleString()} catalog stars{indexDetail}
+      Decode {formatDurationMs(stats.decode_ms)} · detect {formatDurationMs(stats.detection_ms)} · search and fit {formatDurationMs(stats.search_ms)} · {solution.image_width.toLocaleString()}×{solution.image_height.toLocaleString()} px · {stats.catalog_stars.toLocaleString()} catalog stars{indexDetail}{scaleRange}
     </p>
   </section>
 }
@@ -1030,6 +1035,12 @@ function formatSignedAge(seconds: number) {
   return seconds < 0 ? `${amount} after exposure` : `${amount} before exposure`
 }
 
+function formatOrientation(coordinates: PixelCoordinates | undefined) {
+  if (!coordinates || coordinates.orientation_applied === 1) return ''
+  const [width, height] = coordinates.original_dimensions
+  return ` · upright from ${width} × ${height} px stored (EXIF orientation ${coordinates.orientation_applied})`
+}
+
 function formatObserver(options: SolveOptions) {
   if (options.observer_latitude_deg != null && options.observer_longitude_deg != null) {
     const altitude = options.observer_altitude_m == null ? '' : ` · ${options.observer_altitude_m.toLocaleString()} m`
@@ -1054,7 +1065,7 @@ function WcsDetails({ job }: { job: Job }) {
       <DataPair label="Reference frame" value={`${wcs.radesys} · equinox ${wcs.equinox.toFixed(1)}`} />
       <DataPair label="CRVAL" value={`${format(wcs.crval[0])}, ${format(wcs.crval[1])} deg`} />
       <DataPair label="CRPIX (zero-indexed)" value={`${format(wcs.crpix[0])}, ${format(wcs.crpix[1])} px`} />
-      <DataPair label="Image dimensions" value={`${solution.image_width} × ${solution.image_height} px`} />
+      <DataPair label="Image dimensions" value={`${solution.image_width} × ${solution.image_height} px${formatOrientation(solution.pixel_coordinates)}`} />
       <DataPair label="Units" value={`${wcs.cunit[0]} / ${wcs.cunit[1]}`} />
       <DataPair label="Distortion model" value={sip ? `SIP order ${sip.order} · ${forwardTerms} forward + ${inverseTerms} inverse coefficients` : 'Linear TAN · no SIP distortion'} />
       <DataPair label="Capture time" value={solution.capture_time ? new Date(solution.capture_time).toLocaleString() : 'Not recorded'} />

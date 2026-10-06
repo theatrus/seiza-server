@@ -117,8 +117,6 @@ function defaultSolveOptions() {
     radius_deg: 2,
     scale_arcsec_per_pixel: null,
     scale_tolerance: 0.2,
-    min_scale_arcsec_per_pixel: 0.1,
-    max_scale_arcsec_per_pixel: 20,
     sigma: 4,
     ignore_border: 0,
     max_stars: 500,
@@ -210,7 +208,7 @@ test('places the solve action beside the file selector and satellite opt-in belo
 
   await expect(fileSelector.getByLabel('FITS, XISF, or image file')).toBeVisible()
   await expect(satelliteRow).toHaveText('Show predicted satellite trails')
-  await expect(controls.locator('.satellite-trail-requirements')).toHaveText('Requires FITS or XISF observer and time metadata, or optional fields filled in below.')
+  await expect(controls.locator('.satellite-trail-requirements')).toHaveText('Requires FITS or XISF observer and time metadata, or photo EXIF time and GPS plus an exposure, or the optional fields below.')
   await expect(satelliteTrails).toBeVisible()
   await expect(satelliteTrails).not.toBeChecked()
   await expect(solveButton).toBeVisible()

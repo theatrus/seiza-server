@@ -1,6 +1,6 @@
 use crate::models::{
-    SatelliteMetadataSource, SolutionResponse, SolveHintSource, SolveMode, SolveOptions,
-    SolveStatistics, WcsResponse,
+    PixelCoordinatesResponse, SatelliteMetadataSource, SolutionResponse, SolveHintSource,
+    SolveMode, SolveOptions, SolveStatistics, WcsResponse,
 };
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
@@ -10,6 +10,7 @@ use seiza::{
     blind::{BlindIndex, BlindParams, solve_blind},
     catalog::TileCatalog,
     detect_stars,
+    raster::{CaptureTimeSource, PhotoMetadata, PixelCoordinates, ScaleSearch},
     solve::{SolveHint, solve},
 };
 use std::{
@@ -44,6 +45,39 @@ impl ImageHeaderSource {
             Self::Xisf => SatelliteMetadataSource::XisfHeader,
         }
     }
+}
+
+/// EXIF tag that supplies the 35 mm-equivalent focal length behind a
+/// blind-solve scale range.
+const EXIF_FOCAL_LENGTH_TAG: &str = "FocalLengthIn35mmFilm";
+
+/// The pixel frame an ordinary raster (JPEG, PNG, TIFF, WebP) is decoded in.
+/// FITS and XISF images have no EXIF orientation and ignore it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFrame {
+    /// The upright image a viewer shows, after the EXIF Orientation tag.
+    Oriented,
+    /// The pixel rows as stored in the file.
+    Stored,
+}
+
+impl PixelFrame {
+    /// The frame a job's solution was fitted in. Raster solutions saved
+    /// before Seiza Server 0.5.0 carry no `pixel_coordinates` and used the
+    /// stored rows; previews and pixel trails for them must keep that frame.
+    /// A job without a solution is shown upright.
+    pub fn for_solution(solution: Option<&SolutionResponse>) -> Self {
+        match solution {
+            Some(solution) if solution.pixel_coordinates.is_none() => Self::Stored,
+            _ => Self::Oriented,
+        }
+    }
+}
+
+struct DecodedImage {
+    pixels: image::DynamicImage,
+    /// `None` for FITS and XISF images.
+    coordinates: Option<PixelCoordinates>,
 }
 
 pub(crate) struct MonochromeImage {
@@ -139,17 +173,22 @@ impl SolverEngine {
     }
 }
 
-pub async fn preview_png(bytes: Bytes, filename: String) -> Result<Bytes> {
-    encode_png(bytes, filename, true).await
+pub async fn preview_png(bytes: Bytes, filename: String, frame: PixelFrame) -> Result<Bytes> {
+    encode_png(bytes, filename, frame, true).await
 }
 
-pub async fn full_png(bytes: Bytes, filename: String) -> Result<Bytes> {
-    encode_png(bytes, filename, false).await
+pub async fn full_png(bytes: Bytes, filename: String, frame: PixelFrame) -> Result<Bytes> {
+    encode_png(bytes, filename, frame, false).await
 }
 
-async fn encode_png(bytes: Bytes, filename: String, thumbnail: bool) -> Result<Bytes> {
+async fn encode_png(
+    bytes: Bytes,
+    filename: String,
+    frame: PixelFrame,
+    thumbnail: bool,
+) -> Result<Bytes> {
     tokio::task::spawn_blocking(move || {
-        let image = decode_image(&bytes, &filename)?;
+        let image = decode_image(&bytes, &filename, frame)?.pixels;
         let output_image = if thumbnail {
             image.thumbnail(1_800, 1_800)
         } else {
@@ -165,12 +204,18 @@ async fn encode_png(bytes: Bytes, filename: String, thumbnail: bool) -> Result<B
     .context("PNG worker panicked")?
 }
 
+/// Width and height of the image Seiza solves: after EXIF orientation for
+/// an ordinary raster.
 pub fn dimensions_from_bytes(bytes: &[u8], filename: &str) -> Result<(u32, u32)> {
-    let image = decode_image(bytes, filename)?;
+    let image = decode_image(bytes, filename, PixelFrame::Oriented)?.pixels;
     Ok((image.width(), image.height()))
 }
 
-pub(crate) fn decode_monochrome_u16(bytes: &[u8], filename: &str) -> Result<MonochromeImage> {
+pub(crate) fn decode_monochrome_u16(
+    bytes: &[u8],
+    filename: &str,
+    frame: PixelFrame,
+) -> Result<MonochromeImage> {
     if let Some(fits) = decode_astronomy_image(bytes, filename)? {
         let adu_per_stored_unit = match &fits.pixels {
             seiza_fits::Pixels::U8(_) => 1.0 / 256.0,
@@ -191,8 +236,7 @@ pub(crate) fn decode_monochrome_u16(bytes: &[u8], filename: &str) -> Result<Mono
         });
     }
 
-    let image = image::load_from_memory(bytes)
-        .context("unsupported or corrupt image; submit FITS, XISF, PNG, JPEG, TIFF, or WebP")?;
+    let image = decode_raster(bytes, frame)?.pixels;
     let eight_bit = matches!(
         image,
         image::DynamicImage::ImageLuma8(_)
@@ -233,7 +277,20 @@ fn solve_bytes(
     let total_started = Instant::now();
     options.validate().map_err(anyhow::Error::msg)?;
     let decode_started = Instant::now();
-    let image = decode_image(bytes, filename)?;
+    let DecodedImage {
+        pixels: image,
+        coordinates,
+    } = decode_image(bytes, filename, PixelFrame::Oriented)?;
+    // Only an ordinary raster carries EXIF; its focal length can narrow a
+    // blind solve's scale range.
+    let photo = if coordinates.is_some() {
+        PhotoMetadata::from_bytes(bytes)
+    } else {
+        PhotoMetadata::default()
+    };
+    for warning in &photo.warnings {
+        tracing::debug!(%warning, "photo metadata warning");
+    }
     let decode_duration = decode_started.elapsed();
     let dimensions = (image.width(), image.height());
     if dimensions.0 == 0 || dimensions.1 == 0 {
@@ -258,7 +315,10 @@ fn solve_bytes(
     );
 
     let search_started = Instant::now();
-    let (solution, mode, blind_index_patterns) = match (
+    let blind = |options: &SolveOptions| {
+        solve_blind_with_options(&detected, catalog, blind_index, options, dimensions, &photo)
+    };
+    let (solution, mode, blind_search) = match (
         options.center_ra_deg,
         options.center_dec_deg,
         options.scale_arcsec_per_pixel,
@@ -282,16 +342,17 @@ fn solve_bytes(
                     hint_source = ?options.hint_source,
                     "automatic header hint failed; retrying as a broad blind solve"
                 );
-                solve_blind_with_options(&detected, catalog, blind_index, options, dimensions)
-                    .with_context(|| {
-                        format!(
-                            "hinted Seiza solve failed: {hinted_error}; blind fallback also failed"
-                        )
-                    })?
+                let (solution, search) = blind(options).with_context(|| {
+                    format!("hinted Seiza solve failed: {hinted_error}; blind fallback also failed")
+                })?;
+                (solution, SolveMode::Blind, Some(search))
             }
             Err(error) => return Err(error).context("hinted Seiza solve failed"),
         },
-        _ => solve_blind_with_options(&detected, catalog, blind_index, options, dimensions)?,
+        _ => {
+            let (solution, search) = blind(options)?;
+            (solution, SolveMode::Blind, Some(search))
+        }
     };
     let search_duration = search_started.elapsed();
     let (center_ra_deg, center_dec_deg) = solution
@@ -302,6 +363,13 @@ fn solve_bytes(
         .footprint(dimensions.0, dimensions.1)
         .map(|(ra, dec)| [ra, dec]);
     let total_duration = total_started.elapsed();
+    let (hint_source, hint_keywords) = match &blind_search {
+        Some(search) if search.from_exif && options.hint_source.is_none() => (
+            Some(SolveHintSource::Exif),
+            vec![EXIF_FOCAL_LENGTH_TAG.to_owned()],
+        ),
+        _ => (options.hint_source, options.hint_keywords.clone()),
+    };
     let statistics = SolveStatistics {
         total_ms: duration_ms(total_duration),
         decode_ms: duration_ms(decode_duration),
@@ -310,9 +378,10 @@ fn solve_bytes(
         mode,
         detected_stars: detected.len(),
         catalog_stars: catalog.star_count(),
-        blind_index_patterns,
-        hint_source: options.hint_source,
-        hint_keywords: options.hint_keywords.clone(),
+        blind_index_patterns: blind_search.as_ref().map(|search| search.index_patterns),
+        hint_source,
+        hint_keywords,
+        blind_scale_range: blind_search.as_ref().map(|search| search.range.into()),
     };
     tracing::info!(
         mode = ?statistics.mode,
@@ -338,6 +407,7 @@ fn solve_bytes(
         catalog_version: None,
         capture_time: options.capture_time,
         statistics: Some(statistics),
+        pixel_coordinates: coordinates.as_ref().map(PixelCoordinatesResponse::from),
     })
 }
 
@@ -348,13 +418,67 @@ fn automatic_hint_allows_blind_fallback(hint_source: Option<SolveHintSource>) ->
     )
 }
 
+/// How a blind solve found its answer.
+#[derive(Debug, PartialEq)]
+struct BlindSearch {
+    index_patterns: usize,
+    /// The pixel-scale range that solved, in arcseconds/pixel.
+    range: (f64, f64),
+    /// Whether that range came from the EXIF focal length.
+    from_exif: bool,
+}
+
+/// The pixel-scale ranges to search, in order. Explicit bounds always hold;
+/// a missing bound comes from a photo's EXIF focal length when it has one,
+/// followed by a wide fallback in case the photo was cropped or shot
+/// through an eyepiece. Without EXIF this is the single 0.1–20"/px default.
+fn blind_scale_search(
+    options: &SolveOptions,
+    photo: &PhotoMetadata,
+    dimensions: (u32, u32),
+) -> Result<ScaleSearch> {
+    ScaleSearch::new(
+        photo,
+        dimensions,
+        options.min_scale_arcsec_per_pixel,
+        options.max_scale_arcsec_per_pixel,
+    )
+    .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+/// Try each range in turn until one solves. Only a failure to find a
+/// solution moves on to the next range; any other error is returned.
+fn solve_over_ranges<T>(
+    ranges: &[(f64, f64)],
+    mut solve: impl FnMut((f64, f64)) -> std::result::Result<T, seiza::Error>,
+) -> std::result::Result<(T, usize), seiza::Error> {
+    let mut last = None;
+    for (attempt, &range) in ranges.iter().enumerate() {
+        if attempt > 0 {
+            tracing::info!(
+                min_scale = range.0,
+                max_scale = range.1,
+                "no blind solution in the EXIF focal-length scale range; retrying a wider range"
+            );
+        }
+        match solve(range) {
+            Ok(value) => return Ok((value, attempt)),
+            Err(seiza::Error::Solve(message)) => last = Some(seiza::Error::Solve(message)),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| seiza::Error::Solve("no pixel-scale range to search".into())))
+}
+
 fn solve_blind_with_options(
     detected: &[seiza::DetectedStar],
     catalog: &TileCatalog,
     blind_index: &OnceLock<Arc<BlindIndex>>,
     options: &SolveOptions,
     dimensions: (u32, u32),
-) -> Result<(seiza::solve::Solution, SolveMode, Option<usize>)> {
+    photo: &PhotoMetadata,
+) -> Result<(seiza::solve::Solution, BlindSearch)> {
+    let search = blind_scale_search(options, photo, dimensions)?;
     let index = blind_index.get_or_init(|| {
         let params = BlindParams::default();
         tracing::warn!(
@@ -368,19 +492,25 @@ fn solve_blind_with_options(
         );
         Arc::new(index)
     });
-    let params = BlindParams {
-        min_scale_arcsec_px: options.min_scale_arcsec_per_pixel,
-        max_scale_arcsec_px: options.max_scale_arcsec_per_pixel,
+    let mut params = BlindParams {
         index_mag_limit: index.index_mag_limit(),
         max_pattern_deg: index.max_pattern_deg(),
         sip_order: options.sip_order,
         ..Default::default()
     };
-    Ok((
+    let (solution, attempt) = solve_over_ranges(&search.ranges, |(min, max)| {
+        params.min_scale_arcsec_px = min;
+        params.max_scale_arcsec_px = max;
         solve_blind(detected, catalog, index, &params, dimensions)
-            .context("blind Seiza solve failed")?,
-        SolveMode::Blind,
-        Some(index.pattern_count()),
+    })
+    .context("blind Seiza solve failed")?;
+    Ok((
+        solution,
+        BlindSearch {
+            index_patterns: index.pattern_count(),
+            range: search.ranges[attempt],
+            from_exif: search.from_exif && attempt == 0,
+        },
     ))
 }
 
@@ -392,10 +522,16 @@ pub fn capture_time_from_bytes(
     bytes: &[u8],
     filename: &str,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    image_headers(bytes, filename, bytes.len() as u64)?
-        .0
-        .get("DATE-OBS")?
-        .as_str()
+    if looks_like_fits(bytes, filename) || looks_like_xisf(bytes, filename) {
+        return image_headers(bytes, filename, bytes.len() as u64)?
+            .0
+            .get("DATE-OBS")?
+            .as_str()
+            .and_then(parse_capture_time);
+    }
+    PhotoMetadata::from_bytes(bytes)
+        .capture_time_utc
+        .as_deref()
         .and_then(parse_capture_time)
 }
 
@@ -428,6 +564,17 @@ pub fn prepare_solve_options_from_prefix(
         options.hint_source = Some(SolveHintSource::Explicit);
     }
 
+    if !looks_like_fits(bytes, filename) && !looks_like_xisf(bytes, filename) {
+        // An ordinary raster. Its EXIF sits at the start of the file, inside
+        // the probed prefix. The focal length is applied later, at solve
+        // time, once the oriented dimensions are known.
+        prepare_exif_metadata(
+            options,
+            &PhotoMetadata::from_bytes(bytes),
+            explicit_satellite_metadata,
+        );
+        return;
+    }
     let Some((headers, header_source)) = image_headers(bytes, filename, file_size) else {
         return;
     };
@@ -613,6 +760,67 @@ fn prepare_satellite_metadata(
             SatelliteMetadataSource::Explicit
         } else {
             header_source.satellite_source()
+        });
+    }
+}
+
+/// Promote a photo's EXIF capture time and GPS position. Explicit values
+/// always win. ExposureTime and GPSAltitude are never used: a phone may
+/// store a multi-frame composite whose ExposureTime is not one shutter-open
+/// interval, and EXIF altitude is not an ellipsoid height.
+fn prepare_exif_metadata(
+    options: &mut SolveOptions,
+    photo: &PhotoMetadata,
+    explicit_satellite_metadata: bool,
+) {
+    if options.capture_time.is_none()
+        && let Some(time) = photo
+            .capture_time_utc
+            .as_deref()
+            .and_then(parse_capture_time)
+    {
+        options.capture_time = Some(time);
+        let tags: &[&str] = match photo.capture_time_source {
+            Some(CaptureTimeSource::DateTimeOriginal) if photo.sub_sec_time_original.is_some() => {
+                &[
+                    "DateTimeOriginal",
+                    "SubSecTimeOriginal",
+                    "OffsetTimeOriginal",
+                ]
+            }
+            Some(CaptureTimeSource::DateTimeOriginal) => {
+                &["DateTimeOriginal", "OffsetTimeOriginal"]
+            }
+            Some(CaptureTimeSource::Gps) | None => &["GPSDateStamp", "GPSTimeStamp"],
+        };
+        for tag in tags {
+            push_keyword(&mut options.satellite_metadata_keywords, tag);
+        }
+    }
+
+    let explicit_observer = options.observer_itrf_m.is_some()
+        || options.observer_latitude_deg.is_some()
+        || options.observer_longitude_deg.is_some();
+    if !explicit_observer
+        && let (Some(latitude), Some(longitude)) = (photo.gps_latitude_deg, photo.gps_longitude_deg)
+    {
+        options.observer_latitude_deg = Some(latitude);
+        options.observer_longitude_deg = Some(longitude);
+        for tag in [
+            "GPSLatitude",
+            "GPSLatitudeRef",
+            "GPSLongitude",
+            "GPSLongitudeRef",
+        ] {
+            push_keyword(&mut options.satellite_metadata_keywords, tag);
+        }
+    }
+
+    if !options.satellite_metadata_keywords.is_empty() {
+        options.satellite_metadata_source = Some(if explicit_satellite_metadata {
+            SatelliteMetadataSource::Explicit
+        } else {
+            SatelliteMetadataSource::Exif
         });
     }
 }
@@ -805,15 +1013,40 @@ pub fn parse_capture_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> 
         .map(|value| value.and_utc())
 }
 
-fn decode_image(bytes: &[u8], filename: &str) -> Result<image::DynamicImage> {
+fn decode_image(bytes: &[u8], filename: &str, frame: PixelFrame) -> Result<DecodedImage> {
     if let Some(fits) = decode_astronomy_image(bytes, filename)? {
         let pixels = fits.stretch_to_u8(&seiza_fits::StretchParams::default());
         let buffer = image::GrayImage::from_raw(fits.width as u32, fits.height as u32, pixels)
             .context("FITS dimensions do not match decoded pixels")?;
-        return Ok(image::DynamicImage::ImageLuma8(buffer));
+        return Ok(DecodedImage {
+            pixels: image::DynamicImage::ImageLuma8(buffer),
+            coordinates: None,
+        });
     }
-    image::load_from_memory(bytes)
-        .context("unsupported or corrupt image; submit FITS, XISF, PNG, JPEG, TIFF, or WebP")
+    decode_raster(bytes, frame)
+}
+
+/// Decode an ordinary raster. Every raster decode goes through here so the
+/// solve, footprint, overlays, previews and satellite-trail pixels share
+/// one frame.
+fn decode_raster(bytes: &[u8], frame: PixelFrame) -> Result<DecodedImage> {
+    const UNSUPPORTED: &str =
+        "unsupported or corrupt image; submit FITS, XISF, PNG, JPEG, TIFF, or WebP";
+    match frame {
+        PixelFrame::Oriented => {
+            let raster = seiza::raster::decode_oriented(bytes)
+                .map_err(|error| anyhow::anyhow!("{error}"))
+                .context(UNSUPPORTED)?;
+            Ok(DecodedImage {
+                pixels: raster.pixels,
+                coordinates: Some(raster.coordinates),
+            })
+        }
+        PixelFrame::Stored => Ok(DecodedImage {
+            pixels: image::load_from_memory(bytes).context(UNSUPPORTED)?,
+            coordinates: None,
+        }),
+    }
 }
 
 fn decode_astronomy_image(bytes: &[u8], filename: &str) -> Result<Option<seiza_fits::FitsImage>> {
@@ -912,7 +1145,8 @@ mod tests {
             .write_to(&mut encoded, ImageFormat::Png)
             .unwrap();
 
-        let decoded = decode_monochrome_u16(encoded.get_ref(), "trail.png").unwrap();
+        let decoded =
+            decode_monochrome_u16(encoded.get_ref(), "trail.png", PixelFrame::Oriented).unwrap();
 
         assert_eq!((decoded.width, decoded.height), (2, 2));
         assert_eq!(decoded.pixels, [0, 64 * 257, 128 * 257, u16::MAX]);
@@ -942,7 +1176,8 @@ mod tests {
             dimensions_from_bytes(&encoded, "capture.xisf").unwrap(),
             (2, 2)
         );
-        let decoded = decode_monochrome_u16(&encoded, "capture.xisf").unwrap();
+        let decoded =
+            decode_monochrome_u16(&encoded, "capture.xisf", PixelFrame::Oriented).unwrap();
         assert_eq!((decoded.width, decoded.height), (2, 2));
         assert_eq!(decoded.pixels, [0, 16_383, 32_767, u16::MAX]);
     }
@@ -988,6 +1223,358 @@ mod tests {
             options.satellite_metadata_source,
             Some(SatelliteMetadataSource::XisfHeader)
         );
+    }
+
+    /// A 32x16 grey JPEG, bright in its stored top-left 8x8 corner, with
+    /// `fields` as EXIF.
+    fn exif_jpeg(fields: &[seiza::raster::test_support::Field]) -> Vec<u8> {
+        let pixels = image::GrayImage::from_fn(32, 16, |x, y| {
+            image::Luma([if x < 8 && y < 8 { 250 } else { 10 }])
+        });
+        seiza::raster::test_support::jpeg_with_exif(
+            &image::DynamicImage::ImageLuma8(pixels),
+            fields,
+        )
+    }
+
+    fn rotated_jpeg() -> Vec<u8> {
+        use seiza::raster::test_support::{Tag, Value, field};
+        // Orientation 6: display the stored rows rotated 90° clockwise.
+        exif_jpeg(&[field(Tag::Orientation, Value::Short(vec![6]))])
+    }
+
+    fn phone_jpeg(extra: &[seiza::raster::test_support::Field]) -> Vec<u8> {
+        use seiza::raster::test_support::{Tag, Value, ascii, field, rationals};
+        let mut fields = vec![
+            ascii(Tag::DateTimeOriginal, "2026:10:03 19:08:11"),
+            ascii(Tag::SubSecTimeOriginal, "026"),
+            ascii(Tag::OffsetTimeOriginal, "-07:00"),
+            field(Tag::GPSLatitude, rationals(&[(37, 1), (18, 1), (0, 1)])),
+            ascii(Tag::GPSLatitudeRef, "N"),
+            field(Tag::GPSLongitude, rationals(&[(122, 1), (1, 1), (30, 1)])),
+            ascii(Tag::GPSLongitudeRef, "W"),
+            field(Tag::GPSAltitude, rationals(&[(120, 1)])),
+            field(Tag::GPSAltitudeRef, Value::Byte(vec![0])),
+            field(Tag::ExposureTime, rationals(&[(1, 10)])),
+            field(Tag::FocalLengthIn35mmFilm, Value::Short(vec![26])),
+        ];
+        fields.extend_from_slice(extra);
+        exif_jpeg(&fields)
+    }
+
+    #[test]
+    fn raster_decodes_apply_exif_orientation() {
+        let jpeg = rotated_jpeg();
+
+        assert_eq!(dimensions_from_bytes(&jpeg, "phone.jpg").unwrap(), (16, 32));
+        let decoded = decode_image(&jpeg, "phone.jpg", PixelFrame::Oriented).unwrap();
+        assert_eq!(
+            decoded
+                .coordinates
+                .as_ref()
+                .map(PixelCoordinatesResponse::from),
+            Some(PixelCoordinatesResponse {
+                original_dimensions: [32, 16],
+                oriented_dimensions: [16, 32],
+                orientation_applied: 6,
+                convention: "zero-based pixel centers in the EXIF-oriented image".into(),
+            })
+        );
+
+        // The stored top-left corner is the displayed top-right corner, in the
+        // pixels used for satellite-trail alignment as well.
+        let upright = decode_monochrome_u16(&jpeg, "phone.jpg", PixelFrame::Oriented).unwrap();
+        assert_eq!((upright.width, upright.height), (16, 32));
+        let at = |image: &MonochromeImage, x: usize, y: usize| image.pixels[y * image.width + x];
+        assert!(at(&upright, 12, 4) > 50_000, "{}", at(&upright, 12, 4));
+        assert!(at(&upright, 3, 4) < 10_000, "{}", at(&upright, 3, 4));
+
+        let stored = decode_monochrome_u16(&jpeg, "phone.jpg", PixelFrame::Stored).unwrap();
+        assert_eq!((stored.width, stored.height), (32, 16));
+        assert!(at(&stored, 4, 4) > 50_000);
+        assert!(
+            decode_image(&jpeg, "phone.jpg", PixelFrame::Stored)
+                .unwrap()
+                .coordinates
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn previews_use_the_frame_the_solution_was_fitted_in() {
+        let jpeg = Bytes::from(rotated_jpeg());
+        let size = |png: Bytes| {
+            let image = image::load_from_memory(&png).unwrap();
+            (image.width(), image.height())
+        };
+
+        let upright = preview_png(jpeg.clone(), "phone.jpg".into(), PixelFrame::Oriented)
+            .await
+            .unwrap();
+        // Previews fit 1,800 px, keeping the upright portrait shape.
+        assert_eq!(size(upright), (900, 1_800));
+        let full = full_png(jpeg.clone(), "phone.jpg".into(), PixelFrame::Oriented)
+            .await
+            .unwrap();
+        assert_eq!(size(full), (16, 32));
+        let legacy = preview_png(jpeg, "phone.jpg".into(), PixelFrame::Stored)
+            .await
+            .unwrap();
+        assert_eq!(size(legacy), (1_800, 900));
+    }
+
+    #[test]
+    fn legacy_raster_solutions_keep_the_stored_frame() {
+        let mut solution: SolutionResponse = serde_json::from_value(serde_json::json!({
+            "center_ra_deg": 10.0,
+            "center_dec_deg": 20.0,
+            "pixel_scale_arcsec_per_pixel": 1.0,
+            "matched_stars": 12,
+            "rms_arcsec": 0.2,
+            "image_width": 32,
+            "image_height": 16,
+            "wcs": {"crval": [10.0, 20.0], "crpix": [16.0, 8.0], "cd": [[0.001, 0.0], [0.0, 0.001]]},
+        }))
+        .unwrap();
+
+        assert_eq!(PixelFrame::for_solution(None), PixelFrame::Oriented);
+        assert_eq!(
+            PixelFrame::for_solution(Some(&solution)),
+            PixelFrame::Stored
+        );
+        solution.pixel_coordinates =
+            decode_image(&rotated_jpeg(), "phone.jpg", PixelFrame::Oriented)
+                .unwrap()
+                .coordinates
+                .as_ref()
+                .map(PixelCoordinatesResponse::from);
+        assert_eq!(
+            PixelFrame::for_solution(Some(&solution)),
+            PixelFrame::Oriented
+        );
+        let encoded = serde_json::to_value(&solution).unwrap();
+        assert_eq!(encoded["pixel_coordinates"]["orientation_applied"], 6);
+        assert_eq!(
+            encoded["pixel_coordinates"]["original_dimensions"],
+            serde_json::json!([32, 16])
+        );
+    }
+
+    #[test]
+    fn promotes_exif_capture_time_and_gps_but_not_exposure_or_altitude() {
+        let jpeg = phone_jpeg(&[]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &jpeg, "phone.jpg");
+
+        assert_eq!(
+            options.capture_time.unwrap().to_rfc3339(),
+            "2026-10-04T02:08:11.026+00:00"
+        );
+        assert!((options.observer_latitude_deg.unwrap() - 37.3).abs() < 1e-9);
+        assert!((options.observer_longitude_deg.unwrap() + 122.025).abs() < 1e-9);
+        // A phone may merge several frames; ExposureTime is not one
+        // shutter-open interval, and EXIF altitude is not an ellipsoid height.
+        assert_eq!(options.exposure_seconds, None);
+        assert_eq!(options.observer_altitude_m, None);
+        assert_eq!(
+            options.satellite_metadata_source,
+            Some(SatelliteMetadataSource::Exif)
+        );
+        assert_eq!(
+            options.satellite_metadata_keywords,
+            [
+                "DateTimeOriginal",
+                "SubSecTimeOriginal",
+                "OffsetTimeOriginal",
+                "GPSLatitude",
+                "GPSLatitudeRef",
+                "GPSLongitude",
+                "GPSLongitudeRef",
+            ]
+        );
+        // The focal length informs the blind scale range at solve time, not
+        // a hinted solve.
+        assert_eq!(options.hint_source, None);
+        assert_eq!(options.scale_arcsec_per_pixel, None);
+        options.validate().unwrap();
+
+        // An upload prepared from its probed prefix reads the same EXIF.
+        let mut from_prefix = SolveOptions::default();
+        let probe = image_header_probe_bytes(&jpeg, "phone.jpg").min(jpeg.len());
+        prepare_solve_options_from_prefix(
+            &mut from_prefix,
+            &jpeg[..probe],
+            "phone.jpg",
+            jpeg.len() as u64,
+        );
+        assert_eq!(from_prefix.capture_time, options.capture_time);
+        assert_eq!(
+            capture_time_from_bytes(&jpeg, "phone.jpg"),
+            options.capture_time
+        );
+    }
+
+    #[test]
+    fn exif_gps_time_is_used_when_the_offset_is_missing() {
+        use seiza::raster::test_support::{Tag, ascii, field, rationals};
+        let jpeg = exif_jpeg(&[
+            ascii(Tag::DateTimeOriginal, "2026:10:03 19:08:11"),
+            ascii(Tag::GPSDateStamp, "2026:10:04"),
+            field(Tag::GPSTimeStamp, rationals(&[(2, 1), (8, 1), (9, 1)])),
+        ]);
+        let mut options = SolveOptions::default();
+
+        prepare_solve_options(&mut options, &jpeg, "phone.jpg");
+
+        assert_eq!(
+            options.capture_time.unwrap().to_rfc3339(),
+            "2026-10-04T02:08:09+00:00"
+        );
+        assert_eq!(
+            options.satellite_metadata_keywords,
+            ["GPSDateStamp", "GPSTimeStamp"]
+        );
+        assert_eq!(options.observer_latitude_deg, None);
+    }
+
+    #[test]
+    fn explicit_time_and_site_win_over_exif() {
+        let jpeg = phone_jpeg(&[]);
+        let explicit_time = parse_capture_time("2026-10-04T03:00:00Z");
+        let mut options = SolveOptions {
+            capture_time: explicit_time,
+            observer_latitude_deg: Some(-33.9),
+            observer_longitude_deg: Some(18.4),
+            ..SolveOptions::default()
+        };
+
+        prepare_solve_options(&mut options, &jpeg, "phone.jpg");
+
+        assert_eq!(options.capture_time, explicit_time);
+        assert_eq!(options.observer_latitude_deg, Some(-33.9));
+        assert_eq!(options.observer_longitude_deg, Some(18.4));
+        assert!(options.satellite_metadata_keywords.is_empty());
+        assert_eq!(
+            options.satellite_metadata_source,
+            Some(SatelliteMetadataSource::Explicit)
+        );
+
+        // A site given as ITRF coordinates also keeps GPS out, while the EXIF
+        // time still fills the missing capture time.
+        let mut options = SolveOptions {
+            observer_itrf_m: Some([-2_700_000.0, -4_300_000.0, 3_850_000.0]),
+            ..SolveOptions::default()
+        };
+        prepare_solve_options(&mut options, &jpeg, "phone.jpg");
+        assert_eq!(options.observer_latitude_deg, None);
+        assert!(options.capture_time.is_some());
+        assert_eq!(
+            options.satellite_metadata_keywords,
+            [
+                "DateTimeOriginal",
+                "SubSecTimeOriginal",
+                "OffsetTimeOriginal"
+            ]
+        );
+        assert_eq!(
+            options.satellite_metadata_source,
+            Some(SatelliteMetadataSource::Explicit)
+        );
+        options.validate().unwrap();
+    }
+
+    #[test]
+    fn exif_focal_length_plans_a_narrow_scale_range_then_a_wide_fallback() {
+        let photo = PhotoMetadata::from_bytes(&phone_jpeg(&[]));
+        let dimensions = (4_032, 3_024);
+        let hint = photo.scale_hint(dimensions).unwrap();
+
+        let search = blind_scale_search(&SolveOptions::default(), &photo, dimensions).unwrap();
+        assert!(search.from_exif);
+        assert_eq!(
+            search.ranges,
+            [
+                (hint.min_arcsec_per_pixel, hint.max_arcsec_per_pixel),
+                (0.1, hint.max_arcsec_per_pixel.max(20.0)),
+            ]
+        );
+        // A 26 mm-equivalent phone field is far coarser than telescope images.
+        assert!(hint.min_arcsec_per_pixel > 20.0, "{hint:?}");
+
+        // Bounds a client sends always hold, and both replace the EXIF range.
+        let explicit = SolveOptions {
+            min_scale_arcsec_per_pixel: Some(0.5),
+            max_scale_arcsec_per_pixel: Some(2.0),
+            ..SolveOptions::default()
+        };
+        let search = blind_scale_search(&explicit, &photo, dimensions).unwrap();
+        assert_eq!(
+            (search.ranges.as_slice(), search.from_exif),
+            (&[(0.5, 2.0)][..], false)
+        );
+
+        // An explicit bound that contradicts the EXIF range drops it.
+        let conflicting = SolveOptions {
+            max_scale_arcsec_per_pixel: Some(5.0),
+            ..SolveOptions::default()
+        };
+        let search = blind_scale_search(&conflicting, &photo, dimensions).unwrap();
+        assert_eq!(
+            (search.ranges.as_slice(), search.from_exif),
+            (&[(0.1, 5.0)][..], false)
+        );
+
+        // Without EXIF (FITS, XISF, or a bare PNG) the old default holds.
+        let none = PhotoMetadata::default();
+        let search = blind_scale_search(&SolveOptions::default(), &none, dimensions).unwrap();
+        assert_eq!(
+            (search.ranges.as_slice(), search.from_exif),
+            (&[(0.1, 20.0)][..], false)
+        );
+        let min_only = SolveOptions {
+            min_scale_arcsec_per_pixel: Some(1.0),
+            ..SolveOptions::default()
+        };
+        let search = blind_scale_search(&min_only, &none, dimensions).unwrap();
+        assert_eq!(search.ranges, [(1.0, 20.0)]);
+        let too_coarse = SolveOptions {
+            min_scale_arcsec_per_pixel: Some(30.0),
+            ..SolveOptions::default()
+        };
+        assert!(blind_scale_search(&too_coarse, &none, dimensions).is_err());
+    }
+
+    #[test]
+    fn scale_ranges_are_retried_only_when_no_solution_is_found() {
+        let ranges = [(30.0, 120.0), (0.1, 120.0)];
+        let mut tried = Vec::new();
+        let (solved, attempt) = solve_over_ranges(&ranges, |range| {
+            tried.push(range);
+            if tried.len() == 1 {
+                Err(seiza::Error::Solve("no match".into()))
+            } else {
+                Ok("solved")
+            }
+        })
+        .unwrap();
+        assert_eq!((solved, attempt), ("solved", 1));
+        assert_eq!(tried, ranges);
+
+        let mut calls = 0;
+        let error = solve_over_ranges(&ranges, |_| -> std::result::Result<(), _> {
+            calls += 1;
+            Err(seiza::Error::Catalog("unreadable tile".into()))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(matches!(error, seiza::Error::Catalog(_)));
+
+        let error = solve_over_ranges(&ranges, |_| -> std::result::Result<(), _> {
+            Err(seiza::Error::Solve("no match".into()))
+        })
+        .unwrap_err();
+        assert!(matches!(error, seiza::Error::Solve(_)));
     }
 
     #[test]

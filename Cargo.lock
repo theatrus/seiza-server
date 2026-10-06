@@ -2161,6 +2161,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kamadak-exif"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1130d80c7374efad55a117d715a3af9368f0fa7a2c54573afc15a188cd984837"
+dependencies = [
+ "mutate_once",
+]
+
+[[package]]
 name = "keccak"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2429,6 +2438,12 @@ dependencies = [
  "syn",
  "target-features",
 ]
+
+[[package]]
+name = "mutate_once"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
 
 [[package]]
 name = "nom"
@@ -3296,12 +3311,14 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.18.16"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b15342b3f976d8dc907eece65078e2a105251d318603da149ee6810d9f6109c"
+checksum = "223d87819398796dd70080c1aba05fd1e4763fec2e5fb7be24a37ce85c7be921"
 dependencies = [
+ "chrono",
  "directories",
  "image",
+ "kamadak-exif",
  "memmap2",
  "multiversion",
  "postcard",
@@ -3330,9 +3347,9 @@ dependencies = [
 
 [[package]]
 name = "seiza-download"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cef1b97548079179df46c445b19056a4e0d9e332899b1980ba505ad479095ab0"
+checksum = "d132be63adea8d4b3e5c6b3e4b6822d96f6f67b42dcd367aefce356d930d6ebd"
 dependencies = [
  "async-compression",
  "directories",
@@ -3349,9 +3366,9 @@ dependencies = [
 
 [[package]]
 name = "seiza-fits"
-version = "0.2.2"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96da9f0d675870e540417cb4c0268ae6f8b0841f16131b9cd39fb6a21f653a8f"
+checksum = "0730a3df667f44bd5db10e56900a21daeffada28212b95060f5606f0afb75c27"
 dependencies = [
  "multiversion",
  "seiza-stretch",
@@ -3366,9 +3383,9 @@ checksum = "43903045bca0b629b5bda14bfda11b26758bbb3fd51d24dedb253c0155020f1d"
 
 [[package]]
 name = "seiza-satellites"
-version = "0.7.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bcf6ca61f3a241d99ebc202d7b1c5c2ea64acc5b6e18b06d2a006cee86c5aa4"
+checksum = "fd3b4cc7a269d752c98c049a7bd709fac16bfdf21dd1e648c6e07c08a967be54"
 dependencies = [
  "directories",
  "fs2",
@@ -3385,7 +3402,7 @@ dependencies = [
 
 [[package]]
 name = "seiza-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",

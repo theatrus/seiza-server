@@ -195,21 +195,21 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="solve-options" eyebrow="SOLVER INPUT" title="Blind by default, hinted when you know the field.">
-          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS and XISF uploads use compatible position and scale headers automatically; other images use blind solving.</p>
+          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS and XISF uploads use compatible position and scale headers automatically; other images use blind solving. Photos are solved upright, after their EXIF orientation, and the solution's <code>pixel_coordinates</code> records the stored size and the orientation applied.</p>
           <div className="option-table">
             <OptionRow name="center_ra_deg / center_dec_deg" defaultValue="unset">ICRS center hint in degrees; RA 0–360 and Dec −90–90.</OptionRow>
             <OptionRow name="radius_deg" defaultValue="2.0">Position-hint search radius.</OptionRow>
             <OptionRow name="scale_arcsec_per_pixel" defaultValue="unset">Pixel-scale hint required with the two center coordinates.</OptionRow>
             <OptionRow name="scale_tolerance" defaultValue="0.2">Fractional hint tolerance from 0.01 through 1.0.</OptionRow>
-            <OptionRow name="min_scale_arcsec_per_pixel" defaultValue="0.1">Lower blind-solve pixel-scale bound.</OptionRow>
-            <OptionRow name="max_scale_arcsec_per_pixel" defaultValue="20.0">Upper blind-solve pixel-scale bound.</OptionRow>
+            <OptionRow name="min_scale_arcsec_per_pixel" defaultValue="EXIF or 0.1">Lower blind-solve pixel-scale bound.</OptionRow>
+            <OptionRow name="max_scale_arcsec_per_pixel" defaultValue="EXIF or 20.0">Upper blind-solve pixel-scale bound. A bound you send always holds. A missing one comes from a photo's EXIF 35 mm-equivalent focal length, searched first with a wide retry in case the photo was cropped; without EXIF the range is 0.1–20.</OptionRow>
             <OptionRow name="sigma" defaultValue="4.0">Positive source-detection threshold.</OptionRow>
             <OptionRow name="ignore_border" defaultValue="0">Pixels ignored around every image edge.</OptionRow>
             <OptionRow name="max_stars" defaultValue="500">Bright detections retained for matching.</OptionRow>
             <OptionRow name="sip_order" defaultValue="0">SIP distortion order 2–5; 0 or 1 keeps a linear TAN solution. A fitted polynomial is accepted only when it materially improves the residual.</OptionRow>
-            <OptionRow name="capture_time" defaultValue="compatible FITS/XISF time">RFC 3339 shutter-open time. DATE-BEG/DATE-END are preferred; DATE-AVG, DATE-OBS, or DATE-END are normalized when a duration is present.</OptionRow>
-            <OptionRow name="exposure_seconds" defaultValue="FITS/XISF XPOSURE / EXPTIME / EXPOSURE">Duration of one continuous shutter-open exposure, up to one hour. Do not send a stack integration total.</OptionRow>
-            <OptionRow name="observer_latitude_deg / observer_longitude_deg" defaultValue="FITS/XISF OBSGEO or SITE">Geodetic site coordinates for topocentric satellite propagation; supply the pair together. Longitude is east-positive.</OptionRow>
+            <OptionRow name="capture_time" defaultValue="compatible FITS/XISF time or EXIF">RFC 3339 shutter-open time. DATE-BEG/DATE-END are preferred; DATE-AVG, DATE-OBS, or DATE-END are normalized when a duration is present. Photos use EXIF DateTimeOriginal with its offset, or the GPS time.</OptionRow>
+            <OptionRow name="exposure_seconds" defaultValue="FITS/XISF XPOSURE / EXPTIME / EXPOSURE">Duration of one continuous shutter-open exposure, up to one hour. Do not send a stack integration total. EXIF ExposureTime is never used, since a phone may merge several frames.</OptionRow>
+            <OptionRow name="observer_latitude_deg / observer_longitude_deg" defaultValue="FITS/XISF OBSGEO or SITE, or EXIF GPS">Geodetic site coordinates for topocentric satellite propagation; supply the pair together. Longitude is east-positive.</OptionRow>
             <OptionRow name="observer_altitude_m" defaultValue="0">Optional ellipsoid height used with geodetic coordinates.</OptionRow>
             <OptionRow name="observer_itrf_m" defaultValue="FITS/XISF OBSGEO-X/Y/Z">Three-element ITRF meter coordinates. Use this instead of geodetic coordinates, not alongside them.</OptionRow>
           </div>

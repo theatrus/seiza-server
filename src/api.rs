@@ -18,7 +18,7 @@ use crate::{
         SatelliteEngine, SatellitePixelSource, SatellitePrediction, track_overlay_object,
     },
     solver::{
-        FITS_HEADER_PROBE_BYTES, SolverEngine, dimensions_from_bytes, full_png,
+        FITS_HEADER_PROBE_BYTES, PixelFrame, SolverEngine, dimensions_from_bytes, full_png,
         image_header_probe_bytes, prepare_solve_options, prepare_solve_options_from_prefix,
         preview_png,
     },
@@ -1601,10 +1601,11 @@ async fn get_solve_preview(
         .get(job.input_object_key())
         .await
         .map_err(ApiError::internal)?;
+    let frame = PixelFrame::for_solution(job.solution.as_ref());
     let preview = if query.full {
-        full_png(content, job.original_filename).await
+        full_png(content, job.original_filename, frame).await
     } else {
-        preview_png(content, job.original_filename).await
+        preview_png(content, job.original_filename, frame).await
     }
     .map_err(ApiError::bad_request)?;
     Ok(cached_body_response(
@@ -1691,9 +1692,13 @@ async fn get_solve_overlay(
         .get(job.input_object_key())
         .await
         .map_err(ApiError::internal)?;
-    let preview = preview_png(content, job.original_filename)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let preview = preview_png(
+        content,
+        job.original_filename,
+        PixelFrame::for_solution(job.solution.as_ref()),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     let svg = render_svg(
         &solution,
         &preview,
@@ -1753,9 +1758,13 @@ async fn get_solve_opengraph(
         .get(job.input_object_key())
         .await
         .map_err(ApiError::internal)?;
-    let preview = preview_png(content, job.original_filename)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let preview = preview_png(
+        content,
+        job.original_filename,
+        PixelFrame::for_solution(job.solution.as_ref()),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     let (output_width, output_height) =
         opengraph_dimensions(solution.image_width, solution.image_height);
     let svg = render_svg_for_viewport(
@@ -2613,6 +2622,8 @@ impl AstroUploadRequest {
             }
         };
         if let Some((lower, upper)) = range {
+            // Widths are across the image as displayed: `dimensions` are
+            // after EXIF orientation, the frame Seiza solves in.
             let convert = |value: f64| match self.scale_units.as_deref().unwrap_or("degwidth") {
                 "arcsecperpix" => Ok(value),
                 "degwidth" => Ok(value * 3600.0 / dimensions.0 as f64),
@@ -2626,8 +2637,8 @@ impl AstroUploadRequest {
             if lower <= 0.0 || upper < lower {
                 return Err(ApiError::bad_request("invalid Astrometry scale range"));
             }
-            options.min_scale_arcsec_per_pixel = lower;
-            options.max_scale_arcsec_per_pixel = upper;
+            options.min_scale_arcsec_per_pixel = Some(lower);
+            options.max_scale_arcsec_per_pixel = Some(upper);
             if let (Some(ra), Some(dec)) = (self.center_ra, self.center_dec)
                 && self.radius.unwrap_or(180.0) < 180.0
             {
@@ -2868,6 +2879,35 @@ mod tests {
     struct CapturingEmailSender(Mutex<Vec<SignInEmail>>);
 
     #[test]
+    fn astrometry_width_scales_use_the_upright_image_width() {
+        use seiza::raster::test_support::{Tag, Value, field, jpeg_with_exif};
+        // Stored 40x10, displayed 10x40 after EXIF Orientation 6.
+        let jpeg = jpeg_with_exif(
+            &image::DynamicImage::ImageLuma8(image::GrayImage::new(40, 10)),
+            &[field(Tag::Orientation, Value::Short(vec![6]))],
+        );
+        let dimensions = dimensions_from_bytes(&jpeg, "phone.jpg").unwrap();
+        assert_eq!(dimensions, (10, 40));
+        let request = AstroUploadRequest {
+            scale_units: Some("degwidth".into()),
+            scale_type: Some("ul".into()),
+            scale_lower: Some(1.0),
+            scale_upper: Some(2.0),
+            ..AstroUploadRequest::default()
+        };
+
+        let options = request.into_options(dimensions).unwrap();
+
+        assert_eq!(options.min_scale_arcsec_per_pixel, Some(360.0));
+        assert_eq!(options.max_scale_arcsec_per_pixel, Some(720.0));
+        let unscaled = AstroUploadRequest::default()
+            .into_options(dimensions)
+            .unwrap();
+        assert_eq!(unscaled.min_scale_arcsec_per_pixel, None);
+        assert_eq!(unscaled.max_scale_arcsec_per_pixel, None);
+    }
+
+    #[test]
     fn re_solve_can_replace_itrf_observer_with_geodetic_coordinates() {
         let previous = SolveOptions {
             observer_itrf_m: Some([1_112_000.0, -4_841_000.0, 3_985_000.0]),
@@ -2936,6 +2976,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         }
     }
 
@@ -3183,6 +3224,7 @@ mod tests {
             blind_index_patterns: Some(50_000),
             hint_source: None,
             hint_keywords: Vec::new(),
+            blind_scale_range: Some([0.1, 20.0]),
         });
         assert!(
             state

@@ -28,6 +28,9 @@ pub enum SolveHintSource {
     Explicit,
     FitsHeader,
     XisfHeader,
+    /// The blind-solve pixel-scale range came from a photo's EXIF
+    /// 35 mm-equivalent focal length.
+    Exif,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -36,6 +39,8 @@ pub enum SatelliteMetadataSource {
     Explicit,
     FitsHeader,
     XisfHeader,
+    /// Capture time or GPS position from a photo's EXIF.
+    Exif,
 }
 
 impl JobStatus {
@@ -69,9 +74,13 @@ pub struct SolveOptions {
     pub radius_deg: Option<f64>,
     pub scale_arcsec_per_pixel: Option<f64>,
     pub scale_tolerance: f64,
-    /// Bounds for blind solving, in arcseconds/pixel.
-    pub min_scale_arcsec_per_pixel: f64,
-    pub max_scale_arcsec_per_pixel: f64,
+    /// Bounds for blind solving, in arcseconds/pixel. A missing bound comes
+    /// from a photo's EXIF focal length when there is one, and otherwise
+    /// from the default 0.1–20 range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_scale_arcsec_per_pixel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scale_arcsec_per_pixel: Option<f64>,
     pub sigma: f32,
     pub ignore_border: u32,
     pub max_stars: usize,
@@ -116,8 +125,8 @@ impl Default for SolveOptions {
             radius_deg: Some(2.0),
             scale_arcsec_per_pixel: None,
             scale_tolerance: 0.2,
-            min_scale_arcsec_per_pixel: 0.1,
-            max_scale_arcsec_per_pixel: 20.0,
+            min_scale_arcsec_per_pixel: None,
+            max_scale_arcsec_per_pixel: None,
             sigma: 4.0,
             ignore_border: 0,
             max_stars: 500,
@@ -144,10 +153,13 @@ impl SolveOptions {
         if !(self.scale_tolerance.is_finite() && (0.01..=1.0).contains(&self.scale_tolerance)) {
             return Err("scale_tolerance must be between 0.01 and 1.0".into());
         }
-        if !(self.min_scale_arcsec_per_pixel.is_finite()
-            && self.max_scale_arcsec_per_pixel.is_finite()
-            && self.min_scale_arcsec_per_pixel > 0.0
-            && self.max_scale_arcsec_per_pixel >= self.min_scale_arcsec_per_pixel)
+        let bound_is_valid = |bound: Option<f64>| bound.is_none_or(|b| b.is_finite() && b > 0.0);
+        if !(bound_is_valid(self.min_scale_arcsec_per_pixel)
+            && bound_is_valid(self.max_scale_arcsec_per_pixel)
+            && self
+                .min_scale_arcsec_per_pixel
+                .zip(self.max_scale_arcsec_per_pixel)
+                .is_none_or(|(min, max)| max >= min))
         {
             return Err("blind scale bounds are invalid".into());
         }
@@ -485,6 +497,35 @@ pub struct SolveStatistics {
     pub hint_source: Option<SolveHintSource>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hint_keywords: Vec<String>,
+    /// The pixel-scale range, in arcseconds/pixel, in which a blind solve
+    /// succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blind_scale_range: Option<[f64; 2]>,
+}
+
+/// How the solved pixels relate to the pixels stored in an ordinary raster
+/// upload (JPEG, PNG, TIFF, WebP). The solution, footprint, overlays and
+/// previews all use the EXIF-oriented frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PixelCoordinatesResponse {
+    /// Width and height as stored in the file.
+    pub original_dimensions: [u32; 2],
+    /// Width and height after the EXIF orientation was applied.
+    pub oriented_dimensions: [u32; 2],
+    /// The EXIF Orientation value (1–8) applied; 1 means none.
+    pub orientation_applied: u8,
+    pub convention: String,
+}
+
+impl From<&seiza::raster::PixelCoordinates> for PixelCoordinatesResponse {
+    fn from(coordinates: &seiza::raster::PixelCoordinates) -> Self {
+        Self {
+            original_dimensions: coordinates.original_dimensions.into(),
+            oriented_dimensions: coordinates.oriented_dimensions.into(),
+            orientation_applied: coordinates.orientation_applied,
+            convention: coordinates.convention.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -507,6 +548,11 @@ pub struct SolutionResponse {
     pub capture_time: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statistics: Option<SolveStatistics>,
+    /// Present for raster uploads solved in the EXIF-oriented frame. FITS
+    /// and XISF solutions, and raster solutions saved before Seiza Server
+    /// 0.5.0, which used the stored pixel rows, leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_coordinates: Option<PixelCoordinatesResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -796,6 +842,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blind_scale_bounds_are_optional_and_old_records_keep_theirs() {
+        let options: SolveOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(options.min_scale_arcsec_per_pixel, None);
+        assert_eq!(options.max_scale_arcsec_per_pixel, None);
+        options.validate().unwrap();
+        let encoded = serde_json::to_value(&options).unwrap();
+        assert!(encoded.get("min_scale_arcsec_per_pixel").is_none());
+
+        let stored: SolveOptions = serde_json::from_str(
+            r#"{"min_scale_arcsec_per_pixel":0.1,"max_scale_arcsec_per_pixel":20.0}"#,
+        )
+        .unwrap();
+        assert_eq!(stored.min_scale_arcsec_per_pixel, Some(0.1));
+        assert_eq!(stored.max_scale_arcsec_per_pixel, Some(20.0));
+        stored.validate().unwrap();
+
+        let one_bound = SolveOptions {
+            min_scale_arcsec_per_pixel: Some(30.0),
+            ..SolveOptions::default()
+        };
+        one_bound.validate().unwrap();
+        for (min, max) in [
+            (Some(2.0), Some(1.0)),
+            (Some(0.0), None),
+            (None, Some(-1.0)),
+            (Some(f64::NAN), None),
+        ] {
+            let invalid = SolveOptions {
+                min_scale_arcsec_per_pixel: min,
+                max_scale_arcsec_per_pixel: max,
+                ..SolveOptions::default()
+            };
+            assert!(invalid.validate().is_err(), "{min:?}–{max:?}");
+        }
+    }
+
+    #[test]
+    fn exif_provenance_uses_snake_case() {
+        assert_eq!(serde_json::to_value(SolveHintSource::Exif).unwrap(), "exif");
+        assert_eq!(
+            serde_json::from_value::<SatelliteMetadataSource>("exif".into()).unwrap(),
+            SatelliteMetadataSource::Exif
+        );
+    }
+
+    #[test]
     fn legacy_options_and_wcs_records_default_to_linear_solves() {
         let options: SolveOptions = serde_json::from_str("{}").unwrap();
         let wcs: WcsResponse = serde_json::from_str(
@@ -861,6 +953,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         };
 
         let header = solution.fits_wcs_header();
@@ -896,6 +989,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         };
 
         solution.validate().unwrap();

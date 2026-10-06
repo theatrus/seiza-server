@@ -895,6 +895,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         }
     }
 

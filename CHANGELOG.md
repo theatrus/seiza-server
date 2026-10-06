@@ -3,6 +3,27 @@
 All notable changes to Seiza Server are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 - Unreleased
+
+- Solve photos upright. JPEG, PNG, TIFF and WebP uploads are decoded through
+  Seiza's EXIF-oriented raster reader, so the WCS, footprint, overlays,
+  previews, Astrometry.net-compatible width scales and satellite-trail pixels
+  share one frame. Solutions report `pixel_coordinates` with the stored size
+  and the orientation applied. Raster solutions saved by earlier versions keep
+  the stored pixel frame for their previews and trail checks.
+- Make `min_scale_arcsec_per_pixel` and `max_scale_arcsec_per_pixel`
+  optional. A missing bound comes from a photo's EXIF 35 mm-equivalent focal
+  length, searched first with a wide fallback in case the photo was cropped;
+  without EXIF the range stays 0.1–20"/px. Bounds a client sends always hold.
+  Solver statistics report the scale range that solved and an `exif` hint
+  source when the focal length supplied it.
+- Fill a photo's capture time from EXIF `DateTimeOriginal` and its offset, or
+  from the GPS time, and the observer site from GPS latitude and longitude,
+  when the request leaves them out. Record the EXIF tags used in
+  `satellite_metadata_keywords` with the new `exif` source. EXIF exposure time
+  and GPS altitude are never used.
+- Upgrade to Seiza 0.21.0, seiza-satellites 0.10.0 and seiza-fits 0.2.5.
+
 ## 0.4.0 - 2026-09-29
 
 - Replace the browser date picker for the acquisition time with a typed field

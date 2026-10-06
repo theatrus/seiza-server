@@ -8,6 +8,17 @@ const parallelUploadThresholdBytes = uploadChunkBytes * 2
 const parallelUploadParts = 3
 const webClient = 'web'
 
+/** Where automatic solve or satellite metadata came from. */
+export type MetadataSource = 'explicit' | 'fits_header' | 'xisf_header' | 'exif'
+
+/** How a raster upload's solved pixels relate to its stored pixels. */
+export interface PixelCoordinates {
+  original_dimensions: [width: number, height: number]
+  oriented_dimensions: [width: number, height: number]
+  orientation_applied: number
+  convention: string
+}
+
 export interface SolveOptions {
   center_ra_deg?: number | null
   center_dec_deg?: number | null
@@ -26,7 +37,7 @@ export interface SolveOptions {
   observer_longitude_deg?: number | null
   observer_altitude_m?: number | null
   observer_itrf_m?: [number, number, number] | null
-  satellite_metadata_source?: 'explicit' | 'fits_header' | 'xisf_header'
+  satellite_metadata_source?: MetadataSource
   satellite_metadata_keywords?: string[]
 }
 
@@ -109,9 +120,11 @@ export interface Solution {
     detected_stars: number
     catalog_stars: number
     blind_index_patterns?: number
-    hint_source?: 'explicit' | 'fits_header' | 'xisf_header'
+    hint_source?: MetadataSource
     hint_keywords?: string[]
+    blind_scale_range?: [min: number, max: number]
   }
+  pixel_coordinates?: PixelCoordinates
 }
 
 export interface Annotations {
