@@ -2,7 +2,7 @@
 %undefine _debugsource_packages
 
 Name:           seiza-server
-Version:         %{?package_version}%{!?package_version:0.4.0}
+Version:         %{?package_version}%{!?package_version:0.5.0}
 Release:         %{?package_release}%{!?package_release:1}%{?dist}
 Summary:         Queued Seiza plate-solving web service
 License:         Apache-2.0
@@ -85,6 +85,11 @@ fi
 %attr(0640,root,seiza-server) %config(noreplace) %{_sysconfdir}/seiza-server/seiza-server.env
 
 %changelog
+* Mon Oct 05 2026 The Seiza Server Contributors <github@theatr.us> - 0.5.0-1
+- Solve photos upright after their EXIF orientation
+- Use photo EXIF for the blind scale range, capture time and GPS site
+- Move to Seiza 0.21.0 and seiza-satellites 0.10.0
+
 * Tue Sep 29 2026 The Seiza Server Contributors <github@theatr.us> - 0.4.0-1
 - Add a typed acquisition-time field that accepts dates, times and ISO timestamps
 - Move to Seiza 0.18.16 and seiza-xisf 0.3.0 for XISF 1.0 Revision 1 uploads
