@@ -1675,7 +1675,11 @@ async fn get_solve_overlay(
                 &job,
                 stored_solution,
                 &job.options,
-                &query.annotations.options(),
+                // The server-drawn SVG has no constellation layer.
+                &AnnotationOptions {
+                    constellations: false,
+                    ..query.annotations.options()
+                },
                 query.annotations.satellite_tracks,
             )
             .await;
@@ -1797,11 +1801,11 @@ async fn get_solve_opengraph(
 
 #[derive(Debug, Deserialize)]
 struct OverlayQuery {
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     objects: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     outlines: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_from_text")]
     grid: bool,
     #[serde(flatten)]
     annotations: AnnotationQuery,
@@ -1809,21 +1813,23 @@ struct OverlayQuery {
 
 #[derive(Debug, Deserialize)]
 struct AnnotationQuery {
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     deep_sky: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
+    constellations: bool,
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     named_stars: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_from_text")]
     star_identifiers: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_from_text")]
     field_stars: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     transients: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     minor_bodies: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "bool_from_text")]
     satellite_tracks: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_from_text")]
     historical_transients: bool,
     #[serde(
         default = "default_field_star_magnitude",
@@ -1871,6 +1877,7 @@ impl AnnotationQuery {
     fn opengraph() -> Self {
         Self {
             deep_sky: true,
+            constellations: false,
             named_stars: true,
             star_identifiers: false,
             field_stars: false,
@@ -1898,6 +1905,7 @@ impl AnnotationQuery {
         let defaults = AnnotationOptions::default();
         AnnotationOptions {
             deep_sky: self.deep_sky,
+            constellations: self.constellations,
             named_stars: self.named_stars,
             star_identifiers: self.star_identifiers,
             field_stars: self.field_stars,
@@ -1963,6 +1971,14 @@ where
         Value::Number(value) => Ok(value),
         Value::Text(text) => text.trim().parse().map_err(serde::de::Error::custom),
     }
+}
+
+/// Like [`number_from_text`], for `true`/`false` switches.
+fn bool_from_text<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    number_from_text(deserializer)
 }
 
 fn optional_number_from_text<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -2968,7 +2984,7 @@ mod tests {
     fn display_limits_parse_from_both_annotation_and_overlay_queries() {
         use axum::extract::Query;
         let uri: axum::http::Uri =
-            "/x?max_deep_sky=5&deep_sky_min_size_px=2.5&transient_mag_limit=12&include_objects=M31,%20NGC%20457"
+            "/x?max_deep_sky=5&deep_sky_min_size_px=2.5&transient_mag_limit=12&include_objects=M31,%20NGC%20457&constellations=false&deep_sky=false&grid=true"
                 .parse()
                 .unwrap();
         let Query(annotations) = Query::<AnnotationQuery>::try_from_uri(&uri).unwrap();
@@ -2983,6 +2999,10 @@ mod tests {
             overlay.objects,
             "the SVG objects switch keeps its own meaning"
         );
+        assert!(overlay.grid);
+        for options in [annotations.options(), overlay.annotations.options()] {
+            assert!(!options.constellations && !options.deep_sky);
+        }
         let Query(defaults) =
             Query::<AnnotationQuery>::try_from_uri(&"/x".parse().unwrap()).unwrap();
         let defaults = defaults.options();
@@ -2991,6 +3011,10 @@ mod tests {
             AnnotationOptions::default().max_deep_sky
         );
         assert!(defaults.requested_objects.is_empty());
+        assert!(
+            defaults.constellations,
+            "the annotations route draws them unless told not to"
+        );
     }
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
     use crate::{

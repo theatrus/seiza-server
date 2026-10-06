@@ -194,8 +194,9 @@ export function ApiDocsPage() {
             <OptionRow name="max_named_stars / named_star_mag_limit" defaultValue="60 / none">IAU-named stars first, then the brightest catalog stars.</OptionRow>
             <OptionRow name="max_transients / transient_mag_limit" defaultValue="60 / none">Fields wider than 10° default to a magnitude 13 limit, since fainter supernovae cannot show.</OptionRow>
             <OptionRow name="max_minor_bodies" defaultValue="100">Brightest asteroids and comets first.</OptionRow>
+            <OptionRow name="constellations" defaultValue="true">Constellation stick figures as pixel polylines with a suggested name position, in the response's <code>constellations</code>. The figure data is CC BY 4.0: show the response's <code>constellation_attribution</code> wherever they are drawn.</OptionRow>
             <OptionRow name="include_objects" defaultValue="none">Comma-separated names, designations or stable IDs (for example <code>M31,NGC 457</code>) always returned when in the field, whatever the limits. The response's <code>totals</code> gives each layer's count before the limits.</OptionRow>
-            <OptionRow name="objects, grid" defaultValue="true, false">Composite SVG controls; annotation filters above also apply.</OptionRow>
+            <OptionRow name="objects, grid" defaultValue="true, false">Composite SVG controls; annotation filters above also apply, except <code>constellations</code>: the server-drawn SVG has no constellation layer.</OptionRow>
           </div>
         </DocSection>
 

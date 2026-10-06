@@ -154,8 +154,15 @@ async function mockSolution(page: Page, inputAvailable = true) {
         catalog_version: 'objects:test;stars:test',
         capture_time: '2026-07-13T04:05:06Z',
         available: { deep_sky: true, named_stars: true, star_identifiers: true, field_stars: true, transients: true, historical_transients: true, minor_bodies: true, grid: true },
-        counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2 },
+        counts: { deep_sky: 6, named_stars: 1, star_identifiers: 1, field_stars: 1, transients: 1, historical_transients: 1, minor_bodies: 2, constellations: 1 },
         objects: baseObjects,
+        constellations: [{
+          abbreviation: 'And',
+          name: 'Andromeda',
+          lines: [[[40, 40], [400, 160], [760, 300]], [[400, 160], [520, 40]]],
+          label: [880, 140],
+        }],
+        constellation_attribution: 'Constellation Lines dataset by Marc van der Sluys (2005-2023), hemel.waarnemen.com. DOI: 10.5281/zenodo.10397192. Licensed under CC BY 4.0.',
       }),
     })
   })
@@ -439,6 +446,27 @@ test('draws and explains predicted satellite tracks when exposure metadata is co
 
   await page.getByRole('button', { name: 'Satellite tracks · 1' }).click()
   await expect(track).toHaveCount(0)
+})
+
+test('draws constellation figures with their credit and hides them on request', async ({ page }) => {
+  await mockSolution(page)
+  await page.goto(`/solutions/${publicId}`)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const lines = page.locator('.seiza-overlay__constellation-line')
+  await expect(lines).toHaveCount(2)
+  await expect(page.locator('.seiza-overlay__constellation-label')).toHaveText(/andromeda/i)
+  // The CC BY credit is readable page text, not tiny type inside the image.
+  const credit = page.locator('.constellation-credit')
+  await expect(credit).toContainText('CC BY 4.0')
+  await expect(page.locator('.seiza-overlay__constellation-attribution')).toHaveCount(0)
+  // The switch for a default-on layer is visible without scrolling the row.
+  const toggle = page.locator('.overlay-options').getByRole('button', { name: /Constellations/ })
+  const row = await page.locator('.overlay-options').boundingBox()
+  const button = await toggle.boundingBox()
+  expect(button!.x + button!.width).toBeLessThanOrEqual(row!.x + row!.width)
+  await toggle.click()
+  await expect(lines).toHaveCount(0)
+  await expect(credit).toHaveCount(0)
 })
 
 test('explains and disables catalog layers that are unavailable', async ({ page }) => {

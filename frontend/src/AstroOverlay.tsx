@@ -14,7 +14,7 @@ import {
   type OverlayObject as PackageOverlayObject,
   type SuggestedDeepSkyCatalogId as DeepSkyCatalogId,
 } from '@seiza/astro-overlay'
-import type { OverlayObject, SatelliteTrack, Solution } from './api'
+import type { OverlayConstellation, OverlayObject, SatelliteTrack, Solution } from './api'
 
 export interface OverlayLayers {
   deepSky: boolean
@@ -26,11 +26,13 @@ export interface OverlayLayers {
   satelliteTracks: boolean
   historicalTransients: boolean
   grid: boolean
+  constellations: boolean
 }
 
 const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
   ['deepSky', 'Deep sky', 'deep_sky'],
   ['namedStars', 'Named stars', 'named_stars'],
+  ['constellations', 'Constellations', 'constellations'],
   ['starIdentifiers', 'Star identifiers', 'star_identifiers'],
   ['fieldStars', 'Field stars', 'field_stars'],
   ['transients', 'Transients', 'transients'],
@@ -169,6 +171,8 @@ export function AstroOverlay({
   solution,
   objects,
   satelliteTracks,
+  constellations,
+  constellationAttribution,
   layers,
   hiddenCatalogs,
   showCatalogOutlines,
@@ -176,6 +180,8 @@ export function AstroOverlay({
   solution: Solution
   objects: OverlayObject[]
   satelliteTracks: SatelliteTrack[]
+  constellations: OverlayConstellation[]
+  constellationAttribution?: string
   layers: OverlayLayers
   hiddenCatalogs: DeepSkyCatalogId[]
   showCatalogOutlines: boolean
@@ -210,6 +216,11 @@ export function AstroOverlay({
     className="sky-overlay"
     solution={solution}
     objects={visibleObjects}
+    constellations={constellations}
+    constellationAttribution={constellationAttribution}
+    // The page shows the credit as text below the image, where it stays
+    // readable; exported PNGs draw it themselves.
+    showConstellationAttribution={false}
     layers={toPackageLayers(layers)}
     layerForObject={suggestedDeepSkyLayerForObject}
     colorForObject={suggestedDeepSkyColorForObject}
@@ -229,6 +240,7 @@ function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {
     satellite_tracks: layers.satelliteTracks,
     historical_transients: layers.historicalTransients,
     grid: layers.grid,
+    constellations: layers.constellations,
   }
   for (const [catalog] of deepSkyCatalogs) {
     visibility[deepSkyCatalogLayer(catalog)] = layers.deepSky

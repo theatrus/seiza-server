@@ -106,6 +106,17 @@ export function DataSourcesPage() {
           <p>Mattia Verga and OpenNGC contributors provide the principal NGC/IC database, its addendum, aliases, dimensions, and the hand-drawn object contours used for detailed nebula outlines.</p>
         </SourceCard>
         <SourceCard
+          title="Constellation Lines"
+          role="Constellation stick figures · CC BY 4.0"
+          links={[
+            { label: 'ConstellationLines dataset', href: 'https://github.com/marcvdsluys/constellationlines' },
+            { label: 'DOI 10.5281/zenodo.10397192', href: 'https://doi.org/10.5281/zenodo.10397192' },
+            { label: 'CC BY 4.0', href: 'https://creativecommons.org/licenses/by/4.0/' },
+          ]}
+        >
+          <p>Marc van der Sluys (2005–2023, hemel.waarnemen.com) traces the 88 IAU constellation figures as lines between Bright Star Catalogue stars. Seiza embeds version 1.3 unmodified and projects the figures through each solution’s WCS.</p>
+        </SourceCard>
+        <SourceCard
           title="VizieR and CDS"
           role="Catalogue access and preservation"
           links={[

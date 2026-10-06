@@ -18,6 +18,7 @@ const defaultOverlayLayers: OverlayLayers = {
   satelliteTracks: false,
   historicalTransients: false,
   grid: true,
+  constellations: true,
 }
 
 type CaptureTimeZone = 'local' | 'utc'
@@ -657,12 +658,16 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
     ...(!satelliteTracksRequested ? { satellite_tracks: 'Satellite trails were not requested for this solve view' } : {}),
     ...(satelliteUnavailableReason ? { satellite_tracks: satelliteUnavailableReason } : {}),
   }
+  // CC BY 4.0 requires the figure data's credit wherever the figures show.
+  const constellationCredit = layers.constellations && (currentAnnotations?.constellations?.length ?? 0) > 0
+    ? currentAnnotations?.constellation_attribution
+    : undefined
   const downloadPng = async () => {
     if (!job.preview_url || !solution || !frameRef.current) return
     setDownloading(true)
     setExportError(null)
     try {
-      await downloadRenderedPng(job.preview_url, frameRef.current, solution, job.id)
+      await downloadRenderedPng(job.preview_url, frameRef.current, solution, job.id, constellationCredit)
     } catch (reason) {
       setExportError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -713,12 +718,15 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
-            <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
+            <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} constellations={currentAnnotations?.constellations ?? []} constellationAttribution={currentAnnotations?.constellation_attribution} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
           </div>
         </div>
         {(currentAnnotations?.satellite_tracks?.length ?? 0) > 0 && <SatelliteTrackDetails annotations={currentAnnotations!} />}
         <div className="overlay-footer">
-          <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
+          <div>
+            <p className="retention-note">The SVG annotations are rendered interactively over the image. {job.validation_donation ? 'This contributed image is retained in Seiza’s long-term validation set.' : 'The temporary image expires after one day; WCS and catalog metadata remain available.'}</p>
+            {constellationCredit && <p className="constellation-credit">Constellation figures: {constellationCredit}</p>}
+          </div>
           <div className="overlay-actions overlay-actions-below"><button className="button small" type="button" disabled={downloading} onClick={() => void downloadPng()}>{downloading ? 'Rendering…' : 'Download rendered PNG'}</button></div>
         </div>
       </section> : !job.input_available && <p className="expired-note">The uploaded image and visual overlay have been deleted after their one-day retention period. The complete WCS solution remains below.</p>}
@@ -893,7 +901,13 @@ function RetrySolveForm({ job, onRetried }: { job: Job; onRetried: (job: Job) =>
   </section>
 }
 
-async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, solution: NonNullable<Job['solution']>, jobId: string) {
+async function downloadRenderedPng(
+  previewUrl: string,
+  frame: HTMLDivElement,
+  solution: NonNullable<Job['solution']>,
+  jobId: string,
+  constellationCredit?: string,
+) {
   const separator = previewUrl.includes('?') ? '&' : '?'
   const response = await fetch(`${previewUrl}${separator}full=true`)
   if (!response.ok) throw new Error(`full-resolution image request failed (${response.status})`)
@@ -905,14 +919,57 @@ async function downloadRenderedPng(previewUrl: string, frame: HTMLDivElement, so
     overlay,
     width: solution.image_width,
     height: solution.image_height,
-    decorate: (context, size) => drawSeizaWatermark(
-      context,
-      seizaMark,
-      size.width,
-      size.height,
-    ),
+    decorate: (context, size) => {
+      const plaque = drawSeizaWatermark(context, seizaMark, size.width, size.height)
+      if (constellationCredit) drawCredit(context, constellationCredit, size.width, size.height, plaque)
+    },
   })
   downloadBlob(png, `seiza-solution-${jobId}.png`)
+}
+
+/**
+ * Draw a licence credit along the bottom left of an exported PNG, readable at
+ * the image's size and clear of the watermark plaque: beside it when it fits,
+ * otherwise above it.
+ */
+function drawCredit(
+  context: CanvasRenderingContext2D,
+  text: string,
+  width: number,
+  height: number,
+  plaque: { x: number, y: number, margin: number },
+) {
+  const fontSize = Math.max(11, Math.round(Math.min(width, height) * 0.014))
+  context.save()
+  context.font = `500 ${fontSize}px ui-sans-serif, system-ui, sans-serif`
+  const padding = fontSize * 0.45
+  const textWidth = context.measureText(text).width
+  const besidePlaque = plaque.margin + textWidth + padding * 2 <= plaque.x - plaque.margin
+  const bottom = besidePlaque ? height - plaque.margin : plaque.y - plaque.margin
+  const lines = textWidth + padding * 2 <= width - plaque.margin * 2
+    ? [text]
+    : splitInTwo(text)
+  const lineHeight = fontSize * 1.3
+  const boxWidth = Math.max(...lines.map((line) => context.measureText(line).width)) + padding * 2
+  const boxHeight = lineHeight * lines.length + padding
+  const x = plaque.margin
+  const y = bottom - boxHeight
+  context.fillStyle = 'rgba(4, 12, 18, .78)'
+  context.fillRect(x, y, boxWidth, boxHeight)
+  context.fillStyle = '#d7e3ea'
+  context.textBaseline = 'alphabetic'
+  lines.forEach((line, index) => {
+    context.fillText(line, x + padding, y + padding / 2 + lineHeight * (index + 1) - fontSize * 0.3)
+  })
+  context.restore()
+}
+
+function splitInTwo(text: string) {
+  const middle = text.length / 2
+  const breaks = [...text.matchAll(/, /g)].map((match) => match.index! + 1)
+  if (breaks.length === 0) return [text]
+  const at = breaks.reduce((best, index) => Math.abs(index - middle) < Math.abs(best - middle) ? index : best)
+  return [text.slice(0, at), text.slice(at + 1)]
 }
 
 function drawSeizaWatermark(
@@ -920,7 +977,7 @@ function drawSeizaWatermark(
   logo: HTMLImageElement,
   width: number,
   height: number,
-) {
+): { x: number, y: number, margin: number } {
   let scale = Math.max(0.4, Math.min(width / 1_600, height / 1_200, 3.5))
   const measure = () => {
     context.font = `700 ${Math.round(27 * scale)}px ui-sans-serif, system-ui, sans-serif`
@@ -962,6 +1019,7 @@ function drawSeizaWatermark(
   context.fillStyle = '#f2c66d'
   context.fillText('seiza.fyi', textX, y + plaqueHeight * 0.75)
   context.restore()
+  return { x, y, margin }
 }
 
 function loadImage(url: string) {
