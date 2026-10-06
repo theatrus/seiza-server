@@ -4,7 +4,7 @@ use crate::{
         SatellitePixelAlignmentResponse, SatelliteSearchSummaryResponse, SatelliteTrackResponse,
         SatelliteTrackSegment, SatelliteTrailRiskResponse, SolutionResponse, SolveOptions,
     },
-    solver::decode_monochrome_u16,
+    solver::{PixelFrame, decode_monochrome_u16},
 };
 use bytes::Bytes;
 use seiza_satellites::{
@@ -182,6 +182,7 @@ impl SatelliteEngine {
         }
         let wcs = solution.wcs.to_seiza();
         let dimensions = (solution.image_width, solution.image_height);
+        let frame = PixelFrame::for_solution(Some(solution));
         let fingerprint = loaded.catalog.fingerprint().content_sha256;
         let cache_key = (
             public_id.to_owned(),
@@ -214,7 +215,7 @@ impl SatelliteEngine {
                 &TrackOptions::default(),
             )?;
             let (pixel_aligner, pixel_alignment_error) = match pixel_source {
-                Some(source) => match decode_monochrome_u16(&source.bytes, &source.filename) {
+                Some(source) => match decode_monochrome_u16(&source.bytes, &source.filename, frame) {
                     Ok(frame)
                         if (frame.width, frame.height)
                             == (dimensions.0 as usize, dimensions.1 as usize) =>
@@ -460,7 +461,7 @@ fn single_exposure(options: &SolveOptions) -> Result<SingleExposure, String> {
         (None, None, Some([x, y, z])) => ObserverLocation::itrf_meters(x, y, z),
         _ => {
             return Err(
-                "Satellite tracks require the observer latitude and longitude (or FITS/XISF OBSGEO coordinates)."
+                "Satellite tracks require the observer latitude and longitude (or FITS/XISF OBSGEO coordinates, or photo GPS)."
                     .into(),
             );
         }

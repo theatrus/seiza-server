@@ -936,6 +936,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         };
         let first = engine.annotate(1, &solution, None, &AnnotationOptions::default());
         assert_eq!(first.objects.len(), 1);
@@ -1020,6 +1021,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         };
 
         let annotation = engine.annotate(1, &solution, None, &AnnotationOptions::default());
@@ -1090,6 +1092,7 @@ mod tests {
             catalog_version: None,
             capture_time: None,
             statistics: None,
+            pixel_coordinates: None,
         };
 
         let hidden = engine.annotate(1, &solution, None, &AnnotationOptions::default());
