@@ -3,6 +3,22 @@
 All notable changes to Seiza Server are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- Draw only what a field can show. Annotations rank deep-sky objects by
+  apparent size, brightness and naming and return at most 200 (`max_deep_sky`),
+  leaving out unnamed objects under 1.5 px (`deep_sky_min_size_px`); a phone
+  frame of Cassiopeia went from 17,559 annotations, mostly sub-pixel PGC
+  galaxies, to about 260. Named stars (`max_named_stars`, 60), transients
+  (`max_transients`, 60, magnitude 13 or brighter in fields wider than 10°)
+  and minor bodies (`max_minor_bodies`, 100) are capped the same way.
+  `include_objects=M31,NGC 457` always returns the named objects, and the
+  response's `totals` gives each layer's count before the limits. The web
+  app shows "200 of 16,593" on a capped layer and passes `include_objects`
+  from the page address.
+- Accept numeric annotation options on the SVG overlay endpoint, whose
+  query parsing previously rejected numbers.
+
 ## 0.5.0 - Unreleased
 
 - Solve photos upright. JPEG, PNG, TIFF and WebP uploads are decoded through

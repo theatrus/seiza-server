@@ -43,6 +43,7 @@ const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
 export function OverlayControls({
   layers,
   counts,
+  totals,
   available,
   disabledReasons,
   objects,
@@ -54,6 +55,7 @@ export function OverlayControls({
 }: {
   layers: OverlayLayers
   counts: Record<string, number>
+  totals?: Record<string, number>
   available?: Record<string, boolean>
   disabledReasons?: Record<string, string>
   objects: OverlayObject[]
@@ -67,14 +69,21 @@ export function OverlayControls({
     <div className="overlay-options" role="group" aria-label="Overlay layers">
       {layerLabels.map(([key, label, countKey]) => {
         const enabled = available?.[countKey] !== false
+        const count = counts[countKey]
+        const total = totals?.[countKey]
+        const culled = count != null && total != null && total > count
         return <button
           key={key}
           type="button"
           aria-pressed={enabled && layers[key]}
           disabled={!enabled}
-          title={enabled ? undefined : disabledReasons?.[countKey] ?? `${label} data is unavailable for this solution`}
+          title={!enabled
+            ? disabledReasons?.[countKey] ?? `${label} data is unavailable for this solution`
+            : culled
+              ? `Showing the ${count.toLocaleString()} most prominent of ${total.toLocaleString()} in the field. Add ?include_objects=M31,NGC 457 to the page address to show specific objects.`
+              : undefined}
           onClick={() => onChange({ ...layers, [key]: !layers[key] })}
-        >{label}{counts[countKey] == null ? '' : ` · ${counts[countKey]}`}</button>
+        >{label}{count == null ? '' : culled ? ` · ${count.toLocaleString()} of ${total.toLocaleString()}` : ` · ${count}`}</button>
       })}
     </div>
     <DeepSkyCatalogMenu

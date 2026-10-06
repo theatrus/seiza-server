@@ -1825,14 +1825,46 @@ struct AnnotationQuery {
     satellite_tracks: bool,
     #[serde(default)]
     historical_transients: bool,
-    #[serde(default = "default_field_star_magnitude")]
+    #[serde(
+        default = "default_field_star_magnitude",
+        deserialize_with = "number_from_text"
+    )]
     field_star_mag_limit: f32,
-    #[serde(default = "default_field_star_limit")]
+    #[serde(
+        default = "default_field_star_limit",
+        deserialize_with = "number_from_text"
+    )]
     max_field_stars: usize,
-    #[serde(default = "default_star_identifier_magnitude")]
+    #[serde(
+        default = "default_star_identifier_magnitude",
+        deserialize_with = "number_from_text"
+    )]
     star_identifier_mag_limit: f32,
-    #[serde(default = "default_star_identifier_limit")]
+    #[serde(
+        default = "default_star_identifier_limit",
+        deserialize_with = "number_from_text"
+    )]
     max_star_identifiers: usize,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    max_deep_sky: Option<usize>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    deep_sky_min_size_px: Option<f64>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    deep_sky_max_mag: Option<f32>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    max_named_stars: Option<usize>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    named_star_mag_limit: Option<f32>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    max_transients: Option<usize>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    transient_mag_limit: Option<f32>,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    max_minor_bodies: Option<usize>,
+    /// Comma-separated names, designations or stable IDs to always show
+    /// when they fall in the field, e.g. `include_objects=M31,NGC 457`.
+    #[serde(default)]
+    include_objects: Option<String>,
 }
 
 impl AnnotationQuery {
@@ -1850,10 +1882,20 @@ impl AnnotationQuery {
             max_field_stars: default_field_star_limit(),
             star_identifier_mag_limit: default_star_identifier_magnitude(),
             max_star_identifiers: default_star_identifier_limit(),
+            max_deep_sky: None,
+            deep_sky_min_size_px: None,
+            deep_sky_max_mag: None,
+            max_named_stars: None,
+            named_star_mag_limit: None,
+            max_transients: None,
+            transient_mag_limit: None,
+            max_minor_bodies: None,
+            include_objects: None,
         }
     }
 
     fn options(&self) -> AnnotationOptions {
+        let defaults = AnnotationOptions::default();
         AnnotationOptions {
             deep_sky: self.deep_sky,
             named_stars: self.named_stars,
@@ -1866,8 +1908,70 @@ impl AnnotationQuery {
             max_field_stars: self.max_field_stars.clamp(1, 2_000),
             star_identifier_mag_limit: self.star_identifier_mag_limit.clamp(-2.0, 20.0),
             max_star_identifiers: self.max_star_identifiers.clamp(1, 1_000),
+            max_deep_sky: self
+                .max_deep_sky
+                .map_or(defaults.max_deep_sky, |limit| limit.clamp(1, 20_000)),
+            deep_sky_min_size_px: self
+                .deep_sky_min_size_px
+                .filter(|size| size.is_finite())
+                .map_or(defaults.deep_sky_min_size_px, |size| {
+                    size.clamp(0.0, 1_000.0)
+                }),
+            deep_sky_max_mag: self.deep_sky_max_mag.map(|mag| mag.clamp(-30.0, 30.0)),
+            max_named_stars: self
+                .max_named_stars
+                .map_or(defaults.max_named_stars, |limit| limit.clamp(1, 5_000)),
+            named_star_mag_limit: self.named_star_mag_limit.map(|mag| mag.clamp(-30.0, 30.0)),
+            max_transients: self
+                .max_transients
+                .map_or(defaults.max_transients, |limit| limit.clamp(1, 5_000)),
+            transient_mag_limit: self.transient_mag_limit.map(|mag| mag.clamp(-30.0, 30.0)),
+            max_minor_bodies: self
+                .max_minor_bodies
+                .map_or(defaults.max_minor_bodies, |limit| limit.clamp(1, 5_000)),
+            requested_objects: self
+                .include_objects
+                .as_deref()
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .take(100)
+                .map(str::to_owned)
+                .collect(),
         }
     }
+}
+
+/// Query strings carry every value as text, and serde cannot coerce text to
+/// numbers through `#[serde(flatten)]` (as `OverlayQuery` uses), so numeric
+/// options accept either form.
+fn number_from_text<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr + Deserialize<'de>,
+    T::Err: std::fmt::Display,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value<'a, T> {
+        Number(T),
+        #[serde(borrow)]
+        Text(std::borrow::Cow<'a, str>),
+    }
+    match Value::<T>::deserialize(deserializer)? {
+        Value::Number(value) => Ok(value),
+        Value::Text(text) => text.trim().parse().map_err(serde::de::Error::custom),
+    }
+}
+
+fn optional_number_from_text<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr + Deserialize<'de>,
+    T::Err: std::fmt::Display,
+{
+    number_from_text(deserializer).map(Some)
 }
 
 fn default_field_star_magnitude() -> f32 {
@@ -2859,6 +2963,35 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_limits_parse_from_both_annotation_and_overlay_queries() {
+        use axum::extract::Query;
+        let uri: axum::http::Uri =
+            "/x?max_deep_sky=5&deep_sky_min_size_px=2.5&transient_mag_limit=12&include_objects=M31,%20NGC%20457"
+                .parse()
+                .unwrap();
+        let Query(annotations) = Query::<AnnotationQuery>::try_from_uri(&uri).unwrap();
+        let Query(overlay) = Query::<OverlayQuery>::try_from_uri(&uri).unwrap();
+        for options in [annotations.options(), overlay.annotations.options()] {
+            assert_eq!(options.max_deep_sky, 5);
+            assert_eq!(options.deep_sky_min_size_px, 2.5);
+            assert_eq!(options.transient_mag_limit, Some(12.0));
+            assert_eq!(options.requested_objects, ["M31", "NGC 457"]);
+        }
+        assert!(
+            overlay.objects,
+            "the SVG objects switch keeps its own meaning"
+        );
+        let Query(defaults) =
+            Query::<AnnotationQuery>::try_from_uri(&"/x".parse().unwrap()).unwrap();
+        let defaults = defaults.options();
+        assert_eq!(
+            defaults.max_deep_sky,
+            AnnotationOptions::default().max_deep_sky
+        );
+        assert!(defaults.requested_objects.is_empty());
+    }
     use crate::config::{JobBackend, QueueDelivery, StorageBackend};
     use crate::{
         email::{EmailSender, SignInEmail},

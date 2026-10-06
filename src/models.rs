@@ -564,6 +564,10 @@ pub struct AnnotationResponse {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub unavailable_reasons: std::collections::BTreeMap<String, String>,
     pub counts: std::collections::BTreeMap<String, usize>,
+    /// Catalog objects of each layer in the field before the display limits
+    /// chose `counts` of them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub totals: std::collections::BTreeMap<String, usize>,
     pub objects: Vec<OverlayObject>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub satellite_tracks: Vec<SatelliteTrackResponse>,

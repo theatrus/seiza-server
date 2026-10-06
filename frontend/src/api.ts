@@ -134,6 +134,8 @@ export interface Annotations {
   available?: Record<string, boolean>
   unavailable_reasons?: Record<string, string>
   counts: Record<string, number>
+  /** Objects of each layer in the field before the display limits chose `counts` of them. */
+  totals?: Record<string, number>
   objects: OverlayObject[]
   satellite_tracks?: SatelliteTrack[]
   satellite_search?: SatelliteSearchSummary
@@ -568,10 +570,17 @@ export async function donateValidationImage(
   }, true))
 }
 
-export async function getAnnotations(url: string, satelliteTracks = false): Promise<Annotations> {
+export async function getAnnotations(
+  url: string,
+  satelliteTracks = false,
+  requestedObjects: string[] = [],
+): Promise<Annotations> {
   const separator = url.includes('?') ? '&' : '?'
+  const objects = requestedObjects.length > 0
+    ? `&include_objects=${encodeURIComponent(requestedObjects.join(','))}`
+    : ''
   return expectJson<Annotations>(await sessionFetch(
-    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150&satellite_tracks=${satelliteTracks}`,
+    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150&satellite_tracks=${satelliteTracks}${objects}`,
   ))
 }
 
