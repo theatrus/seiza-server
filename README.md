@@ -30,6 +30,10 @@ disappears on a process restart.
 - FITS (`.fit`, `.fits`, `.fts`), XISF (`.xisf`), PNG, JPEG, TIFF, and WebP
   input. FITS and XISF files share Seiza's decoded image type and autostretch
   before source detection.
+- Photos are solved upright: Seiza applies the EXIF Orientation tag once, and
+  the WCS, footprint, overlays, previews and satellite-trail pixels all use
+  that frame. The solution's `pixel_coordinates` gives the stored size and the
+  orientation applied.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
   solving with Seiza 0.12.0, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
@@ -320,7 +324,14 @@ one exposure duration. Standard `OBSGEO-X/Y/Z`, `OBSGEO-B/L/H`, and common
 When explicit solve hints are
 absent, the server also promotes a complete FITS position and pixel scale from
 common `RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, WCS, `PIXSCALE`, or camera-geometry
-headers. Raster-image API clients can provide RFC 3339 `capture_time`, positive
+headers. Photos supply the capture time from EXIF `DateTimeOriginal` with its
+offset (or the GPS time) and the site from GPS latitude and longitude, when
+the request leaves them out. EXIF `ExposureTime` and `GPSAltitude` are never
+used: a phone may merge several frames into one picture. When a blind solve
+has no explicit `min_scale_arcsec_per_pixel` or `max_scale_arcsec_per_pixel`,
+the EXIF 35 mm-equivalent focal length sets the first scale range searched,
+with a wide retry for cropped photos; without EXIF the range stays 0.1–20"/px.
+Raster-image API clients can provide RFC 3339 `capture_time`, positive
 `exposure_seconds`, and `observer_latitude_deg` / `observer_longitude_deg` in
 the options JSON. Capture time scopes transient events and propagates comets
 and asteroids; the complete observation contract additionally enables
