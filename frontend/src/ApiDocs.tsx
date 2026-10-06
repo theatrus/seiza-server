@@ -190,6 +190,11 @@ export function ApiDocsPage() {
             <OptionRow name="star_identifier_mag_limit / max_star_identifiers" defaultValue="10.0 / 150">Limit stellar-identifier labels by magnitude and count.</OptionRow>
             <OptionRow name="field_star_mag_limit" defaultValue="10.0">Field-star limiting magnitude, clamped from −2 through 20.</OptionRow>
             <OptionRow name="max_field_stars" defaultValue="300">Maximum field stars, clamped from 1 through 2,000.</OptionRow>
+            <OptionRow name="max_deep_sky / deep_sky_min_size_px / deep_sky_max_mag" defaultValue="200 / 1.5 / none">Deep-sky objects are ranked by apparent size, brightness and naming, and capped. Objects whose semi-major axis spans fewer pixels than the minimum are left out unless they have a common name, so wide fields skip thousands of sub-pixel galaxies.</OptionRow>
+            <OptionRow name="max_named_stars / named_star_mag_limit" defaultValue="60 / none">IAU-named stars first, then the brightest catalog stars.</OptionRow>
+            <OptionRow name="max_transients / transient_mag_limit" defaultValue="60 / none">Fields wider than 10° default to a magnitude 13 limit, since fainter supernovae cannot show.</OptionRow>
+            <OptionRow name="max_minor_bodies" defaultValue="100">Brightest asteroids and comets first.</OptionRow>
+            <OptionRow name="include_objects" defaultValue="none">Comma-separated names, designations or stable IDs (for example <code>M31,NGC 457</code>) always returned when in the field, whatever the limits. The response's <code>totals</code> gives each layer's count before the limits.</OptionRow>
             <OptionRow name="objects, grid" defaultValue="true, false">Composite SVG controls; annotation filters above also apply.</OptionRow>
           </div>
         </DocSection>

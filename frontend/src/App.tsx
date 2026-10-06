@@ -301,6 +301,7 @@ export default function App() {
       key={`${solutionMatch[1]}:${search}`}
       jobId={solutionMatch[1]}
       satelliteTracksRequested={new URLSearchParams(search).get('satellite_tracks') === 'true'}
+      requestedObjects={new URLSearchParams(search).get('include_objects') ?? ''}
     />}
     {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage solveEnabled={solveUiEnabled} />}
     <SiteFooter />
@@ -546,7 +547,7 @@ function SolvePage({
   </main>
 }
 
-function SolutionPage({ jobId, satelliteTracksRequested }: { jobId: string; satelliteTracksRequested: boolean }) {
+function SolutionPage({ jobId, satelliteTracksRequested, requestedObjects }: { jobId: string; satelliteTracksRequested: boolean; requestedObjects: string }) {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pollVersion, setPollVersion] = useState(0)
@@ -576,7 +577,7 @@ function SolutionPage({ jobId, satelliteTracksRequested }: { jobId: string; sate
       <ValidationDonationPanel job={job} onDonated={setJob} />
     </div> : <SolutionHeading job={job} />}
     {error && <p className="error" role="alert">{error}</p>}
-    {job && <SolutionContent job={job} satelliteTracksRequested={satelliteTracksRequested} onRetried={(retried) => {
+    {job && <SolutionContent job={job} satelliteTracksRequested={satelliteTracksRequested} requestedObjects={requestedObjects} onRetried={(retried) => {
       setJob(retried)
       setPollVersion((version) => version + 1)
       navigate(`/solutions/${retried.id}${satelliteTracksRequested ? '?satellite_tracks=true' : ''}`)
@@ -598,7 +599,7 @@ function titleForStatus(status: Job['status']) {
   return 'The field is solved.'
 }
 
-function SolutionContent({ job, satelliteTracksRequested, onRetried }: { job: Job; satelliteTracksRequested: boolean; onRetried: (job: Job) => void }) {
+function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRetried }: { job: Job; satelliteTracksRequested: boolean; requestedObjects: string; onRetried: (job: Job) => void }) {
   const [annotations, setAnnotations] = useState<Annotations | null>(null)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
   const [layers, setLayers] = useState({ ...defaultOverlayLayers, satelliteTracks: satelliteTracksRequested })
@@ -613,7 +614,8 @@ function SolutionContent({ job, satelliteTracksRequested, onRetried }: { job: Jo
     if (!job.annotations_url) {
       return () => { active = false }
     }
-    getAnnotations(job.annotations_url, satelliteTracksRequested)
+    const requested = requestedObjects.split(',').map((name) => name.trim()).filter(Boolean)
+    getAnnotations(job.annotations_url, satelliteTracksRequested, requested)
       .then((result) => {
         if (active) {
           setAnnotations(result)
@@ -624,7 +626,7 @@ function SolutionContent({ job, satelliteTracksRequested, onRetried }: { job: Jo
         if (active) setAnnotationError(reason instanceof Error ? reason.message : String(reason))
       })
     return () => { active = false }
-  }, [job.annotations_url, satelliteTracksRequested])
+  }, [job.annotations_url, satelliteTracksRequested, requestedObjects])
   const solution = job.solution
   const currentAnnotations = annotations?.job_id === job.id ? annotations : null
   const overlayObjects = currentAnnotations?.objects ?? solution?.objects ?? []
@@ -679,6 +681,7 @@ function SolutionContent({ job, satelliteTracksRequested, onRetried }: { job: Jo
         <OverlayControls
           layers={layers}
           counts={overlayCounts}
+          totals={currentAnnotations?.totals}
           available={controlAvailability}
           disabledReasons={disabledReasons}
           objects={overlayObjects}

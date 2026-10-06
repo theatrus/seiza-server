@@ -34,7 +34,31 @@ pub struct AnnotationOptions {
     pub max_field_stars: usize,
     pub star_identifier_mag_limit: f32,
     pub max_star_identifiers: usize,
+    /// Most deep-sky objects to return, ranked by how visible they are likely
+    /// to be at this image scale. Wide fields hold tens of thousands of
+    /// catalog galaxies far smaller than a pixel.
+    pub max_deep_sky: usize,
+    /// Deep-sky objects whose catalog semi-major axis spans fewer image
+    /// pixels than this are left out unless they have a common name.
+    pub deep_sky_min_size_px: f64,
+    pub deep_sky_max_mag: Option<f32>,
+    pub max_named_stars: usize,
+    pub named_star_mag_limit: Option<f32>,
+    pub max_transients: usize,
+    /// Fields wider than [`WIDE_FIELD_DIAGONAL_DEG`] default to
+    /// [`WIDE_FIELD_TRANSIENT_MAG_LIMIT`] when this is unset.
+    pub transient_mag_limit: Option<f32>,
+    pub max_minor_bodies: usize,
+    /// Names, designations or stable IDs the user asked for; matching objects
+    /// in the field are always returned, whatever the limits above say.
+    pub requested_objects: Vec<String>,
 }
+
+/// Fields wider than this many degrees across the diagonal (phone and
+/// camera-lens frames) get a transient magnitude limit by default.
+pub const WIDE_FIELD_DIAGONAL_DEG: f64 = 10.0;
+/// Supernovae fainter than this vanish in a wide-field frame.
+pub const WIDE_FIELD_TRANSIENT_MAG_LIMIT: f32 = 13.0;
 
 pub struct StarIdentifierCatalogSearch {
     pub matches: Vec<StarIdentifierMatch>,
@@ -68,6 +92,15 @@ impl Default for AnnotationOptions {
             max_field_stars: 300,
             star_identifier_mag_limit: 10.0,
             max_star_identifiers: 150,
+            max_deep_sky: 200,
+            deep_sky_min_size_px: 1.5,
+            deep_sky_max_mag: None,
+            max_named_stars: 60,
+            named_star_mag_limit: None,
+            max_transients: 60,
+            transient_mag_limit: None,
+            max_minor_bodies: 100,
+            requested_objects: Vec::new(),
         }
     }
 }
@@ -139,6 +172,7 @@ impl AnnotationEngine {
             solution.objects.clone()
         };
         let mut versions = Vec::new();
+        let mut totals = BTreeMap::new();
         let mut available = BTreeMap::from([
             ("deep_sky".into(), false),
             ("named_stars".into(), false),
@@ -160,14 +194,17 @@ impl AnnotationEngine {
             available.insert("deep_sky".into(), true);
             available.insert("named_stars".into(), true);
             versions.push(format!("objects:{version}"));
-            append_object_catalog(
-                &mut objects,
-                &catalog,
-                &wcs,
-                dimensions,
-                capture_time,
-                options,
-                false,
+            merge_totals(
+                &mut totals,
+                append_object_catalog(
+                    &mut objects,
+                    &catalog,
+                    &wcs,
+                    dimensions,
+                    capture_time,
+                    options,
+                    false,
+                ),
             );
         }
         if let Some(catalog) = &self.star_identifiers
@@ -186,14 +223,17 @@ impl AnnotationEngine {
             available.insert("historical_transients".into(), true);
             versions.push(format!("transients:{version}"));
             if options.transients {
-                append_object_catalog(
-                    &mut objects,
-                    &catalog,
-                    &wcs,
-                    dimensions,
-                    capture_time,
-                    options,
-                    true,
+                merge_totals(
+                    &mut totals,
+                    append_object_catalog(
+                        &mut objects,
+                        &catalog,
+                        &wcs,
+                        dimensions,
+                        capture_time,
+                        options,
+                        true,
+                    ),
                 );
             }
         }
@@ -214,7 +254,15 @@ impl AnnotationEngine {
                 && let Some(capture_time) = capture_time
             {
                 available.insert("minor_bodies".into(), true);
-                append_minor_bodies(&mut objects, &catalog, &wcs, dimensions, capture_time);
+                append_minor_bodies(
+                    &mut objects,
+                    &mut totals,
+                    &catalog,
+                    &wcs,
+                    dimensions,
+                    capture_time,
+                    options.max_minor_bodies,
+                );
             }
         }
 
@@ -248,6 +296,7 @@ impl AnnotationEngine {
             available,
             unavailable_reasons: BTreeMap::new(),
             counts,
+            totals,
             objects,
             satellite_tracks: Vec::new(),
             satellite_search: None,
@@ -372,6 +421,8 @@ impl AnnotationEngine {
     }
 }
 
+/// Adds the catalog's objects worth drawing to `output` and returns how
+/// many of each layer were in the field before selection.
 fn append_object_catalog(
     output: &mut Vec<OverlayObject>,
     catalog: &ObjectCatalog,
@@ -380,14 +431,18 @@ fn append_object_catalog(
     capture_time: Option<DateTime<Utc>>,
     options: &AnnotationOptions,
     force_transient: bool,
-) {
+) -> BTreeMap<String, usize> {
+    let mut totals = BTreeMap::new();
     let placed_objects = match catalog.objects_in_footprint(wcs, dimensions) {
         Ok(placed_objects) => placed_objects,
         Err(error) => {
             tracing::warn!(%error, "could not query object catalog for solved footprint");
-            return;
+            return totals;
         }
     };
+    let wide_field = field_diagonal_deg(wcs, dimensions) > WIDE_FIELD_DIAGONAL_DEG;
+    let requested = RequestedObjects::new(&options.requested_objects);
+    let mut candidates = Vec::new();
     for placed in placed_objects {
         let transient = force_transient || placed.object.kind == ObjectKind::Transient;
         let named_star = matches!(
@@ -408,6 +463,32 @@ fn append_object_catalog(
         if transient && near_capture == Some(false) && !options.historical_transients {
             continue;
         }
+        let group = if transient {
+            DisplayGroup::Transient
+        } else if named_star {
+            DisplayGroup::NamedStar
+        } else {
+            DisplayGroup::DeepSky
+        };
+        *totals.entry(group.layer().into()).or_insert(0) += 1;
+        candidates.push(Candidate {
+            requested: requested.matches(&placed.object),
+            group,
+            placed,
+            discovered,
+            near_capture,
+        });
+    }
+
+    for candidate in select_for_display(candidates, options, wide_field) {
+        let Candidate {
+            placed,
+            discovered,
+            near_capture,
+            group,
+            ..
+        } = candidate;
+        let transient = group == DisplayGroup::Transient;
         let stable_id =
             (!placed.object.metadata.id.is_empty()).then(|| placed.object.metadata.id.clone());
         let outlines = stable_id
@@ -447,6 +528,176 @@ fn append_object_catalog(
             outlines,
         });
     }
+    totals
+}
+
+fn merge_totals(totals: &mut BTreeMap<String, usize>, more: BTreeMap<String, usize>) {
+    for (layer, count) in more {
+        *totals.entry(layer).or_insert(0) += count;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DisplayGroup {
+    DeepSky,
+    NamedStar,
+    Transient,
+}
+
+impl DisplayGroup {
+    fn layer(self) -> &'static str {
+        match self {
+            Self::DeepSky => "deep_sky",
+            Self::NamedStar => "named_stars",
+            Self::Transient => "transients",
+        }
+    }
+}
+
+struct Candidate {
+    group: DisplayGroup,
+    requested: bool,
+    placed: seiza::objects::PlacedObject,
+    discovered: Option<String>,
+    near_capture: Option<bool>,
+}
+
+/// Choose which catalog objects in a solved field are worth drawing.
+///
+/// A wide field can hold tens of thousands of catalog galaxies far smaller
+/// than a pixel; drawing them buries the few that matter. Requested objects
+/// always pass. Deep-sky objects must span `deep_sky_min_size_px` or carry a
+/// common name, and are ranked by apparent size, brightness and naming;
+/// named stars and transients are ranked by brightness. Each group is then
+/// capped.
+fn select_for_display(
+    candidates: Vec<Candidate>,
+    options: &AnnotationOptions,
+    wide_field: bool,
+) -> Vec<Candidate> {
+    let transient_limit = options
+        .transient_mag_limit
+        .or(wide_field.then_some(WIDE_FIELD_TRANSIENT_MAG_LIMIT));
+    let mut groups: [Vec<(f64, Candidate)>; 3] = Default::default();
+    let mut requested = Vec::new();
+    for candidate in candidates {
+        if candidate.requested {
+            requested.push(candidate);
+            continue;
+        }
+        let object = &candidate.placed.object;
+        let within = |limit: Option<f32>| match (limit, object.mag) {
+            (None, _) => true,
+            (Some(limit), Some(mag)) => mag <= limit,
+            (Some(_), None) => false,
+        };
+        let (slot, score) = match candidate.group {
+            DisplayGroup::DeepSky => {
+                let named = !object.common_name.is_empty() || is_messier(object);
+                if !within(options.deep_sky_max_mag)
+                    || (candidate.placed.semi_major_px < options.deep_sky_min_size_px && !named)
+                {
+                    continue;
+                }
+                (0, deep_sky_score(&candidate.placed))
+            }
+            DisplayGroup::NamedStar => {
+                if !within(options.named_star_mag_limit) {
+                    continue;
+                }
+                // IAU proper names first, then brighter stars.
+                let proper = object.metadata.source.contains("IAU");
+                (
+                    1,
+                    f64::from(proper) * 100.0 - f64::from(object.mag.unwrap_or(20.0)),
+                )
+            }
+            DisplayGroup::Transient => {
+                if !within(transient_limit) {
+                    continue;
+                }
+                (2, -f64::from(object.mag.unwrap_or(30.0)))
+            }
+        };
+        groups[slot].push((score, candidate));
+    }
+    let caps = [
+        options.max_deep_sky,
+        options.max_named_stars,
+        options.max_transients,
+    ];
+    for (group, cap) in groups.iter_mut().zip(caps) {
+        group.sort_by(|a, b| b.0.total_cmp(&a.0));
+        group.truncate(cap);
+    }
+    requested
+        .into_iter()
+        .chain(groups.into_iter().flatten().map(|(_, candidate)| candidate))
+        .collect()
+}
+
+/// Larger, brighter and named objects rank first. Size dominates: a
+/// galaxy a tenth of a pixel across is invisible however bright.
+fn deep_sky_score(placed: &seiza::objects::PlacedObject) -> f64 {
+    let object = &placed.object;
+    let size = placed.semi_major_px.max(0.05).ln();
+    let brightness = object
+        .mag
+        .map_or(0.0, |mag| (14.0 - f64::from(mag)).clamp(0.0, 14.0) * 0.4);
+    let named = if object.common_name.is_empty() {
+        0.0
+    } else {
+        2.0
+    };
+    let messier = if is_messier(object) { 4.0 } else { 0.0 };
+    size + brightness + named + messier
+}
+
+fn is_messier(object: &SkyObject) -> bool {
+    let messier = |name: &str| {
+        name.strip_prefix('M')
+            .map(str::trim_start)
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+    };
+    messier(&object.name) || object.metadata.aliases.iter().any(|alias| messier(alias))
+}
+
+/// Matches catalog objects against the names, designations and stable IDs a
+/// user asked for, ignoring case and spacing ("m31", "M 31", "NGC224").
+struct RequestedObjects(Vec<String>);
+
+impl RequestedObjects {
+    fn new(requests: &[String]) -> Self {
+        Self(
+            requests
+                .iter()
+                .map(|request| normalize_designation(request))
+                .filter(|request| !request.is_empty())
+                .collect(),
+        )
+    }
+
+    fn matches(&self, object: &SkyObject) -> bool {
+        !self.0.is_empty()
+            && std::iter::once(&object.name)
+                .chain(std::iter::once(&object.common_name))
+                .chain(std::iter::once(&object.metadata.id))
+                .chain(&object.metadata.aliases)
+                .chain(&object.metadata.alternate_ids)
+                .map(|name| normalize_designation(name))
+                .any(|name| !name.is_empty() && self.0.contains(&name))
+    }
+}
+
+fn normalize_designation(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn field_diagonal_deg(wcs: &Wcs, dimensions: (u32, u32)) -> f64 {
+    (dimensions.0 as f64).hypot(dimensions.1 as f64) * wcs.scale_arcsec_per_px() / 3600.0
 }
 
 fn projected_outlines(
@@ -637,13 +888,20 @@ fn append_field_stars(
 
 fn append_minor_bodies(
     output: &mut Vec<OverlayObject>,
+    totals: &mut BTreeMap<String, usize>,
     catalog: &MinorBodyCatalog,
     wcs: &Wcs,
     dimensions: (u32, u32),
     capture_time: DateTime<Utc>,
+    limit: usize,
 ) {
     let jd = 2_440_587.5 + capture_time.timestamp_millis() as f64 / 86_400_000.0;
-    for placed in catalog.objects_in_footprint(wcs, dimensions, jd, 18.0) {
+    let mut placed_bodies = catalog.objects_in_footprint(wcs, dimensions, jd, 18.0);
+    totals.insert("minor_bodies".into(), placed_bodies.len());
+    // Brightest first, so a wide field keeps the bodies that could show.
+    placed_bodies.sort_by(|a, b| a.mag.total_cmp(&b.mag));
+    placed_bodies.truncate(limit);
+    for placed in placed_bodies {
         let kind = match placed.body.kind {
             MinorBodyKind::Comet => "comet",
             MinorBodyKind::Asteroid => "asteroid",
@@ -858,7 +1116,17 @@ mod tests {
         let catalog = MinorBodyCatalog::new(vec![body]);
         let mut objects = Vec::new();
 
-        append_minor_bodies(&mut objects, &catalog, &wcs, (1000, 1000), capture_time);
+        let mut totals = BTreeMap::new();
+        append_minor_bodies(
+            &mut objects,
+            &mut totals,
+            &catalog,
+            &wcs,
+            (1000, 1000),
+            capture_time,
+            100,
+        );
+        assert_eq!(totals["minor_bodies"], 1);
 
         assert_eq!(objects.len(), 1);
         let object = &objects[0];
@@ -889,6 +1157,181 @@ mod tests {
             transient_discovery_date("type II, disc. 2026/07/08, in NGC 3310"),
             Some("2026-07-08".into())
         );
+    }
+
+    fn candidate(
+        group: DisplayGroup,
+        name: &str,
+        common_name: &str,
+        mag: Option<f32>,
+        semi_major_px: f64,
+    ) -> Candidate {
+        Candidate {
+            group,
+            requested: false,
+            placed: seiza::objects::PlacedObject {
+                object: SkyObject {
+                    kind: ObjectKind::Galaxy,
+                    ra: 10.0,
+                    dec: 20.0,
+                    mag,
+                    major_arcmin: None,
+                    minor_arcmin: None,
+                    position_angle_deg: None,
+                    name: name.into(),
+                    common_name: common_name.into(),
+                    metadata: ObjectMetadata::default(),
+                },
+                x: 10.0,
+                y: 10.0,
+                semi_major_px,
+                semi_minor_px: semi_major_px,
+                angle_deg: Some(0.0),
+            },
+            discovered: None,
+            near_capture: None,
+        }
+    }
+
+    fn names(selected: &[Candidate]) -> Vec<&str> {
+        selected
+            .iter()
+            .map(|candidate| candidate.placed.object.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn wide_fields_keep_visible_and_named_objects_only() {
+        let mut candidates = vec![
+            candidate(DisplayGroup::DeepSky, "PGC 1", "", Some(15.0), 0.2),
+            candidate(DisplayGroup::DeepSky, "UGC 2", "", None, 0.4),
+            candidate(
+                DisplayGroup::DeepSky,
+                "NGC 457",
+                "Owl Cluster",
+                Some(6.4),
+                0.9,
+            ),
+            candidate(DisplayGroup::DeepSky, "M 76", "", Some(10.1), 0.5),
+            candidate(DisplayGroup::DeepSky, "IC 1805", "", Some(6.5), 25.0),
+            candidate(
+                DisplayGroup::DeepSky,
+                "M 31",
+                "Andromeda Galaxy",
+                Some(3.4),
+                75.0,
+            ),
+        ];
+        // Thousands of tiny galaxies must not crowd out the visible ones.
+        candidates.extend((0..5_000).map(|i| {
+            candidate(
+                DisplayGroup::DeepSky,
+                &format!("PGC {i}"),
+                "",
+                Some(15.0),
+                0.3,
+            )
+        }));
+        let options = AnnotationOptions {
+            max_deep_sky: 3,
+            ..AnnotationOptions::default()
+        };
+        let selected = select_for_display(candidates, &options, true);
+        assert_eq!(names(&selected), ["M 31", "IC 1805", "NGC 457"]);
+
+        // Uncapped, sub-pixel objects without a name still stay out.
+        let selected = select_for_display(
+            vec![
+                candidate(DisplayGroup::DeepSky, "PGC 1", "", Some(12.0), 0.2),
+                candidate(
+                    DisplayGroup::DeepSky,
+                    "NGC 457",
+                    "Owl Cluster",
+                    Some(6.4),
+                    0.9,
+                ),
+                candidate(DisplayGroup::DeepSky, "NGC 7380", "", Some(7.2), 10.6),
+            ],
+            &AnnotationOptions::default(),
+            true,
+        );
+        assert_eq!(names(&selected), ["NGC 7380", "NGC 457"]);
+    }
+
+    #[test]
+    fn requested_objects_always_show_and_come_first() {
+        let requested = RequestedObjects::new(&["ngc7635".into(), " m 31 ".into()]);
+        let mut bubble = candidate(
+            DisplayGroup::DeepSky,
+            "NGC 7635",
+            "Bubble Nebula",
+            Some(10.0),
+            0.1,
+        );
+        let mut tiny = candidate(DisplayGroup::DeepSky, "PGC 9", "", Some(17.0), 0.01);
+        tiny.placed.object.metadata.aliases = vec!["M31".into()];
+        bubble.requested = requested.matches(&bubble.placed.object);
+        tiny.requested = requested.matches(&tiny.placed.object);
+        assert!(bubble.requested && tiny.requested);
+        let other = candidate(DisplayGroup::DeepSky, "IC 1805", "", Some(6.5), 25.0);
+        assert!(!requested.matches(&other.placed.object));
+
+        let options = AnnotationOptions {
+            max_deep_sky: 1,
+            deep_sky_max_mag: Some(8.0),
+            ..AnnotationOptions::default()
+        };
+        let selected = select_for_display(vec![other, tiny, bubble], &options, true);
+        assert_eq!(names(&selected), ["PGC 9", "NGC 7635", "IC 1805"]);
+        assert!(!RequestedObjects::new(&[]).matches(&selected[0].placed.object));
+    }
+
+    #[test]
+    fn wide_fields_drop_faint_transients_and_rank_stars_by_brightness() {
+        let transients = || {
+            vec![
+                candidate(DisplayGroup::Transient, "SN 2026a", "", Some(17.5), 0.0),
+                candidate(DisplayGroup::Transient, "Nova Cas", "", Some(9.0), 0.0),
+            ]
+        };
+        let options = AnnotationOptions::default();
+        assert_eq!(
+            names(&select_for_display(transients(), &options, true)),
+            ["Nova Cas"]
+        );
+        // Narrow fields keep both unless asked otherwise.
+        assert_eq!(
+            names(&select_for_display(transients(), &options, false)),
+            ["Nova Cas", "SN 2026a"]
+        );
+        assert_eq!(
+            names(&select_for_display(
+                transients(),
+                &AnnotationOptions {
+                    transient_mag_limit: Some(20.0),
+                    ..AnnotationOptions::default()
+                },
+                true
+            )),
+            ["Nova Cas", "SN 2026a"]
+        );
+
+        let mut proper = candidate(DisplayGroup::NamedStar, "Segin", "", Some(3.4), 0.0);
+        proper.placed.object.metadata.source = "IAU Catalog of Star Names".into();
+        let stars = vec![
+            candidate(DisplayGroup::NamedStar, "HR 1", "", Some(5.9), 0.0),
+            candidate(DisplayGroup::NamedStar, "HR 2", "", Some(2.1), 0.0),
+            proper,
+        ];
+        let selected = select_for_display(
+            stars,
+            &AnnotationOptions {
+                max_named_stars: 2,
+                ..AnnotationOptions::default()
+            },
+            true,
+        );
+        assert_eq!(names(&selected), ["Segin", "HR 2"]);
     }
 
     #[test]
