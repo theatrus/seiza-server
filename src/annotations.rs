@@ -1,5 +1,8 @@
 use crate::{
-    models::{AnnotationResponse, OverlayContour, OverlayObject, OverlayOutline, SolutionResponse},
+    models::{
+        AnnotationResponse, ConstellationResponse, OverlayContour, OverlayObject, OverlayOutline,
+        SolutionResponse,
+    },
     star_identifiers::{StarIdentifierLayer, StarIdentifierMatch},
 };
 use chrono::{DateTime, NaiveDate, Utc};
@@ -24,6 +27,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct AnnotationOptions {
     pub deep_sky: bool,
+    pub constellations: bool,
     pub named_stars: bool,
     pub star_identifiers: bool,
     pub field_stars: bool,
@@ -82,6 +86,9 @@ impl Default for AnnotationOptions {
     fn default() -> Self {
         Self {
             deep_sky: true,
+            // Projected only when a client asks (the annotations route does
+            // by default), not for solution metadata that never draws them.
+            constellations: false,
             named_stars: true,
             star_identifiers: false,
             field_stars: false,
@@ -183,6 +190,7 @@ impl AnnotationEngine {
             ("minor_bodies".into(), false),
             ("satellite_tracks".into(), false),
             ("grid".into(), true),
+            ("constellations".into(), true),
         ]);
 
         if let Some(version) = &self.star_version {
@@ -285,6 +293,14 @@ impl AnnotationEngine {
                 *counts.entry("historical_transients".into()).or_insert(0) += 1;
             }
         }
+        let constellations = if options.constellations {
+            project_constellations(&wcs, dimensions)
+        } else {
+            Vec::new()
+        };
+        counts.insert("constellations".into(), constellations.len());
+        let constellation_attribution =
+            (!constellations.is_empty()).then(|| seiza::constellations::ATTRIBUTION.to_owned());
         AnnotationResponse {
             job_id: job_id.to_string(),
             catalog_version: if versions.is_empty() {
@@ -298,6 +314,8 @@ impl AnnotationEngine {
             counts,
             totals,
             objects,
+            constellations,
+            constellation_attribution,
             satellite_tracks: Vec::new(),
             satellite_search: None,
         }
@@ -419,6 +437,25 @@ impl AnnotationEngine {
             let _ = catalog.current();
         }
     }
+}
+
+/// The constellation figures crossing the image, as pixel polylines rounded
+/// to a tenth of a pixel to keep the response small.
+fn project_constellations(wcs: &Wcs, dimensions: (u32, u32)) -> Vec<ConstellationResponse> {
+    let round = |(x, y): (f64, f64)| [(x * 10.0).round() / 10.0, (y * 10.0).round() / 10.0];
+    seiza::constellations::project_figures(wcs, dimensions)
+        .into_iter()
+        .map(|figure| ConstellationResponse {
+            abbreviation: figure.abbr.to_owned(),
+            name: figure.name.to_owned(),
+            lines: figure
+                .polylines
+                .into_iter()
+                .map(|line| line.into_iter().map(round).collect())
+                .collect(),
+            label: figure.label.map(round),
+        })
+        .collect()
 }
 
 /// Adds the catalog's objects worth drawing to `output` and returns how
@@ -1391,6 +1428,98 @@ mod tests {
         assert_eq!(second.objects.len(), 2);
         assert_ne!(first.catalog_version, second.catalog_version);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn wide_fields_carry_constellation_figures_with_their_credit() {
+        // 2000×1500 at 0.03°/px, centred between Cassiopeia and Perseus.
+        let solution = SolutionResponse {
+            center_ra_deg: 20.0,
+            center_dec_deg: 60.0,
+            pixel_scale_arcsec_per_pixel: 108.0,
+            matched_stars: 50,
+            rms_arcsec: 60.0,
+            image_width: 2000,
+            image_height: 1500,
+            wcs: WcsResponse {
+                crval: [20.0, 60.0],
+                crpix: [1000.0, 750.0],
+                cd: [[-0.03, 0.0], [0.0, 0.03]],
+                ctype: ["RA---TAN".into(), "DEC--TAN".into()],
+                cunit: ["deg".into(), "deg".into()],
+                radesys: "ICRS".into(),
+                equinox: 2000.0,
+                sip: None,
+            },
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
+            statistics: None,
+            pixel_coordinates: None,
+        };
+        let engine = AnnotationEngine::new(None, None, None, None, None, None);
+        let wanted = AnnotationOptions {
+            constellations: true,
+            ..AnnotationOptions::default()
+        };
+        // Solution metadata does not pay for figures it never draws.
+        assert!(
+            engine
+                .annotate(1, &solution, None, &AnnotationOptions::default())
+                .constellations
+                .is_empty()
+        );
+        let annotations = engine.annotate(1, &solution, None, &wanted);
+        let cassiopeia = annotations
+            .constellations
+            .iter()
+            .find(|figure| figure.abbreviation == "Cas")
+            .expect("Cassiopeia is in the field");
+        assert_eq!(cassiopeia.name, "Cassiopeia");
+        assert!(cassiopeia.label.is_some());
+        for point in cassiopeia.lines.iter().flatten() {
+            assert!((0.0..=2000.0).contains(&point[0]) && (0.0..=1500.0).contains(&point[1]));
+            // Coordinates are rounded to a tenth of a pixel.
+            assert_eq!((point[0] * 10.0).fract(), 0.0);
+        }
+        assert_eq!(
+            annotations.counts["constellations"],
+            annotations.constellations.len()
+        );
+        assert!(
+            annotations
+                .constellation_attribution
+                .as_deref()
+                .is_some_and(|credit| credit.contains("CC BY 4.0"))
+        );
+        let json = serde_json::to_value(&annotations).unwrap();
+        assert!(json["constellations"][0]["lines"][0][0].is_array());
+
+        // Straight lines come back as their two endpoints.
+        assert!(cassiopeia.lines.iter().all(|line| line.len() == 2));
+
+        // A 0.3 arcsec/px telescope frame on M31 crosses no figure: nothing
+        // is sent, credit included.
+        let narrow = SolutionResponse {
+            center_ra_deg: 10.68,
+            center_dec_deg: 41.27,
+            pixel_scale_arcsec_per_pixel: 0.3,
+            image_width: 4000,
+            image_height: 3000,
+            wcs: WcsResponse {
+                crval: [10.68, 41.27],
+                crpix: [2000.0, 1500.0],
+                cd: [[-0.3 / 3600.0, 0.0], [0.0, 0.3 / 3600.0]],
+                ..solution.wcs.clone()
+            },
+            ..solution.clone()
+        };
+        let narrow = engine.annotate(1, &narrow, None, &wanted);
+        assert!(narrow.constellations.is_empty());
+        let json = serde_json::to_value(&narrow).unwrap();
+        assert!(json.get("constellations").is_none());
+        assert!(json.get("constellation_attribution").is_none());
     }
 
     #[test]

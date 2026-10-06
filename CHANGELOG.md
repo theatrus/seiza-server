@@ -5,6 +5,19 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Draw constellation stick figures. Annotations carry `constellations`
+  (each with its IAU abbreviation, name, pixel polylines clipped to the
+  image and a suggested name position) and the CC BY 4.0
+  `constellation_attribution`, projected through the solution's WCS by
+  Seiza's `constellations` module. `constellations=false` leaves them out.
+  The web app adds a Constellations layer, on by default, through
+  `@seiza/astro-overlay` 0.6.0, shows the credit below the image and draws
+  it into exported PNGs, and lists the dataset on the Data Sources page.
+  Straight figure lines arrive as their two endpoints. The server-drawn
+  `overlay.svg` has no constellation layer, and solution metadata no longer
+  projects figures it never draws.
+- `overlay.svg` now accepts `true`/`false` options such as `deep_sky=false`,
+  which its query parsing previously rejected with HTTP 400.
 - Draw only what a field can show. Annotations rank deep-sky objects by
   apparent size, brightness and naming and return at most 200 (`max_deep_sky`),
   leaving out unnamed objects under 1.5 px (`deep_sky_min_size_px`); a phone

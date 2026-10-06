@@ -3311,9 +3311,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.21.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "223d87819398796dd70080c1aba05fd1e4763fec2e5fb7be24a37ce85c7be921"
+checksum = "dbc11738d68ec513b80113f8a5aca8a63d6b54d6d680de9f0720a484253ed833"
 dependencies = [
  "chrono",
  "directories",
@@ -3383,9 +3383,9 @@ checksum = "43903045bca0b629b5bda14bfda11b26758bbb3fd51d24dedb253c0155020f1d"
 
 [[package]]
 name = "seiza-satellites"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd3b4cc7a269d752c98c049a7bd709fac16bfdf21dd1e648c6e07c08a967be54"
+checksum = "6d3ebc2f3fdeea58ddb6992ba3c4eee2fbeaaecae4477dfb7a60c54f3c96999b"
 dependencies = [
  "directories",
  "fs2",

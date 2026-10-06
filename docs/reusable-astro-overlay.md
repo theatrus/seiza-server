@@ -5,7 +5,7 @@ not seiza-server page components. Their canonical home is the dedicated
 [`theatrus/seiza-overlay`](https://github.com/theatrus/seiza-overlay)
 repository, which publishes `@seiza/astro-overlay` under Apache-2.0.
 Seiza-server consumes the exact published
-`@seiza/astro-overlay@0.4.0` package from npm rather than carrying a vendored
+`@seiza/astro-overlay@0.6.0` package from npm rather than carrying a vendored
 copy.
 
 ## Package boundary
@@ -31,7 +31,12 @@ The consuming application owns:
 - buttons, menus, control placement, and preference persistence;
 - image zoom/pan layout and the transformed container holding image plus SVG;
 - the catalog-to-layer resolver when its groups differ from the defaults; and
-- branding, watermarks, and other PNG decorations.
+- branding, watermarks, and other PNG decorations; and
+- the credit the constellation figures' CC BY 4.0 licence requires. The
+  annotations response carries it as `constellation_attribution`;
+  seiza-server shows it as text below the image and draws it into exported
+  PNGs beside the watermark, rather than using the package's small in-image
+  credit.
 
 The split is deliberate. Tenrankai and seiza-server retain their catalog
 dropdowns and application-specific controls, while PSF Guard can place controls

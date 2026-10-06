@@ -569,10 +569,29 @@ pub struct AnnotationResponse {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub totals: std::collections::BTreeMap<String, usize>,
     pub objects: Vec<OverlayObject>,
+    /// Constellation stick figures projected into the image.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constellations: Vec<ConstellationResponse>,
+    /// Credit the CC BY 4.0 figure data requires wherever they are shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constellation_attribution: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub satellite_tracks: Vec<SatelliteTrackResponse>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub satellite_search: Option<SatelliteSearchSummaryResponse>,
+}
+
+/// One constellation's stick figure in image pixels (zero-based pixel
+/// centres, the same frame as `OverlayObject` x/y), clipped to the image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstellationResponse {
+    /// IAU three-letter abbreviation, e.g. "Cas".
+    pub abbreviation: String,
+    pub name: String,
+    pub lines: Vec<Vec<[f64; 2]>>,
+    /// Suggested name position; absent when it falls outside the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,6 @@
 import Uppy from '@uppy/core'
 import Tus from '@uppy/tus'
+import type { OverlayConstellation } from '@seiza/astro-overlay'
 
 export type JobStatus = 'queued' | 'solving' | 'succeeded' | 'failed'
 
@@ -127,6 +128,8 @@ export interface Solution {
   pixel_coordinates?: PixelCoordinates
 }
 
+export type { OverlayConstellation }
+
 export interface Annotations {
   job_id: string
   catalog_version: string
@@ -137,6 +140,10 @@ export interface Annotations {
   /** Objects of each layer in the field before the display limits chose `counts` of them. */
   totals?: Record<string, number>
   objects: OverlayObject[]
+  /** Constellation stick figures in image pixels. */
+  constellations?: OverlayConstellation[]
+  /** Credit the CC BY 4.0 figure data requires wherever the figures are shown. */
+  constellation_attribution?: string
   satellite_tracks?: SatelliteTrack[]
   satellite_search?: SatelliteSearchSummary
 }
