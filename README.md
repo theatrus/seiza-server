@@ -5,8 +5,8 @@ Seiza Server is a queued web service for plate solving. It uses the
 [`seiza-fits`](https://crates.io/crates/seiza-fits), and
 [`seiza-xisf`](https://crates.io/crates/seiza-xisf) Rust
 crates directly—not a CLI subprocess—and includes a TypeScript/React frontend.
-Current versions are Seiza 0.12.0, seiza-fits 0.2.0, seiza-satellites 0.4.2,
-and seiza-xisf 0.1.0. The frontend uses `@seiza/astro-overlay` 0.5.0 for
+Current versions are Seiza 0.23.0, seiza-fits 0.2.6, seiza-satellites 0.12.0,
+and seiza-xisf 0.3.1. The frontend uses `@seiza/astro-overlay` 0.6.0 for
 risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
