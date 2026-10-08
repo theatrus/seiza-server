@@ -317,8 +317,13 @@ impl Config {
         }
         let catalog_path = optional_data_path(data_paths::star_data(None))
             .context("resolving Seiza star catalog")?;
-        let blind_index_path =
-            data_paths::blind_index(None).context("resolving Seiza blind index")?;
+        // An index beside the catalog in use wins over the default search, so
+        // a server pointed at its own data never solves with a stale index.
+        let blind_index_path = match &catalog_path {
+            Some(catalog) => data_paths::blind_index_beside(None, catalog),
+            None => data_paths::blind_index(None),
+        }
+        .context("resolving Seiza blind index")?;
         let object_catalog_path =
             optional_catalog_from_env("SEIZA_OBJECT_DATA", data_paths::objects)?;
         let star_identifier_catalog_path =
@@ -649,6 +654,10 @@ mod tests {
         );
         assert_eq!(
             data_paths::blind_index(Some(&directory)).unwrap(),
+            Some(index.clone())
+        );
+        assert_eq!(
+            data_paths::blind_index_beside(None, &directory.join("stars-deep-gaia17.bin")).unwrap(),
             Some(index)
         );
 
