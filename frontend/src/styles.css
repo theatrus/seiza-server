@@ -59,7 +59,6 @@ button:disabled { cursor: wait; opacity: .65; }
 .desktop-app-card small { color: #718f98; font-size: .68rem; line-height: 1.45; }
 .desktop-app-strip { grid-column: 1 / -1; grid-template-rows: none; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1.25rem; padding-block: 1.1rem; }
 .desktop-app-strip-action { display: grid; justify-items: end; gap: .45rem; }
-.desktop-app-strip-action a:not(.button) { color: #9ccbd3; }
 .desktop-download { gap: .55rem; }
 .desktop-download svg { width: 1rem; fill: none; stroke: currentcolor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .story-grid { display: grid; grid-template-columns: .75fr 1.25fr; gap: clamp(2rem, 8vw, 8rem); padding: 5rem 0; border-top: 1px solid rgb(128 177 191 / 20%); }
