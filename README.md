@@ -420,6 +420,7 @@ are currently supported:
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_SITE_HEAD_HTML` | unset | Trusted inline HTML inserted before `</head>` in every frontend document |
 | `SEIZA_SITE_HEAD_HTML_FILE` | unset | UTF-8 file containing trusted HTML to insert before `</head>`; mutually exclusive with `SEIZA_SITE_HEAD_HTML` |
+| `SEIZA_MEDIA_DIR` | unset | Directory served at `/media/`, outside the frontend build; the home page plays `parallax-tour.mp4` from it |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |
 | `SEIZA_QUEUE_DATABASE` | `data/jobs.sqlite3` | Default SQLite path when no SQL URL is set |
@@ -468,6 +469,13 @@ solution pages, and the rendered 404 document, but not static assets. The
 markup is trusted and is not sanitized; do not let untrusted users control
 either setting. Each form has a 64 KiB limit, and changes require a server
 restart. Prefer `SEIZA_SITE_HEAD_HTML_FILE` for multiline tags.
+
+The home page's parallax video section plays `parallax-tour.mp4` from
+`SEIZA_MEDIA_DIR` in a muted loop, with `parallax-tour.jpg` as its poster.
+Without the video the section shows only its text. Encode it as H.264 with
+`-movflags +faststart` so every browser can play it and playback starts before
+the download ends; a 1280×720 tour of a minute is about 19 MB. Browsers keep
+media files for an hour, so a replaced video reaches visitors within the hour.
 
 The bundled frontend marks its solve requests with `X-Seiza-Client: web`, while
 unmarked native requests and all Astrometry-compatible submissions use the API

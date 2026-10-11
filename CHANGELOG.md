@@ -5,6 +5,14 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Show a parallax video on the home page. `SEIZA_MEDIA_DIR` names a
+  directory the server serves at `/media/`, outside the frontend build. When
+  it holds `parallax-tour.mp4`, with `parallax-tour.jpg` as its poster, the
+  home page plays the tour in a muted loop beside a new section on
+  `seiza parallax-video` and the macOS app's parallax tours. The video loads
+  only once it scrolls into view, and waits for a press when the visitor asks
+  for reduced motion or less data. Without it the section shows only its
+  text.
 - Draw constellation stick figures. Annotations carry `constellations`
   (each with its IAU abbreviation, name, pixel polylines clipped to the
   image and a suggested name position) and the CC BY 4.0

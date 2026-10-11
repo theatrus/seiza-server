@@ -20,6 +20,30 @@ test('advertises desktop downloads, PSF Guard, Python, N.I.N.A., and Siril on th
   await expect(page.getByRole('link', { name: 'Explore every integration' })).toHaveAttribute('href', '/docs/api#integrations')
 })
 
+test('shows the parallax tour from the media directory as a muted loop', async ({ page }) => {
+  await page.route('**/media/parallax-tour.mp4', (route) => route.fulfill({ contentType: 'video/mp4', body: '' }))
+  await page.goto('/')
+
+  await expect(page.getByRole('heading', { name: 'Fly into your image.' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Command-line guide' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/tree/main/seiza-cli#parallax-fly-through-videos')
+  const tour = page.locator('.parallax-tour video')
+  await expect(tour).toHaveAttribute('src', '/media/parallax-tour.mp4')
+  await expect(tour).toHaveAttribute('poster', '/media/parallax-tour.jpg')
+  await expect(tour).toHaveJSProperty('loop', true)
+  await expect(tour).toHaveJSProperty('muted', true)
+  await expect(tour).toHaveJSProperty('playsInline', true)
+  await expect(page.locator('.parallax-tour').getByRole('button')).toBeEnabled()
+})
+
+test('keeps the parallax text without a video when the server has no tour', async ({ page }) => {
+  await page.route('**/media/parallax-tour.mp4', (route) => route.fulfill({ status: 404, body: '' }))
+  await page.goto('/')
+
+  await expect(page.getByRole('heading', { name: 'Fly into your image.' })).toBeVisible()
+  await expect(page.getByText('seiza parallax-video', { exact: true }).first()).toBeVisible()
+  await expect(page.locator('video')).toHaveCount(0)
+})
+
 test('advertises optional satellite lookup with separate pixel evidence', async ({ page }) => {
   await page.goto('/')
 

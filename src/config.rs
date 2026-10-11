@@ -212,6 +212,8 @@ impl FromStr for StorageBackend {
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub frontend_dir: PathBuf,
+    /// Operator files served under `/media/`, kept outside the frontend build.
+    pub media_dir: Option<PathBuf>,
     pub(crate) site_head_html: SiteHeadHtml,
     pub data_dir: PathBuf,
     pub catalog_path: Option<PathBuf>,
@@ -449,6 +451,9 @@ impl Config {
         Ok(Self {
             bind_addr,
             frontend_dir: PathBuf::from(env_or("SEIZA_FRONTEND_DIR", "frontend/dist")),
+            media_dir: env::var_os("SEIZA_MEDIA_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
             site_head_html: SiteHeadHtml::from_sources(
                 env::var("SEIZA_SITE_HEAD_HTML")
                     .ok()
