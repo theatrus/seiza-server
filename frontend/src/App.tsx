@@ -340,17 +340,14 @@ function ImagePluginIcon() {
   return <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4" width="24" height="24" rx="2" /><circle cx="11" cy="11" r="2" /><path d="m4 23 7-7 5 5 5-8 7 10" /></svg>
 }
 
-/** The tour lives in the server's media directory, outside the build; without it the section shows only its text. */
+/** The tour lives in the server's media directory, outside the build; without it the hero shows the Seiza mark. */
 const parallaxTour = '/media/parallax-tour'
 
-/** Visitors who ask for less motion or less data get the poster and a play button instead of autoplay. */
-function prefersStill() {
-  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches || connection?.saveData === true
-}
+type TourState = 'checking' | 'ready' | 'missing'
 
-function ParallaxFeature() {
-  const [tour, setTour] = useState<'checking' | 'ready' | 'missing'>('checking')
+/** Asks the server whether it has the tour before the page plays it. */
+function useParallaxTour() {
+  const [tour, setTour] = useState<TourState>('checking')
   useEffect(() => {
     const controller = new AbortController()
     fetch(`${parallaxTour}.mp4`, { method: 'HEAD', signal: controller.signal })
@@ -358,27 +355,20 @@ function ParallaxFeature() {
       .catch(() => { if (!controller.signal.aborted) setTour('missing') })
     return () => controller.abort()
   }, [])
-
-  return <section className={tour === 'missing' ? 'parallax-feature' : 'parallax-feature with-tour'} aria-labelledby="parallax-heading">
-    <div className="parallax-copy">
-      <p className="eyebrow">PARALLAX VIDEO</p>
-      <h2 id="parallax-heading">Fly into your image.</h2>
-      <p>Seiza solves a finished image, places each star at its Gaia distance and the nebula at its own, and flies a camera through the scene. Near stars slide past far ones as it moves.</p>
-      <p>Plan the stops and titles yourself, or let Seiza choose them, and export a video that loops. Choose <strong>File → Parallax Video…</strong> in Seiza for macOS, or run <code>seiza parallax-video</code>.</p>
-      <div className="text-links">
-        <a href="https://github.com/theatrus/seiza-mac/releases/latest">Seiza for macOS <span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/theatrus/seiza/tree/main/seiza-cli#parallax-fly-through-videos">Command-line guide <span aria-hidden="true">↗</span></a>
-      </div>
-    </div>
-    {tour !== 'missing' && <ParallaxTour ready={tour === 'ready'} />}
-  </section>
+  return tour
 }
 
-function ParallaxTour({ ready }: { ready: boolean }) {
+/** Visitors who ask for less motion or less data get the poster and a play button instead of autoplay. */
+function prefersStill() {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches || connection?.saveData === true
+}
+
+/** The tour plays behind the hero. It pauses off screen, and once the visitor pauses it, it stays paused. */
+function TourBackdrop({ ready }: { ready: boolean }) {
   const video = useRef<HTMLVideoElement>(null)
   const [still] = useState(prefersStill)
   const [playing, setPlaying] = useState(false)
-  /** Set once the visitor pauses, so scrolling back does not start the tour again. */
   const held = useRef(false)
   useEffect(() => {
     const element = video.current
@@ -398,51 +388,52 @@ function ParallaxTour({ ready }: { ready: boolean }) {
     else element.pause()
   }
 
-  return <figure className="parallax-tour">
+  return <>
     <video
       ref={video}
+      className="hero-backdrop"
       src={`${parallaxTour}.mp4`}
       poster={`${parallaxTour}.jpg`}
-      width={1280}
-      height={720}
       muted
       loop
       playsInline
       preload="none"
-      aria-label="A parallax tour through a nebula, with near stars sliding past far ones"
+      aria-hidden="true"
       onPlay={() => setPlaying(true)}
       onPause={() => setPlaying(false)}
     />
-    <figcaption>
-      <span>Made with <code>seiza parallax-video</code>. Each star sits at its Gaia distance.</span>
-      <button type="button" className="button secondary small" disabled={!ready} onClick={toggle}>{playing ? 'Pause' : 'Play'}</button>
-    </figcaption>
-  </figure>
+    <div className="hero-tour-caption">
+      <a href="#parallax-video">Made with <code>seiza parallax-video</code> <span aria-hidden="true">↓</span></a>
+      <button type="button" className="button secondary small" disabled={!ready} onClick={toggle} aria-label={playing ? 'Pause the tour' : 'Play the tour'}>{playing ? 'Pause' : 'Play'}</button>
+    </div>
+  </>
 }
 
 function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
+  const tour = useParallaxTour()
+  const backdrop = tour !== 'missing'
   return <main>
-    <section className="hero">
-      <div>
+    <section className={backdrop ? 'hero hero-tour' : 'hero'}>
+      {backdrop && <TourBackdrop ready={tour === 'ready'} />}
+      <div className="hero-copy">
         <p className="eyebrow">OPEN-SOURCE ASTROMETRY</p>
         <h1>Map your image to the sky.</h1>
         <p className="intro">Seiza is a Rust toolkit for astronomical images. It includes a very fast plate solver, FITS and XISF I/O, image processing and stacking, and sky catalog tools.</p>
         <div className="actions">
           {solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}
+          <a href="#downloads" className="button secondary desktop-download"><DownloadIcon />Download Seiza</a>
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
           <Link to="/data-sources">See our data sources <span aria-hidden="true">→</span></Link>
         </div>
       </div>
-      <div className="hero-mark" aria-hidden="true">
+      {!backdrop && <div className="hero-mark" aria-hidden="true">
         <img src="/seiza-mark.png" alt="" />
         <span className="kanji">星座</span>
         <span className="hiragana">せいざ · constellation</span>
-      </div>
+      </div>}
     </section>
 
-    <ParallaxFeature />
-
-    <section className="desktop-apps" aria-labelledby="desktop-apps-heading">
+    <section className="desktop-apps" id="downloads" aria-labelledby="desktop-apps-heading">
       <div className="desktop-apps-intro">
         <p className="eyebrow">DESKTOP APPS &amp; PLUGINS</p>
         <h2 id="desktop-apps-heading">Browse, solve, and edit on your own computer.</h2>
@@ -467,6 +458,21 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <a className="button secondary desktop-download" href="https://github.com/theatrus/xisf-photoshop/releases/latest"><DownloadIcon />Download Photoshop plugins</a>
           <small>Windows x64 installer · drag-and-drop macOS DMG · signed plugins for both platforms</small>
         </article>
+      </div>
+    </section>
+
+    <section className="about-card parallax-card" id="parallax-video" aria-labelledby="parallax-heading">
+      <div>
+        <p className="eyebrow">PARALLAX VIDEO</p>
+        <h2 id="parallax-heading">Fly into your image.</h2>
+      </div>
+      <div className="about-copy">
+        <p>Seiza solves a finished image, places each star at its Gaia distance and the nebula at its own, and flies a camera through the scene. Near stars slide past far ones as it moves.</p>
+        <p>Plan the stops and titles yourself, or let Seiza choose them, and export a video that loops. Choose <strong>File → Parallax Video…</strong> in Seiza for macOS, or run <code>seiza parallax-video</code>.</p>
+        <div className="text-links">
+          <a href="https://github.com/theatrus/seiza-mac/releases/latest">Seiza for macOS <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/seiza/tree/main/seiza-cli#parallax-fly-through-videos">Command-line guide <span aria-hidden="true">↗</span></a>
+        </div>
       </div>
     </section>
 
