@@ -478,8 +478,9 @@ without titles or a watermark works best. Encode it as H.264 with
 the download ends; a 1280×720 tour of a minute is about 19 MB. Browsers keep
 media files for an hour, so a replaced video reaches visitors within the hour.
 The solve page shows `solve-example.webp` beside its heading as an example
-result, and leaves it out when the file is missing. A crop of a solved
-overlay about 900×600 keeps its labels readable at that size.
+result, and leaves it out when the file is missing. It shows about 300 px
+wide, so a tight crop of a solved overlay (about 630×420) keeps its labels
+readable.
 
 The bundled frontend marks its solve requests with `X-Seiza-Client: web`, while
 unmarked native requests and all Astrometry-compatible submissions use the API
