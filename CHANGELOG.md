@@ -5,6 +5,11 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Say that Seiza for Windows makes parallax tours too, as it has since
+  0.8.0. Its download card says so, and the parallax card names its
+  **More options → Parallax video…** command and links its releases. The
+  integrations docs add a paragraph on the Windows tour editor and name
+  parallax tours in its heading.
 - Show a parallax video on the home page. `SEIZA_MEDIA_DIR` names a
   directory the server serves at `/media/`, outside the frontend build. When
   it holds `parallax-tour.mp4`, with `parallax-tour.jpg` as its poster, the

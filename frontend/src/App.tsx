@@ -454,7 +454,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         </article>
         <article className="desktop-app-card">
           <span className="desktop-app-icon windows"><WindowsAppIcon /></span>
-          <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live image processing, image stacks, local plate solving, catalog overlays, and full-size exports.</p></div>
+          <div><h3>Seiza for Windows</h3><p>Use a fast GPU-backed viewer, live image processing, image stacks, local plate solving, catalog overlays, and full-size exports. Turn finished images into editable parallax tours with native video export.</p></div>
           <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-win/releases/latest"><DownloadIcon />Download for Windows</a>
           <small>Windows 11 24H2+ · x64 MSI</small>
         </article>
@@ -474,9 +474,10 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       </div>
       <div className="about-copy">
         <p>Seiza solves a finished image, places each star at its Gaia distance and the nebula at its own, and flies a camera through the scene. Near stars slide past far ones as it moves.</p>
-        <p>Plan the stops and titles yourself, or let Seiza choose them, and export a video that loops. Choose <strong>File → Parallax Video…</strong> in Seiza for macOS, or run <code>seiza parallax-video</code>.</p>
+        <p>Plan the stops and titles yourself, or let Seiza choose them, and export a video that loops. Choose <strong>File → Parallax Video…</strong> in Seiza for macOS or <strong>More options → Parallax video…</strong> on the toolbar in Seiza for Windows, or run <code>seiza parallax-video</code>.</p>
         <div className="text-links">
           <a href="https://github.com/theatrus/seiza-mac/releases/latest">Seiza for macOS <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/theatrus/seiza-win/releases/latest">Seiza for Windows <span aria-hidden="true">↗</span></a>
           <a href="https://github.com/theatrus/seiza/tree/main/seiza-cli#parallax-fly-through-videos">Command-line guide <span aria-hidden="true">↗</span></a>
         </div>
       </div>
