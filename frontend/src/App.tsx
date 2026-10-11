@@ -472,8 +472,8 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <span className="desktop-app-icon"><ImageGraderIcon /></span>
           <div><h3>PSF Guard</h3><p>Catalog and grade whole imaging sessions. PSF Guard sorts FITS frames by target, session, and filter, flags clouds, drift, and off-target frames with Seiza plate solves, and builds stack previews.</p></div>
           <div className="desktop-app-strip-action">
-            <a className="button secondary desktop-download" href="https://github.com/theatrus/psf-guard/releases/latest"><DownloadIcon />Download PSF Guard</a>
-            <small>Windows, macOS, and Linux · <a href="https://psf-guard.com/">psf-guard.com</a></small>
+            <a className="button secondary desktop-download" href="https://psf-guard.com/"><DownloadIcon />Download PSF Guard</a>
+            <small>Windows, macOS, and Linux</small>
           </div>
         </article>
       </div>

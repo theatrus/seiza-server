@@ -6,8 +6,8 @@ All notable changes to Seiza Server are documented here. Versions follow
 ## Unreleased
 
 - Add PSF Guard to the home page's downloads: a full-width box under the
-  three app cards, with a "Download PSF Guard" button for its latest release
-  and a link to psf-guard.com. On a phone it stacks like the other cards.
+  three app cards, with a "Download PSF Guard" button that goes to
+  psf-guard.com. On a phone it stacks like the other cards.
 - Say that Seiza for Windows makes parallax tours too, as it has since
   0.8.0. Its download card says so, and the parallax card names its
   **More options → Parallax video…** command and links its releases. The
