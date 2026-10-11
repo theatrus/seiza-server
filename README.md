@@ -470,9 +470,10 @@ markup is trusted and is not sanitized; do not let untrusted users control
 either setting. Each form has a 64 KiB limit, and changes require a server
 restart. Prefer `SEIZA_SITE_HEAD_HTML_FILE` for multiline tags.
 
-The home page's parallax video section plays `parallax-tour.mp4` from
-`SEIZA_MEDIA_DIR` in a muted loop, with `parallax-tour.jpg` as its poster.
-Without the video the section shows only its text. Encode it as H.264 with
+The home page plays `parallax-tour.mp4` from `SEIZA_MEDIA_DIR` in a muted
+loop behind its hero, with `parallax-tour.jpg` as its poster. Without the
+video the hero shows the Seiza mark. Text sits over the left side, so a tour
+without titles or a watermark works best. Encode it as H.264 with
 `-movflags +faststart` so every browser can play it and playback starts before
 the download ends; a 1280×720 tour of a minute is about 19 MB. Browsers keep
 media files for an hour, so a replaced video reaches visitors within the hour.

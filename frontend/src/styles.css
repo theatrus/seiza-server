@@ -4,7 +4,7 @@ html { scroll-behavior: smooth; }
 body { margin: 0; min-width: 320px; background: radial-gradient(circle at 82% 3%, rgb(27 84 103 / 35%) 0, transparent 31rem), radial-gradient(circle at 10% 42%, rgb(35 47 80 / 30%) 0, transparent 28rem), #071018; }
 a { color: #8fdae7; text-decoration: none; }
 a:hover { color: #d5f6f9; }
-.site-shell { min-height: 100vh; }
+.site-shell { min-height: 100vh; overflow-x: clip; }
 .site-nav, main, footer { width: min(1160px, calc(100% - 2rem)); margin-inline: auto; }
 .site-nav { display: flex; align-items: center; justify-content: space-between; min-height: 86px; border-bottom: 1px solid rgb(128 177 191 / 20%); }
 .brand-link { display: flex; align-items: center; gap: .65rem; color: #f8fbfc; }
@@ -35,15 +35,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .hero-mark img { width: min(270px, 68vw); filter: drop-shadow(0 2rem 4rem rgb(51 190 207 / 16%)); }
 .kanji { margin-top: .7rem; color: #f4f7f7; font-family: 'Hiragino Mincho ProN', 'Yu Mincho', serif; font-size: clamp(3.4rem, 8vw, 6rem); letter-spacing: .12em; }
 .hiragana { color: #7fa3ad; font-size: .76rem; letter-spacing: .16em; text-transform: uppercase; }
-.parallax-feature { display: grid; gap: 2rem; padding: 2rem 0 5rem; }
-.parallax-feature.with-tour { grid-template-columns: minmax(0, .8fr) minmax(0, 1.5fr); align-items: center; gap: clamp(2rem, 5vw, 4rem); }
-.parallax-copy > p:not(.eyebrow) { max-width: 600px; color: #91a8b0; line-height: 1.65; }
-.parallax-copy strong { color: #e4eef0; }
-.parallax-copy code, .parallax-tour code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: #10252d; font-size: .9em; }
-.parallax-copy .text-links { margin-top: 1.5rem; }
-.parallax-tour { display: grid; gap: .75rem; min-width: 0; margin: 0; }
-.parallax-tour video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border: 1px solid #31515b; border-radius: 8px; background: #02070b; }
-.parallax-tour figcaption { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: #718f98; font-size: .72rem; line-height: 1.45; }
+.hero-tour { position: relative; isolation: isolate; grid-template-columns: minmax(0, 700px); width: 100vw; min-height: min(760px, calc(100svh - 86px)); margin: -3.5rem calc(50% - 50vw) 0; padding: 4rem max(1rem, calc(50vw - 580px)) 6rem; }
+.hero-tour::before { position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, rgb(7 16 24 / 90%) 0%, rgb(7 16 24 / 72%) 38%, rgb(7 16 24 / 18%) 72%, rgb(7 16 24 / 0%) 100%), linear-gradient(0deg, #071018 0%, rgb(7 16 24 / 0%) 24%); content: ''; }
+.hero-backdrop { position: absolute; z-index: -2; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hero-tour .intro { color: #c1d2d8; }
+.hero-tour-caption { position: absolute; right: max(1rem, calc(50vw - 580px)); bottom: 1.5rem; display: flex; align-items: center; gap: .9rem; font-size: .72rem; }
+.hero-tour-caption a { color: #a9c0c7; }
+.hero-tour-caption a:hover { color: #d5f6f9; }
+.hero-tour-caption code, .parallax-card code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: rgb(16 37 45 / 85%); font-size: .9em; }
+.parallax-card { margin-bottom: 5rem; }
 .desktop-apps { display: grid; gap: 2rem; padding: 2rem 0 5rem; }
 .desktop-apps-intro > p:last-child { max-width: 600px; color: #91a8b0; line-height: 1.65; }
 .desktop-app-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
@@ -409,7 +409,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
 
 @media (width <= 800px) {
   .desktop-app-grid { grid-template-columns: 1fr; }
-  .hero, .parallax-feature.with-tour, .desktop-apps, .story-grid, .about-card { grid-template-columns: 1fr; }
+  .hero, .desktop-apps, .story-grid, .about-card { grid-template-columns: 1fr; }
   .auth-grid { grid-template-columns: 1fr; }
   .api-hero { grid-template-columns: 1fr; }
   .source-grid.three-up { grid-template-columns: 1fr; }
@@ -419,6 +419,9 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .api-toc strong { flex-basis: 100%; margin: 0; }
   .integration-steps li { grid-template-columns: 1fr; gap: .45rem; }
   .hero { padding-top: 2rem; }
+  .hero-tour { padding-bottom: 6.5rem; }
+  .hero-tour::before { background: linear-gradient(0deg, #071018 0%, rgb(7 16 24 / 62%) 35%, rgb(7 16 24 / 42%) 100%); }
+  .hero-tour-caption { left: 1rem; justify-content: space-between; }
   .hero-mark { order: -1; padding-bottom: 0; }
   .hero-mark img { width: 150px; }
   .kanji { font-size: 3.4rem; }
@@ -452,6 +455,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .overlay-footer { grid-template-columns: 1fr; }
   .overlay-footer .overlay-actions { justify-content: flex-end; }
   .hero { min-height: auto; }
+  .hero-tour { margin-top: -3rem; }
   .desktop-app-grid { grid-template-columns: 1fr; }
   .hero-mark { display: none; }
   .form-grid, .capture-time-grid, .wcs-grid, .footprint-wrap ol, .object-list ul, .metric-grid, .sip-record-grid { grid-template-columns: 1fr; }
