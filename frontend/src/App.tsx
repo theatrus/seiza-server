@@ -319,7 +319,7 @@ function SiteHeader({ accountsEnabled, account, solveEnabled }: { accountsEnable
       <Link to="/">About</Link>
       <Link to="/docs/api">API</Link>
       {accountsEnabled && <Link to={account ? '/account' : '/signin'}>{account ? 'Account' : 'Sign in'}</Link>}
-      {solveEnabled && <Link to="/solve" className="button small">Solve an image</Link>}
+      {solveEnabled && <Link to="/solve" className="button small">Plate-solve an image</Link>}
     </div>
   </nav>
 }
@@ -342,6 +342,9 @@ function ImagePluginIcon() {
 
 /** The tour lives in the server's media directory, outside the build; without it the hero shows the Seiza mark. */
 const parallaxTour = '/media/parallax-tour'
+
+/** A solved example for the solve page, also from the media directory; the page hides it when missing. */
+const solveExample = '/media/solve-example.webp'
 
 type TourState = 'checking' | 'ready' | 'missing'
 
@@ -554,6 +557,7 @@ function SolvePage({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [example, setExample] = useState(true)
 
   if (!account && !accessChecked) {
     return <main className="narrow-page solve-page"><p className="intro">Loading solve access…</p></main>
@@ -607,13 +611,19 @@ function SolvePage({
   }
 
   return <main className="solve-page">
-    <header className="page-heading">
-      <p className="eyebrow">PLATE SOLVER</p>
-      <h1>Solve this image.</h1>
-      <p className="intro">Choose an image to start. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
-      <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.{accountsEnabled && (account
+    <header className={example ? 'page-heading with-example' : 'page-heading'}>
+      <div>
+        <p className="eyebrow">PLATE SOLVER</p>
+        <h1>Plate-solve an image.</h1>
+        <p className="intro">Upload a sky photo or FITS file. Seiza works out where it points and labels the stars and objects in it. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
+        <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.{accountsEnabled && (account
         ? <><br />This solve will be added to your account history.</>
         : <><br />Public solves remain available and use the normal queue. <Link to="/signin">Sign in</Link> first if you want this solve recorded in your account history.</>)}</p>
+      </div>
+      {example && <figure className="solve-example">
+        <img src={solveExample} width={900} height={600} alt="A solved sky image with its nebulae and galaxies outlined and named" onError={() => setExample(false)} />
+        <figcaption>An example result: the nebulae and galaxies in the field, outlined and named.</figcaption>
+      </figure>}
     </header>
     <section className="panel">
       <form onSubmit={onSubmit}>
@@ -1350,7 +1360,7 @@ function SignInPage({
   }
 
   if (!accountsEnabled) {
-    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">{solveEnabled ? 'This Seiza deployment currently accepts browser solves without an account.' : publicApiSolves ? 'This Seiza deployment accepts public API solves, but not browser uploads.' : 'This Seiza deployment is not accepting public solve submissions.'}</p>{solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}{publicApiSolves && !solveEnabled && <Link to="/docs/api" className="button">Use the API</Link>}</section></main>
+    return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">ACCOUNTS</p><h1>Sign-in is not enabled here.</h1><p className="intro">{solveEnabled ? 'This Seiza deployment currently accepts browser solves without an account.' : publicApiSolves ? 'This Seiza deployment accepts public API solves, but not browser uploads.' : 'This Seiza deployment is not accepting public solve submissions.'}</p>{solveEnabled && <Link to="/solve" className="button">Plate-solve an image</Link>}{publicApiSolves && !solveEnabled && <Link to="/docs/api" className="button">Use the API</Link>}</section></main>
   }
   if (account) {
     return <main className="narrow-page auth-page"><section className="empty-state"><p className="eyebrow">SIGNED IN</p><h1>You are already aboard.</h1><p className="intro">Signed in as {account.account.email}.</p><Link to="/account" className="button">Open your account</Link></section></main>
@@ -1560,7 +1570,7 @@ function AccountPage({
 }
 
 function NotFoundPage({ solveEnabled }: { solveEnabled: boolean }) {
-  return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist{solveEnabled ? ', but the solver is ready for another field.' : '.'}</p>{solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}</section></main>
+  return <main className="narrow-page"><section className="empty-state"><p className="eyebrow">404</p><h1>This point is off the chart.</h1><p className="intro">The page does not exist{solveEnabled ? ', but the solver is ready for another field.' : '.'}</p>{solveEnabled && <Link to="/solve" className="button">Plate-solve an image</Link>}</section></main>
 }
 
 function SiteFooter() {

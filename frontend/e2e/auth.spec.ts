@@ -218,7 +218,7 @@ test('accounts mode keeps anonymous solves available', async ({ page }) => {
   }))
 
   await page.goto('http://localhost:4173/solve')
-  await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Plate-solve an image.' })).toBeVisible()
   await expect(page.getByText('Public solves remain available and use the normal queue.')).toBeVisible()
   await expect(page.getByLabel('FITS, XISF, or image file')).toBeVisible()
 })
