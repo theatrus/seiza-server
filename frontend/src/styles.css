@@ -35,6 +35,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .hero-mark img { width: min(270px, 68vw); filter: drop-shadow(0 2rem 4rem rgb(51 190 207 / 16%)); }
 .kanji { margin-top: .7rem; color: #f4f7f7; font-family: 'Hiragino Mincho ProN', 'Yu Mincho', serif; font-size: clamp(3.4rem, 8vw, 6rem); letter-spacing: .12em; }
 .hiragana { color: #7fa3ad; font-size: .76rem; letter-spacing: .16em; text-transform: uppercase; }
+.parallax-feature { display: grid; gap: 2rem; padding: 2rem 0 5rem; }
+.parallax-feature.with-tour { grid-template-columns: minmax(0, .8fr) minmax(0, 1.5fr); align-items: center; gap: clamp(2rem, 5vw, 4rem); }
+.parallax-copy > p:not(.eyebrow) { max-width: 600px; color: #91a8b0; line-height: 1.65; }
+.parallax-copy strong { color: #e4eef0; }
+.parallax-copy code, .parallax-tour code { padding: .08rem .25rem; border-radius: 3px; color: #bcebee; background: #10252d; font-size: .9em; }
+.parallax-copy .text-links { margin-top: 1.5rem; }
+.parallax-tour { display: grid; gap: .75rem; min-width: 0; margin: 0; }
+.parallax-tour video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border: 1px solid #31515b; border-radius: 8px; background: #02070b; }
+.parallax-tour figcaption { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: #718f98; font-size: .72rem; line-height: 1.45; }
 .desktop-apps { display: grid; gap: 2rem; padding: 2rem 0 5rem; }
 .desktop-apps-intro > p:last-child { max-width: 600px; color: #91a8b0; line-height: 1.65; }
 .desktop-app-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
@@ -400,7 +409,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
 
 @media (width <= 800px) {
   .desktop-app-grid { grid-template-columns: 1fr; }
-  .hero, .desktop-apps, .story-grid, .about-card { grid-template-columns: 1fr; }
+  .hero, .parallax-feature.with-tour, .desktop-apps, .story-grid, .about-card { grid-template-columns: 1fr; }
   .auth-grid { grid-template-columns: 1fr; }
   .api-hero { grid-template-columns: 1fr; }
   .source-grid.three-up { grid-template-columns: 1fr; }

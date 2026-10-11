@@ -340,6 +340,86 @@ function ImagePluginIcon() {
   return <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4" width="24" height="24" rx="2" /><circle cx="11" cy="11" r="2" /><path d="m4 23 7-7 5 5 5-8 7 10" /></svg>
 }
 
+/** The tour lives in the server's media directory, outside the build; without it the section shows only its text. */
+const parallaxTour = '/media/parallax-tour'
+
+/** Visitors who ask for less motion or less data get the poster and a play button instead of autoplay. */
+function prefersStill() {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches || connection?.saveData === true
+}
+
+function ParallaxFeature() {
+  const [tour, setTour] = useState<'checking' | 'ready' | 'missing'>('checking')
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch(`${parallaxTour}.mp4`, { method: 'HEAD', signal: controller.signal })
+      .then((response) => setTour(response.ok && response.headers.get('content-type')?.startsWith('video/') ? 'ready' : 'missing'))
+      .catch(() => { if (!controller.signal.aborted) setTour('missing') })
+    return () => controller.abort()
+  }, [])
+
+  return <section className={tour === 'missing' ? 'parallax-feature' : 'parallax-feature with-tour'} aria-labelledby="parallax-heading">
+    <div className="parallax-copy">
+      <p className="eyebrow">PARALLAX VIDEO</p>
+      <h2 id="parallax-heading">Fly into your image.</h2>
+      <p>Seiza solves a finished image, places each star at its Gaia distance and the nebula at its own, and flies a camera through the scene. Near stars slide past far ones as it moves.</p>
+      <p>Plan the stops and titles yourself, or let Seiza choose them, and export a video that loops. Choose <strong>File → Parallax Video…</strong> in Seiza for macOS, or run <code>seiza parallax-video</code>.</p>
+      <div className="text-links">
+        <a href="https://github.com/theatrus/seiza-mac/releases/latest">Seiza for macOS <span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/theatrus/seiza/tree/main/seiza-cli#parallax-fly-through-videos">Command-line guide <span aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+    {tour !== 'missing' && <ParallaxTour ready={tour === 'ready'} />}
+  </section>
+}
+
+function ParallaxTour({ ready }: { ready: boolean }) {
+  const video = useRef<HTMLVideoElement>(null)
+  const [still] = useState(prefersStill)
+  const [playing, setPlaying] = useState(false)
+  /** Set once the visitor pauses, so scrolling back does not start the tour again. */
+  const held = useRef(false)
+  useEffect(() => {
+    const element = video.current
+    if (!element || !ready || still) return
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !held.current) element.play().catch(() => {})
+      else if (!entry.isIntersecting) element.pause()
+    }, { threshold: 0.25 })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [ready, still])
+  const toggle = () => {
+    const element = video.current
+    if (!element) return
+    held.current = !element.paused
+    if (element.paused) element.play().catch(() => {})
+    else element.pause()
+  }
+
+  return <figure className="parallax-tour">
+    <video
+      ref={video}
+      src={`${parallaxTour}.mp4`}
+      poster={`${parallaxTour}.jpg`}
+      width={1280}
+      height={720}
+      muted
+      loop
+      playsInline
+      preload="none"
+      aria-label="A parallax tour through a nebula, with near stars sliding past far ones"
+      onPlay={() => setPlaying(true)}
+      onPause={() => setPlaying(false)}
+    />
+    <figcaption>
+      <span>Made with <code>seiza parallax-video</code>. Each star sits at its Gaia distance.</span>
+      <button type="button" className="button secondary small" disabled={!ready} onClick={toggle}>{playing ? 'Pause' : 'Play'}</button>
+    </figcaption>
+  </figure>
+}
+
 function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
   return <main>
     <section className="hero">
@@ -359,6 +439,8 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <span className="hiragana">せいざ · constellation</span>
       </div>
     </section>
+
+    <ParallaxFeature />
 
     <section className="desktop-apps" aria-labelledby="desktop-apps-heading">
       <div className="desktop-apps-intro">

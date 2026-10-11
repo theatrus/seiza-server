@@ -57,6 +57,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
     services::ServeDir,
+    set_header::SetResponseHeader,
     trace::TraceLayer,
 };
 use uuid::Uuid;
@@ -725,7 +726,7 @@ pub fn router(state: AppState) -> Router {
         async move { frontend_document(&state, &headers, StatusCode::NOT_FOUND, "no-store").await }
     });
     let cors = cors_layer(&state);
-    Router::new()
+    let app = Router::new()
         .route("/api/v1/health", get(get_health))
         .route("/api/v1/auth/email/start", post(start_email_sign_in))
         .route("/api/v1/auth/email/complete", post(complete_email_sign_in))
@@ -860,13 +861,33 @@ pub fn router(state: AppState) -> Router {
         .route("/data-sources", get(get_frontend_document))
         .route("/signin", get(get_frontend_document))
         .route("/account", get(get_frontend_document))
-        .route("/solutions/{job_id}", get(get_solution_page))
-        .fallback_service(ServeDir::new(&frontend_dir).not_found_service(frontend_not_found))
+        .route("/solutions/{job_id}", get(get_solution_page));
+    let app = match &state.config.media_dir {
+        Some(media_dir) => app.nest_service(
+            "/media",
+            SetResponseHeader::if_not_present(
+                ServeDir::new(media_dir),
+                header::CACHE_CONTROL,
+                media_cache_control,
+            ),
+        ),
+        None => app,
+    };
+    app.fallback_service(ServeDir::new(&frontend_dir).not_found_service(frontend_not_found))
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .layer(RequestBodyLimitLayer::new(state.config.max_upload_bytes))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+/// Operators may replace a media file in place, such as the home page's
+/// parallax tour, so browsers keep one for an hour rather than for good. A
+/// missing file is not cached, so one added later shows up at once.
+fn media_cache_control<B>(response: &Response<B>) -> Option<HeaderValue> {
+    let status = response.status();
+    (status.is_success() || status == StatusCode::NOT_MODIFIED)
+        .then(|| HeaderValue::from_static("public, max-age=3600"))
 }
 
 async fn get_frontend_document(
@@ -3228,6 +3249,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_media_directory_is_served_only_when_configured() {
+        let root = std::env::temp_dir().join(format!("seiza-api-media-{}", Uuid::now_v7()));
+        let frontend_dir = root.join("frontend");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&frontend_dir).unwrap();
+        std::fs::create_dir_all(&media_dir).unwrap();
+        std::fs::write(frontend_dir.join("index.html"), "seiza frontend").unwrap();
+        std::fs::write(media_dir.join("parallax-tour.mp4"), b"0123456789").unwrap();
+        let get = |path: &str, range: Option<&str>| {
+            let mut request = Request::builder().uri(path);
+            if let Some(range) = range {
+                request = request.header(header::RANGE, range);
+            }
+            request.body(Body::empty()).unwrap()
+        };
+
+        let unconfigured = router(AppState::new(test_config(&root)).await.unwrap());
+        let response = unconfigured
+            .oneshot(get("/media/parallax-tour.mp4", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap()[..],
+            b"seiza frontend"
+        );
+
+        let mut config = test_config(&root);
+        config.media_dir = Some(media_dir);
+        let app = router(AppState::new(config).await.unwrap());
+        let response = app
+            .clone()
+            .oneshot(get("/media/parallax-tour.mp4", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "video/mp4");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=3600"
+        );
+        assert_eq!(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap()[..],
+            b"0123456789"
+        );
+
+        // Safari fetches video in ranges and will not play one served whole.
+        let response = app
+            .clone()
+            .oneshot(get("/media/parallax-tour.mp4", Some("bytes=2-5")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap()[..],
+            b"2345"
+        );
+
+        let response = app.oneshot(get("/media/missing.mp4", None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(response.headers().get(header::CACHE_CONTROL).is_none());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn configured_site_head_html_is_injected_into_every_frontend_document() {
         let root = std::env::temp_dir().join(format!("seiza-api-site-head-{}", Uuid::now_v7()));
         let frontend_dir = root.join("frontend");
@@ -4770,6 +4857,7 @@ mod tests {
         Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             frontend_dir: root.join("frontend"),
+            media_dir: None,
             site_head_html: Default::default(),
             data_dir: root.to_owned(),
             catalog_path: None,
