@@ -615,14 +615,11 @@ function SolvePage({
       <div>
         <p className="eyebrow">PLATE SOLVER</p>
         <h1>Plate-solve an image.</h1>
-        <p className="intro">Upload a sky photo or FITS file. Seiza works out where it points and labels the stars and objects in it. Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
-        <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.{accountsEnabled && (account
-        ? <><br />This solve will be added to your account history.</>
-        : <><br />Public solves remain available and use the normal queue. <Link to="/signin">Sign in</Link> first if you want this solve recorded in your account history.</>)}</p>
+        <p className="intro">Upload a sky photo or FITS file. Seiza works out where it points and labels the stars and objects in it.</p>
       </div>
       {example && <figure className="solve-example">
-        <img src={solveExample} width={900} height={600} alt="A solved sky image with its nebulae and galaxies outlined and named" onError={() => setExample(false)} />
-        <figcaption>An example result: the nebulae and galaxies in the field, outlined and named.</figcaption>
+        <img src={solveExample} width={630} height={420} alt="A solved sky image with its nebulae outlined and named" onError={() => setExample(false)} />
+        <figcaption>Example: each nebula outlined and named.</figcaption>
       </figure>}
     </header>
     <section className="panel">
@@ -631,6 +628,12 @@ function SolvePage({
           <div className="file-submit-row">
             <label className="file-input"><span>FITS, XISF, or image file</span><input name="file" type="file" accept=".fits,.fit,.fts,.xisf,image/png,image/jpeg,image/tiff,image/webp" required /></label>
             <button className="button solve-submit-button" disabled={submitting}>{submitting ? `Uploading · ${uploadProgress}%` : <><span>Solve</span><span className="go-arrow" aria-hidden="true">→</span></>}</button>
+          </div>
+          <div className="upload-notes">
+            <p>Large uploads are resumable, and solving happens in the background. Your result gets an unguessable link; the image and preview are deleted after about a day.</p>
+            <p className="ownership-note">Your image remains yours. Seiza does not claim ownership and stores it only temporarily to provide the solve unless you explicitly allow Seiza to use it for validation afterward.{accountsEnabled && (account
+            ? <><br />This solve will be added to your account history.</>
+            : <><br />Public solves remain available and use the normal queue. <Link to="/signin">Sign in</Link> first if you want this solve recorded in your account history.</>)}</p>
           </div>
           <fieldset className="optional-fields satellite-trail-option">
             <legend>Satellite trails <span className="optional-badge">Optional</span></legend>

@@ -206,7 +206,7 @@ test('shows a solved example beside a compact solve heading', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Plate-solve an image.' })).toBeVisible()
   await expect(page.getByText('works out where it points and labels the stars and objects in it', { exact: false })).toBeVisible()
   await expect(page.getByRole('img', { name: /solved sky image/ })).toHaveAttribute('src', '/media/solve-example.webp')
-  await expect(page.getByText('An example result', { exact: false })).toBeVisible()
+  await expect(page.getByText('Example: each nebula outlined and named.')).toBeVisible()
 })
 
 test('leaves the example out when the server has none', async ({ page }) => {
