@@ -46,6 +46,10 @@ All notable changes to Seiza Server are documented here. Versions follow
   from the page address.
 - Accept numeric annotation options on the SVG overlay endpoint, whose
   query parsing previously rejected numbers.
+- Upgrade to Seiza 0.27.0, seiza-fits 0.3.0, seiza-satellites 0.16.0 and
+  seiza-xisf 0.4.0. FITS uploads now read tile-compressed images, image
+  extensions, signed 16-bit and 64-bit integer data, BLANK and HIERARCH
+  cards.
 
 ## 0.5.0 - Unreleased
 
