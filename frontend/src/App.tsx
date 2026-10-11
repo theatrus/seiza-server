@@ -336,6 +336,10 @@ function WindowsAppIcon() {
   return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5l12-1v11H3V5Zm14-1 12-1v12H17V4ZM3 17h12v11L3 27V17Zm14 0h12v12l-12-1V17Z" /></svg>
 }
 
+function ImageGraderIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 6 7v8c0 6.5 4.3 11 10 14 5.7-3 10-7.5 10-14V7L16 3Z" /><path d="m11.5 16 3 3 6-6.5" /></svg>
+}
+
 function ImagePluginIcon() {
   return <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4" width="24" height="24" rx="2" /><circle cx="11" cy="11" r="2" /><path d="m4 23 7-7 5 5 5-8 7 10" /></svg>
 }
@@ -463,6 +467,14 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
           <div><h3>FITS and XISF for Photoshop</h3><p>Open astronomy images as Float32 or rescaled 16-bit integer, optionally debayer to RGB, and save at the document’s depth while retaining source metadata in the same format.</p></div>
           <a className="button secondary desktop-download" href="https://github.com/theatrus/xisf-photoshop/releases/latest"><DownloadIcon />Download Photoshop plugins</a>
           <small>Windows x64 installer · drag-and-drop macOS DMG · signed plugins for both platforms</small>
+        </article>
+        <article className="desktop-app-card desktop-app-strip">
+          <span className="desktop-app-icon"><ImageGraderIcon /></span>
+          <div><h3>PSF Guard</h3><p>Catalog and grade whole imaging sessions. PSF Guard sorts FITS frames by target, session, and filter, flags clouds, drift, and off-target frames with Seiza plate solves, and builds stack previews.</p></div>
+          <div className="desktop-app-strip-action">
+            <a className="button secondary desktop-download" href="https://github.com/theatrus/psf-guard/releases/latest"><DownloadIcon />Download PSF Guard</a>
+            <small>Windows, macOS, and Linux · <a href="https://psf-guard.com/">psf-guard.com</a></small>
+          </div>
         </article>
       </div>
     </section>
