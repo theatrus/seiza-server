@@ -369,8 +369,8 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       <div className="desktop-app-grid">
         <article className="desktop-app-card">
           <span className="desktop-app-icon"><MacAppIcon /></span>
-          <div><h3>Seiza for macOS</h3><p>Open whole folders at once, browse FITS files fast, inspect headers and statistics, stack images, and solve with local catalogs.</p></div>
-          <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-mac/releases"><DownloadIcon />macOS releases</a>
+          <div><h3>Seiza for macOS</h3><p>Browse FITS and XISF folders, stretch and stack images, solve with local catalogs, and turn finished images into editable parallax tours with native video export.</p></div>
+          <a className="button secondary desktop-download" href="https://github.com/theatrus/seiza-mac/releases/latest"><DownloadIcon />macOS releases</a>
           <small>Universal downloads for Apple silicon and Intel · or <code>brew install --cask theatrus/seiza/seiza-mac</code></small>
         </article>
         <article className="desktop-app-card">
