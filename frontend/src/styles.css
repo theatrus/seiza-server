@@ -109,11 +109,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .inline-check input { width: 1rem; height: 1rem; margin: 0; padding: 0; accent-color: #75d7e2; }
 .solve-page { width: min(1040px, calc(100% - 2rem)); padding-top: 2.2rem; }
 .page-heading { max-width: 760px; margin-bottom: 2.4rem; }
-.solve-page .page-heading { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(380px, 1.2fr); gap: .6rem clamp(2.5rem, 6vw, 5rem); align-items: end; max-width: none; margin-bottom: 1.4rem; }
-.solve-page .page-heading .eyebrow { grid-column: 1; margin-bottom: .65rem; }
-.solve-page .page-heading h1 { grid-column: 1; margin-bottom: 0; font-size: clamp(2.8rem, 5vw, 4.25rem); }
-.solve-page .page-heading .intro { grid-column: 2; grid-row: 1 / span 2; margin-bottom: 0; font-size: 1rem; line-height: 1.6; }
-.solve-page .ownership-note { grid-column: 2; grid-row: 3; max-width: none; margin-top: 0; }
+.solve-page .page-heading { display: grid; grid-template-columns: minmax(0, 760px); gap: clamp(1.5rem, 4vw, 3rem); align-items: center; max-width: none; margin-bottom: 1.4rem; }
+.solve-page .page-heading.with-example { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+.solve-page .page-heading .eyebrow { margin-bottom: .65rem; }
+.solve-page .page-heading h1 { margin-bottom: .8rem; font-size: clamp(2rem, 3.6vw, 2.75rem); }
+.solve-page .page-heading .intro { margin-bottom: 0; font-size: .95rem; line-height: 1.6; }
+.solve-page .ownership-note { max-width: none; margin-top: .9rem; }
+.solve-example { display: grid; gap: .55rem; min-width: 0; margin: 0; }
+.solve-example img { display: block; width: 100%; height: auto; border: 1px solid #31515b; border-radius: 8px; background: #02070b; }
+.solve-example figcaption { color: #718f98; font-size: .72rem; line-height: 1.45; }
 .page-heading h1, .solution-heading h1, .empty-state h1 { font-size: clamp(2.7rem, 6vw, 5rem); }
 .panel, .wcs-card, .overlay-card { padding: clamp(1.25rem, 4vw, 2.2rem); border: 1px solid #25414a; border-radius: 8px; background: rgb(9 27 34 / 86%); box-shadow: 0 2rem 5rem rgb(0 0 0 / 18%); }
 form { display: grid; gap: 1.4rem; }
@@ -430,8 +434,7 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   .kanji { font-size: 3.4rem; }
   .desktop-apps { gap: 1rem; padding-top: 3rem; }
   .story-grid { padding: 4.5rem 0; }
-  .solve-page .page-heading { grid-template-columns: 1fr; gap: .8rem; align-items: start; }
-  .solve-page .page-heading .eyebrow, .solve-page .page-heading h1, .solve-page .page-heading .intro, .solve-page .ownership-note { grid-column: 1; grid-row: auto; }
+  .solve-page .page-heading, .solve-page .page-heading.with-example { grid-template-columns: 1fr; gap: 1.2rem; align-items: start; }
   .settled-topbar { grid-template-columns: 1fr; gap: .65rem; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .job-meta { grid-template-columns: 1fr; }
@@ -450,7 +453,8 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
   main { padding-block: 3rem 5rem; }
   .solve-page, .solution-page-settled { padding-top: 2rem; }
   .solve-page .page-heading { margin-bottom: 1.25rem; }
-  .solve-page .page-heading h1, .solution-page-settled .solution-heading h1 { font-size: 2.65rem; }
+  .solution-page-settled .solution-heading h1 { font-size: 2.65rem; }
+  .solve-page .page-heading h1 { font-size: 2rem; }
   .solution-page-settled .solution-heading { position: relative; flex-direction: row; width: 100%; }
   .solution-page-settled .solution-heading .status { position: absolute; top: 0; right: 0; }
   .solution-page-settled .overlay-actions { flex-wrap: nowrap; justify-content: flex-start; width: 100%; gap: .4rem; }
