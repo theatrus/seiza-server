@@ -25,7 +25,9 @@ test('plays the parallax tour behind the hero, with Solve and Download on top', 
   await page.goto('/')
 
   const hero = page.locator('.hero')
-  await expect(hero.getByRole('link', { name: 'Solve an image' })).toBeVisible()
+  await expect(hero.getByRole('link', { name: 'Plate-solve an image' })).toHaveAttribute('href', '/solve')
+  await expect(hero.getByText('works out where it points and labels the stars and objects in it', { exact: false })).toBeVisible()
+  await expect(hero.getByText('parallax videos that fly through your image’s stars', { exact: false })).toBeVisible()
   await expect(hero.getByRole('link', { name: 'Download Seiza' })).toHaveAttribute('href', '#downloads')
   const tour = hero.locator('video.hero-backdrop')
   await expect(tour).toHaveAttribute('src', '/media/parallax-tour.mp4')

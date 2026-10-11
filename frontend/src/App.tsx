@@ -418,10 +418,13 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       <div className="hero-copy">
         <p className="eyebrow">OPEN-SOURCE ASTROMETRY</p>
         <h1>Map your image to the sky.</h1>
-        <p className="intro">Seiza is a Rust toolkit for astronomical images. It includes a very fast plate solver, FITS and XISF I/O, image processing and stacking, and sky catalog tools.</p>
+        <p className="intro">Seiza is a Rust toolkit for astronomical images: a very fast plate solver, FITS and XISF I/O, processing and stacking, sky catalogs, and parallax videos that fly through your image’s stars.</p>
         <div className="actions">
-          {solveEnabled && <Link to="/solve" className="button">Solve an image</Link>}
+          {solveEnabled && <Link to="/solve" className="button">Plate-solve an image</Link>}
           <a href="#downloads" className="button secondary desktop-download"><DownloadIcon />Download Seiza</a>
+        </div>
+        {solveEnabled && <p className="hero-hint">Upload a sky photo or FITS file. Seiza works out where it points and labels the stars and objects in it.</p>}
+        <div className="text-links hero-links">
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
           <Link to="/data-sources">See our data sources <span aria-hidden="true">→</span></Link>
         </div>

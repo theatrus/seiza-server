@@ -39,6 +39,9 @@ button:disabled { cursor: wait; opacity: .65; }
 .hero-tour::before { position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, rgb(7 16 24 / 90%) 0%, rgb(7 16 24 / 72%) 38%, rgb(7 16 24 / 18%) 72%, rgb(7 16 24 / 0%) 100%), linear-gradient(0deg, #071018 0%, rgb(7 16 24 / 0%) 24%); content: ''; }
 .hero-backdrop { position: absolute; z-index: -2; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .hero-tour .intro { color: #c1d2d8; }
+.hero-hint { max-width: 560px; margin: .9rem 0 0; color: #93abb3; font-size: .82rem; line-height: 1.55; }
+.hero-links { margin-top: 1.4rem; }
+.hero-tour .hero-hint { color: #a9bec5; }
 .hero-tour-caption { position: absolute; right: max(1rem, calc(50vw - 580px)); bottom: 1.5rem; display: flex; align-items: center; gap: .9rem; font-size: .72rem; }
 .hero-tour-caption a { color: #a9c0c7; }
 .hero-tour-caption a:hover { color: #d5f6f9; }
