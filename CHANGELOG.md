@@ -15,6 +15,10 @@ All notable changes to Seiza Server are documented here. Versions follow
   macOS app's parallax tours. The tour pauses off screen, has a Pause
   button, and waits for a press when the visitor asks for reduced motion or
   less data. Without the video the hero shows the Seiza mark as before.
+- Every "Solve an image" button now reads "Plate-solve an image". The solve
+  page has a smaller heading with the same wording and, when the media
+  directory holds `solve-example.webp`, a solved example beside it; without
+  the file the heading stands alone.
 - Draw constellation stick figures. Annotations carry `constellations`
   (each with its IAU abbreviation, name, pixel polylines clipped to the
   image and a suggested name position) and the CC BY 4.0

@@ -196,9 +196,31 @@ function solvedJob(id: string, filename: string) {
   }
 }
 
+// A 1×1 PNG; the browser decodes it whatever the route calls it.
+const tinyImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64')
+
+test('shows a solved example beside a compact solve heading', async ({ page }) => {
+  await page.route('**/media/solve-example.webp', (route) => route.fulfill({ contentType: 'image/webp', body: tinyImage }))
+  await page.goto('/solve')
+
+  await expect(page.getByRole('heading', { name: 'Plate-solve an image.' })).toBeVisible()
+  await expect(page.getByText('works out where it points and labels the stars and objects in it', { exact: false })).toBeVisible()
+  await expect(page.getByRole('img', { name: /solved sky image/ })).toHaveAttribute('src', '/media/solve-example.webp')
+  await expect(page.getByText('An example result', { exact: false })).toBeVisible()
+})
+
+test('leaves the example out when the server has none', async ({ page }) => {
+  await page.route('**/media/solve-example.webp', (route) => route.fulfill({ status: 404, body: '' }))
+  await page.goto('/solve')
+
+  await expect(page.getByRole('heading', { name: 'Plate-solve an image.' })).toBeVisible()
+  await expect(page.locator('.solve-example')).toHaveCount(0)
+  await expect(page.locator('.page-heading.with-example')).toHaveCount(0)
+})
+
 test('places the solve action beside the file selector and satellite opt-in below', async ({ page }) => {
   await page.goto('/solve')
-  await expect(page.getByRole('heading', { name: 'Solve this image.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Plate-solve an image.' })).toBeVisible()
   const controls = page.locator('.upload-controls')
   const row = page.locator('.file-submit-row')
   const fileSelector = row.locator('.file-input')

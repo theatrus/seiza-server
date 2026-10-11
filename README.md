@@ -420,7 +420,7 @@ are currently supported:
 | `SEIZA_FRONTEND_DIR` | `frontend/dist` | Production static UI directory |
 | `SEIZA_SITE_HEAD_HTML` | unset | Trusted inline HTML inserted before `</head>` in every frontend document |
 | `SEIZA_SITE_HEAD_HTML_FILE` | unset | UTF-8 file containing trusted HTML to insert before `</head>`; mutually exclusive with `SEIZA_SITE_HEAD_HTML` |
-| `SEIZA_MEDIA_DIR` | unset | Directory served at `/media/`, outside the frontend build; the home page plays `parallax-tour.mp4` from it |
+| `SEIZA_MEDIA_DIR` | unset | Directory served at `/media/`, outside the frontend build; the home page plays `parallax-tour.mp4` from it, and the solve page shows `solve-example.webp` |
 | `SEIZA_DATA_DIR` | `data` | Local object storage root |
 | `SEIZA_JOB_BACKEND` | `sqlx` | `sqlx` (SQLite or PostgreSQL URL) or `dynamodb` |
 | `SEIZA_QUEUE_DATABASE` | `data/jobs.sqlite3` | Default SQLite path when no SQL URL is set |
@@ -477,6 +477,9 @@ without titles or a watermark works best. Encode it as H.264 with
 `-movflags +faststart` so every browser can play it and playback starts before
 the download ends; a 1280×720 tour of a minute is about 19 MB. Browsers keep
 media files for an hour, so a replaced video reaches visitors within the hour.
+The solve page shows `solve-example.webp` beside its heading as an example
+result, and leaves it out when the file is missing. A crop of a solved
+overlay about 900×600 keeps its labels readable at that size.
 
 The bundled frontend marks its solve requests with `X-Seiza-Client: web`, while
 unmarked native requests and all Astrometry-compatible submissions use the API
