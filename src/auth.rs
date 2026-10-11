@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use email_address::EmailAddress;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{str::FromStr, sync::Arc};
@@ -1090,6 +1090,22 @@ mod tests {
     };
     use std::time::Duration as StdDuration;
     use tokio::sync::Mutex;
+
+    /// Stored sessions, API keys and sign-in codes are found by these digests,
+    /// so a crate upgrade must not change them. The values come from Python's
+    /// hashlib and hmac.
+    #[test]
+    fn stored_digests_stay_the_same() {
+        assert_eq!(
+            secret_digest("seiza-secret"),
+            "UMsvRpFZX6HpbtMJ-wVhZDiadtpdMYJGoCNcYgUlpxI"
+        );
+        let challenge_id = Uuid::parse_str("01890a5d-ac96-774b-bcce-b302099a8057").unwrap();
+        assert_eq!(
+            code_digest(b"pepper-for-tests", challenge_id, "12345678"),
+            "NRroCzs0eoqgHOXrOvZVgBOObVwxz6XDl5inAJjqsn4"
+        );
+    }
 
     #[derive(Default)]
     struct CapturingSender(Mutex<Vec<SignInEmail>>);
