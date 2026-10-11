@@ -8,12 +8,13 @@ All notable changes to Seiza Server are documented here. Versions follow
 - Show a parallax video on the home page. `SEIZA_MEDIA_DIR` names a
   directory the server serves at `/media/`, outside the frontend build. When
   it holds `parallax-tour.mp4`, with `parallax-tour.jpg` as its poster, the
-  tour plays in a muted loop behind the hero, under "Solve an image" and a
-  new "Download Seiza" button, so both sit above the fold. A card after the
-  downloads covers `seiza parallax-video` and the macOS app's parallax tours.
-  The tour pauses off screen, has a Pause button, and waits for a press when
-  the visitor asks for reduced motion or less data. Without the video the
-  hero shows the Seiza mark as before.
+  tour plays in a muted loop behind the hero, under "Plate-solve an image"
+  and a new "Download Seiza" button, so both sit above the fold. A line
+  under the buttons says what solving does, and the intro names parallax
+  videos. A card after the downloads covers `seiza parallax-video` and the
+  macOS app's parallax tours. The tour pauses off screen, has a Pause
+  button, and waits for a press when the visitor asks for reduced motion or
+  less data. Without the video the hero shows the Seiza mark as before.
 - Draw constellation stick figures. Annotations carry `constellations`
   (each with its IAU abbreviation, name, pixel polylines clipped to the
   image and a suggested name position) and the CC BY 4.0
