@@ -15,7 +15,7 @@
   "dependencies": {
     "@seiza/astro-overlay": "0.6.0",
     "@uppy/core": "^5.2.0",
-    "@uppy/tus": "^5.1.1",
+    "@uppy/tus": "^6.0.0",
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
