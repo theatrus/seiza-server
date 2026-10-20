@@ -41,7 +41,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 sqlx = { version = "0.9", default-features = false, features = ["any", "chrono", "postgres", "runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs"] }
 seiza = "0.27.0"
 seiza-fits = "0.3.0"
-seiza-satellites = "0.16.0"
+seiza-satellites = "0.22.0"
 seiza-xisf = "0.4.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
