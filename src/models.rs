@@ -553,6 +553,23 @@ pub struct SolutionResponse {
     /// 0.5.0, which used the stored pixel rows, leave it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixel_coordinates: Option<PixelCoordinatesResponse>,
+    /// The picture inside the upload, when flat bands border it, as in a
+    /// phone screenshot of a photo or a stack with blank registration
+    /// edges. Catalog objects and constellation figures are placed within
+    /// it, and overlays are clipped to it. Solutions without bands, and
+    /// those saved before it was measured, leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_region: Option<ContentRegion>,
+}
+
+/// A rectangle of whole pixels: columns `x` to `x + width - 1` and rows `y`
+/// to `y + height - 1`, counted from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -977,6 +994,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         };
 
         let header = solution.fits_wcs_header();
@@ -1013,6 +1031,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         };
 
         solution.validate().unwrap();

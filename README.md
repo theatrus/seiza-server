@@ -34,6 +34,12 @@ disappears on a process restart.
   the WCS, footprint, overlays, previews and satellite-trail pixels all use
   that frame. The solution's `pixel_coordinates` gives the stored size and the
   orientation applied.
+- A picture bordered by flat bands, such as a phone screenshot of a photo or
+  a stack with blank registration edges, keeps its overlays on the picture.
+  The solution's `content_region` gives the picture's rectangle in whole
+  pixels; catalog objects and constellation figures are placed inside it,
+  and the web overlay, its PNG export and the server-drawn `overlay.svg`
+  are clipped to it.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
   solving with Seiza, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit

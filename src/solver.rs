@@ -296,6 +296,7 @@ fn solve_bytes(
     if dimensions.0 == 0 || dimensions.1 == 0 {
         bail!("image has invalid dimensions");
     }
+    let content_region = crate::content_region::find(&image);
     let detection_started = Instant::now();
     let detected = detect_stars(
         &image,
@@ -408,6 +409,7 @@ fn solve_bytes(
         capture_time: options.capture_time,
         statistics: Some(statistics),
         pixel_coordinates: coordinates.as_ref().map(PixelCoordinatesResponse::from),
+        content_region,
     })
 }
 

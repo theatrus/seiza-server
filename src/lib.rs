@@ -2,6 +2,7 @@ pub mod annotations;
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod content_region;
 #[cfg(feature = "aws")]
 mod dynamodb_common;
 #[cfg(feature = "aws")]

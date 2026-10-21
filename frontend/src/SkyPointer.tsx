@@ -48,6 +48,10 @@ export function SkyPointer({
       if (left < 0 || left > 1 || top < 0 || top > 1) return null
       const x = left * solution.image_width - 0.5
       const y = top * solution.image_height - 0.5
+      // The bands around a screenshot's picture show no sky.
+      const region = solution.content_region
+      if (region && (x < region.x - 0.5 || y < region.y - 0.5
+        || x > region.x + region.width - 0.5 || y > region.y + region.height - 0.5)) return null
       const [ra, dec] = skyAtPixel(solution.wcs, x, y)
       const imagePxPerScreenPx = solution.image_width / box.width
       const radiusArcmin = Math.min(Math.max(

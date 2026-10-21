@@ -204,7 +204,7 @@ export function ApiDocsPage() {
         </DocSection>
 
         <DocSection id="solve-options" eyebrow="SOLVER INPUT" title="Blind by default, hinted when you know the field.">
-          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS and XISF uploads use compatible position and scale headers automatically; other images use blind solving. Photos are solved upright, after their EXIF orientation, and the solution's <code>pixel_coordinates</code> records the stored size and the orientation applied.</p>
+          <p>Supply <code>center_ra_deg</code>, <code>center_dec_deg</code>, and <code>scale_arcsec_per_pixel</code> together for a hinted solve. When all three are absent, FITS and XISF uploads use compatible position and scale headers automatically; other images use blind solving. Photos are solved upright, after their EXIF orientation, and the solution's <code>pixel_coordinates</code> records the stored size and the orientation applied. When flat bands border the picture, as in a phone screenshot, <code>content_region</code> gives the picture's <code>x</code>, <code>y</code>, <code>width</code> and <code>height</code> in whole pixels from 0; annotations stay inside it.</p>
           <div className="option-table">
             <OptionRow name="center_ra_deg / center_dec_deg" defaultValue="unset">ICRS center hint in degrees; RA 0–360 and Dec −90–90.</OptionRow>
             <OptionRow name="radius_deg" defaultValue="2.0">Position-hint search radius.</OptionRow>
