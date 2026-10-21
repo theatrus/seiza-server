@@ -98,6 +98,16 @@ fn render_svg_with_display_scale(
     let detail_x = 18.0 * display_unit;
     let detail_first_y = 26.0 * display_unit;
     let detail_second_y = 47.0 * display_unit;
+    // Objects and grid lines stay on the picture, off any flat bands
+    // around it.
+    let frame = solution
+        .content_region
+        .unwrap_or(crate::models::ContentRegion {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
     let projection = if solution.wcs.sip.is_some() {
         "TAN-SIP"
     } else {
@@ -115,11 +125,11 @@ fn render_svg_with_display_scale(
   .grid-label {{ fill: #b9f3f7; stroke: #05090e; stroke-width: {grid_label_stroke:.2}; paint-order: stroke; font: 700 {grid_font_size:.2}px ui-monospace, monospace; }}
   .direction-tail {{ stroke-linecap: round; stroke-linejoin: round; }}
 </style>
-<defs><clipPath id="image-frame"><rect width="{width}" height="{height}" /></clipPath></defs>
+<defs><clipPath id="image-frame"><rect x="{frame_x}" y="{frame_y}" width="{frame_width}" height="{frame_height}" /></clipPath></defs>
 <image href="data:image/png;base64,{encoded}" width="{width}" height="{height}" preserveAspectRatio="none" />
 <g clip-path="url(#image-frame)" class="grid-lines">{grid_lines}</g>
 <g class="grid-labels">{grid_labels}</g>
-<g>{objects}</g>
+<g clip-path="url(#image-frame)">{objects}</g>
 <g stroke="#f2c66d" fill="none" stroke-width="2" vector-effect="non-scaling-stroke">
   <circle cx="{center_x}" cy="{center_y}" r="{center_radius:.2}" />
   <path d="M {left} {center_y} H {right} M {center_x} {top} V {bottom}" />
@@ -127,6 +137,10 @@ fn render_svg_with_display_scale(
 <text class="detail" x="{detail_x:.2}" y="{detail_first_y:.2}">RA {ra:.8}°  Dec {dec:.8}°  Scale {scale:.5} arcsec/px</text>
 <text class="detail" x="{detail_x:.2}" y="{detail_second_y:.2}">ICRS / {projection} · {stars} matched stars · RMS {rms:.4} arcsec</text>
 </svg>"##,
+        frame_x = frame.x,
+        frame_y = frame.y,
+        frame_width = frame.width,
+        frame_height = frame.height,
         left = center_x - center_arm,
         right = center_x + center_arm,
         top = center_y - center_arm,
@@ -896,6 +910,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         }
     }
 
@@ -909,6 +924,38 @@ mod tests {
         assert!(svg.contains("data:image/png;base64,cG5n"));
         assert!(svg.contains("&lt;target&gt;"));
         assert!(svg.contains("A&amp;B"));
+    }
+
+    #[test]
+    fn objects_and_grid_lines_are_clipped_to_the_picture_inside_bands() {
+        let whole = render_svg(
+            &solution(),
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        let (width, height) = (solution().image_width, solution().image_height);
+        assert!(whole.contains(&format!(
+            r#"<clipPath id="image-frame"><rect x="0" y="0" width="{width}" height="{height}" />"#
+        )));
+        let mut banded = solution();
+        banded.content_region = Some(crate::models::ContentRegion {
+            x: 3,
+            y: 10,
+            width: width - 6,
+            height: height - 30,
+        });
+        let svg = render_svg(
+            &banded,
+            &Bytes::from_static(b"png"),
+            OverlayOptions::default(),
+        );
+        assert!(svg.contains(&format!(
+            r#"<clipPath id="image-frame"><rect x="3" y="10" width="{}" height="{}" />"#,
+            width - 6,
+            height - 30
+        )));
+        assert!(svg.contains(r#"<g clip-path="url(#image-frame)" class="grid-lines">"#));
+        assert!(svg.contains(r#"<g clip-path="url(#image-frame)"><"#));
     }
 
     #[test]

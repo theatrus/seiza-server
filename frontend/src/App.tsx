@@ -1035,6 +1035,8 @@ async function downloadRenderedPng(
   const seizaMark = await loadImage('/seiza-mark.png?watermark=1')
   const png = await renderOverlayPng({
     background: await response.blob(),
+    // The overlay's CSS clip to the picture inside any bands carries into
+    // the serialized SVG.
     overlay,
     width: solution.image_width,
     height: solution.image_height,

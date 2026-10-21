@@ -214,6 +214,7 @@ export function AstroOverlay({
 
   return <ReusableAstroOverlay
     className="sky-overlay"
+    style={contentClip(solution)}
     solution={solution}
     objects={visibleObjects}
     constellations={constellations}
@@ -227,6 +228,21 @@ export function AstroOverlay({
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}
   />
+}
+
+/**
+ * Clip the overlay to the picture inside any flat bands, so nothing the
+ * solution places off it (grid lines, the edges of large outlines, labels)
+ * is drawn on a screenshot's bars.
+ */
+function contentClip(solution: Solution) {
+  const region = solution.content_region
+  if (!region) return undefined
+  const percent = (part: number, whole: number) => `${(part / whole * 100).toFixed(4)}%`
+  const { image_width: width, image_height: height } = solution
+  return {
+    clipPath: `inset(${percent(region.y, height)} ${percent(width - region.x - region.width, width)} ${percent(height - region.y - region.height, height)} ${percent(region.x, width)})`,
+  }
 }
 
 function toPackageLayers(layers: OverlayLayers): OverlayLayerVisibility {

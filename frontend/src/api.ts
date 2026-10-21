@@ -42,6 +42,13 @@ export interface SolveOptions {
   satellite_metadata_keywords?: string[]
 }
 
+export interface ContentRegion {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export type SipCoefficient = [p: number, q: number, value: number]
 
 export interface SipDistortion {
@@ -126,6 +133,11 @@ export interface Solution {
     blind_scale_range?: [min: number, max: number]
   }
   pixel_coordinates?: PixelCoordinates
+  /**
+   * The picture inside the upload when flat bands border it, in whole
+   * pixels counted from 0. Overlays stay inside it.
+   */
+  content_region?: ContentRegion
 }
 
 export type { OverlayConstellation }

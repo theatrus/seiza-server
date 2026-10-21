@@ -5,6 +5,18 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Keep overlays on the picture when flat bands border it. A phone
+  screenshot of a photo carries the phone's black bars, and the solution's
+  WCS ran on across them, so constellation lines, catalog outlines, labels
+  and grid lines were drawn on the bars. A solve now finds the bands, rows
+  or columns of one colour running in from an edge, and records the
+  picture as the solution's `content_region`. Annotations place catalog
+  objects and constellation figures inside it, the web overlay and its PNG
+  export clip to it, the server-drawn `overlay.svg` and Open Graph image
+  clip objects and grid lines to it, and the pointer readout shows nothing
+  over the bands. Solutions from before this change have no region; solving
+  the retained image again gives it one.
+
 - Show the sky position under the pointer on a solved image: RA and Dec,
   and the image pixel, in a box beside the pointer. The conversion applies
   the solution's SIP terms, as Seiza does. In the expanded view a click

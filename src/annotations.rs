@@ -171,13 +171,22 @@ impl AnnotationEngine {
         capture_time: Option<DateTime<Utc>>,
         options: &AnnotationOptions,
     ) -> AnnotationResponse {
-        let wcs = solution.wcs.to_seiza();
-        let dimensions = (solution.image_width, solution.image_height);
-        let mut objects = if self.is_configured() {
-            Vec::new()
-        } else {
-            solution.objects.clone()
+        // Catalogs and figures are placed in the picture's own frame, so
+        // nothing lands on the flat bands around it, then moved back.
+        let mut wcs = solution.wcs.to_seiza();
+        let (dimensions, offset) = match solution.content_region {
+            Some(region) => {
+                wcs.crpix.0 -= region.x as f64;
+                wcs.crpix.1 -= region.y as f64;
+                (
+                    (region.width, region.height),
+                    (region.x as f64, region.y as f64),
+                )
+            }
+            None => ((solution.image_width, solution.image_height), (0.0, 0.0)),
         };
+        let configured = self.is_configured();
+        let mut objects = Vec::new();
         let mut versions = Vec::new();
         let mut totals = BTreeMap::new();
         let mut available = BTreeMap::from([
@@ -274,6 +283,18 @@ impl AnnotationEngine {
             }
         }
 
+        let mut constellations = if options.constellations {
+            project_constellations(&wcs, dimensions)
+        } else {
+            Vec::new()
+        };
+        shift_to_image(&mut objects, &mut constellations, offset);
+        if !configured {
+            // Without catalogs, the solution's own objects stand in; they
+            // are already in the image's frame.
+            objects.splice(0..0, solution.objects.iter().cloned());
+        }
+
         let mut counts = BTreeMap::from([
             ("deep_sky".into(), 0),
             ("named_stars".into(), 0),
@@ -293,11 +314,6 @@ impl AnnotationEngine {
                 *counts.entry("historical_transients".into()).or_insert(0) += 1;
             }
         }
-        let constellations = if options.constellations {
-            project_constellations(&wcs, dimensions)
-        } else {
-            Vec::new()
-        };
         counts.insert("constellations".into(), constellations.len());
         let constellation_attribution =
             (!constellations.is_empty()).then(|| seiza::constellations::ATTRIBUTION.to_owned());
@@ -435,6 +451,42 @@ impl AnnotationEngine {
         }
         if let Some(catalog) = &self.minor_bodies {
             let _ = catalog.current();
+        }
+    }
+}
+
+/// Move objects and figures placed in a content region's frame by its
+/// offset, back into the image's.
+fn shift_to_image(
+    objects: &mut [OverlayObject],
+    constellations: &mut [ConstellationResponse],
+    (dx, dy): (f64, f64),
+) {
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+    for object in objects {
+        object.x += dx;
+        object.y += dy;
+        for contour in object
+            .outlines
+            .iter_mut()
+            .flat_map(|outline| outline.contours.iter_mut())
+        {
+            for point in &mut contour.points {
+                point[0] += dx;
+                point[1] += dy;
+            }
+        }
+    }
+    for constellation in constellations {
+        for point in constellation.lines.iter_mut().flatten() {
+            point[0] += dx;
+            point[1] += dy;
+        }
+        if let Some(label) = &mut constellation.label {
+            label[0] += dx;
+            label[1] += dy;
         }
     }
 }
@@ -1119,7 +1171,7 @@ impl<T> ReloadingCatalog<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::WcsResponse;
+    use crate::models::{ContentRegion, WcsResponse};
     use seiza::{
         minor_bodies::{MinorBody, MinorBodyCatalog, MinorBodyKind},
         objects::{
@@ -1417,6 +1469,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         };
         let first = engine.annotate(1, &solution, None, &AnnotationOptions::default());
         assert_eq!(first.objects.len(), 1);
@@ -1457,6 +1510,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         };
         let engine = AnnotationEngine::new(None, None, None, None, None, None);
         let wanted = AnnotationOptions {
@@ -1520,6 +1574,94 @@ mod tests {
         let json = serde_json::to_value(&narrow).unwrap();
         assert!(json.get("constellations").is_none());
         assert!(json.get("constellation_attribution").is_none());
+    }
+
+    #[test]
+    fn figures_stay_on_the_picture_inside_flat_bands() {
+        // The wide field above, as a screenshot that keeps the picture in
+        // rows 300 to 1199 and has bars above and below.
+        let full = SolutionResponse {
+            center_ra_deg: 20.0,
+            center_dec_deg: 60.0,
+            pixel_scale_arcsec_per_pixel: 108.0,
+            matched_stars: 50,
+            rms_arcsec: 60.0,
+            image_width: 2000,
+            image_height: 1500,
+            wcs: WcsResponse {
+                crval: [20.0, 60.0],
+                crpix: [1000.0, 750.0],
+                cd: [[-0.03, 0.0], [0.0, 0.03]],
+                ctype: ["RA---TAN".into(), "DEC--TAN".into()],
+                cunit: ["deg".into(), "deg".into()],
+                radesys: "ICRS".into(),
+                equinox: 2000.0,
+                sip: None,
+            },
+            footprint: [[0.0; 2]; 4],
+            objects: Vec::new(),
+            catalog_version: None,
+            capture_time: None,
+            statistics: None,
+            pixel_coordinates: None,
+            content_region: None,
+        };
+        let banded = SolutionResponse {
+            content_region: Some(ContentRegion {
+                x: 0,
+                y: 300,
+                width: 2000,
+                height: 900,
+            }),
+            ..full.clone()
+        };
+        let engine = AnnotationEngine::new(None, None, None, None, None, None);
+        let wanted = AnnotationOptions {
+            constellations: true,
+            ..AnnotationOptions::default()
+        };
+        let whole = engine.annotate(1, &full, None, &wanted);
+        let picture = engine.annotate(1, &banded, None, &wanted);
+        assert!(!picture.constellations.is_empty());
+        for figure in &picture.constellations {
+            for point in figure.lines.iter().flatten().chain(&figure.label) {
+                assert!(
+                    (-0.5..=1999.5).contains(&point[0]) && (299.5..=1199.5).contains(&point[1]),
+                    "{} at {point:?} lies on a band",
+                    figure.abbreviation
+                );
+            }
+        }
+        // Each figure the picture shows runs along the same sky as in the
+        // whole image: its points lie on the whole image's lines.
+        let on_line = |point: [f64; 2], lines: &[Vec<[f64; 2]>]| {
+            lines.iter().any(|line| {
+                line.windows(2).any(|pair| {
+                    let (a, b) = (pair[0], pair[1]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let t = (((point[0] - a[0]) * dx + (point[1] - a[1]) * dy)
+                        / (dx * dx + dy * dy))
+                        .clamp(0.0, 1.0);
+                    (a[0] + t * dx - point[0]).hypot(a[1] + t * dy - point[1]) < 0.5
+                })
+            })
+        };
+        for figure in &picture.constellations {
+            let same = whole
+                .constellations
+                .iter()
+                .find(|other| other.abbreviation == figure.abbreviation)
+                .expect("a figure on the picture is in the whole image");
+            for point in figure.lines.iter().flatten() {
+                assert!(
+                    on_line(*point, &same.lines),
+                    "{} moved",
+                    figure.abbreviation
+                );
+            }
+        }
+        // A figure only on the bands is left out.
+        assert!(picture.constellations.len() <= whole.constellations.len());
     }
 
     #[test]
@@ -1594,6 +1736,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         };
 
         let annotation = engine.annotate(1, &solution, None, &AnnotationOptions::default());
@@ -1665,6 +1808,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         };
 
         let hidden = engine.annotate(1, &solution, None, &AnnotationOptions::default());

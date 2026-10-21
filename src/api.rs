@@ -3155,6 +3155,7 @@ mod tests {
             capture_time: None,
             statistics: None,
             pixel_coordinates: None,
+            content_region: None,
         }
     }
 

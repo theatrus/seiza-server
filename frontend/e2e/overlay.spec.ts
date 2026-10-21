@@ -144,7 +144,7 @@ const solution = {
   },
 }
 
-async function mockSolution(page: Page, inputAvailable = true) {
+async function mockSolution(page: Page, inputAvailable = true, solutionChanges: Record<string, unknown> = {}) {
   await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => {
     expect(new URL(route.request().url()).searchParams.get('satellite_tracks')).toBe('false')
     await route.fulfill({
@@ -187,7 +187,7 @@ async function mockSolution(page: Page, inputAvailable = true) {
       overlay_url: inputAvailable ? `/api/v1/solves/${publicId}/overlay.svg` : null,
       annotations_url: `/api/v1/solves/${publicId}/annotations`,
       wcs_url: `/api/v1/solves/${publicId}/wcs`,
-      solution,
+      solution: { ...solution, ...solutionChanges },
       error: null,
       validation_donation: null,
     }),
@@ -520,6 +520,65 @@ test('reads the sky position under the pointer and searches catalogs there', asy
   await page.keyboard.press('Escape')
   await expect(card).toHaveCount(0)
   await page.getByRole('button', { name: 'Close' }).click()
+})
+
+test('keeps the overlay on the picture inside a screenshot\'s bars', async ({ page }) => {
+  // Bars of 128 rows above and 192 below the picture.
+  const region = { x: 0, y: 128, width: 1024, height: 704 }
+  await mockSolution(page, true, { content_region: region })
+  await page.goto(`/solutions/${publicId}`)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const overlay = page.locator('.sky-overlay')
+  await expect(overlay).toBeVisible()
+  const clip = await overlay.evaluate((element) => getComputedStyle(element).clipPath)
+  expect(clip).toBe('inset(12.5% 0% 18.75%)')
+
+  // The bars show no sky; the picture does.
+  const box = (await page.locator('.sky-frame img').boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.05)
+  await expect(page.locator('.sky-pointer-readout')).toHaveCount(0)
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await expect(page.locator('.sky-pointer-readout')).toBeVisible()
+
+  // The exported PNG clips the same way. The credit and the watermark are
+  // drawn in the bottom bar's corner.
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Download rendered PNG' }).click(),
+  ])
+  const png = await readFile((await download.path())!)
+  // Compare with the preview drawn alone: the overlay may change pixels on
+  // the picture, and none on the top bar.
+  const image = await page.evaluate(async ({ bytes, previewUrl }) => {
+    const draw = async (source: CanvasImageSource, width: number, height: number) => {
+      const canvas = new OffscreenCanvas(width, height)
+      const context = canvas.getContext('2d')!
+      context.drawImage(source, 0, 0, width, height)
+      return context.getImageData(0, 0, width, height).data
+    }
+    const exported = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }))
+    const { width, height } = exported
+    const background = new Image()
+    background.src = `${previewUrl}?full=true`
+    await background.decode()
+    const [withOverlay, alone] = await Promise.all([draw(exported, width, height), draw(background, width, height)])
+    const changed = (from: number, to: number) => {
+      let rows = 0
+      for (let y = from; y < to; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const index = (y * width + x) * 4
+          if (Math.abs(withOverlay[index] - alone[index]) + Math.abs(withOverlay[index + 1] - alone[index + 1]) + Math.abs(withOverlay[index + 2] - alone[index + 2]) > 24) {
+            rows += 1
+            break
+          }
+        }
+      }
+      return rows
+    }
+    return { barRows: changed(0, 128), pictureRows: changed(128, 832) }
+  }, { bytes: [...png], previewUrl: `/api/v1/solves/${publicId}/preview` })
+  expect(image.barRows).toBe(0)
+  expect(image.pictureRows).toBeGreaterThan(0)
 })
 
 test('explains and disables catalog layers that are unavailable', async ({ page }) => {
