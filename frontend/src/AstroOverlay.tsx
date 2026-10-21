@@ -176,6 +176,7 @@ export function AstroOverlay({
   layers,
   hiddenCatalogs,
   showCatalogOutlines,
+  zoom = 1,
 }: {
   solution: Solution
   objects: OverlayObject[]
@@ -185,6 +186,8 @@ export function AstroOverlay({
   layers: OverlayLayers
   hiddenCatalogs: DeepSkyCatalogId[]
   showCatalogOutlines: boolean
+  /** How much the expanded view has magnified the image. */
+  zoom?: number
 }) {
   const visibleObjects: PackageOverlayObject[] = [
     ...objects
@@ -227,6 +230,7 @@ export function AstroOverlay({
     colorForObject={suggestedDeepSkyColorForObject}
     density={defaultOverlayDensity}
     theme={defaultOverlayTheme}
+    zoom={zoom}
   />
 }
 
