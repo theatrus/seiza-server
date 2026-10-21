@@ -5,6 +5,17 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Draw deep-sky objects of unknown size on request. Annotations left out
+  unnamed objects smaller than the minimum marker size, and counted an
+  unknown size as zero, so planetary nebulae such as Abell 56, which
+  SIMBAD gives no size, were never drawn. `unsized_deep_sky=true` returns
+  them, marked `size_unknown`, under their own cap
+  (`max_unsized_deep_sky`, 100 by default), so they never displace an
+  object of known size; `counts.unsized_deep_sky` gives how many came back.
+  The web overlay asks for them and adds an Unknown size layer, off by
+  default, that draws them as markers. The server-drawn `overlay.svg`
+  leaves them out.
+
 - Keep labels beside their objects while zooming. Labels grew with the
   zoomed image, so their gaps from their objects grew too, and the CSS
   scale meant to hold their size shrank them toward the wrong point in

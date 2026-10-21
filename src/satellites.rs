@@ -429,6 +429,7 @@ pub fn track_overlay_object(track: &SatelliteTrackResponse) -> OverlayObject {
         direction_pa_deg: None,
         direction_angle_deg: None,
         outlines,
+        size_unknown: false,
     }
 }
 

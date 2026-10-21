@@ -1876,6 +1876,10 @@ struct AnnotationQuery {
     max_deep_sky: Option<usize>,
     #[serde(default, deserialize_with = "optional_number_from_text")]
     deep_sky_min_size_px: Option<f64>,
+    #[serde(default, deserialize_with = "bool_from_text")]
+    unsized_deep_sky: bool,
+    #[serde(default, deserialize_with = "optional_number_from_text")]
+    max_unsized_deep_sky: Option<usize>,
     #[serde(default, deserialize_with = "optional_number_from_text")]
     deep_sky_max_mag: Option<f32>,
     #[serde(default, deserialize_with = "optional_number_from_text")]
@@ -1912,6 +1916,8 @@ impl AnnotationQuery {
             max_star_identifiers: default_star_identifier_limit(),
             max_deep_sky: None,
             deep_sky_min_size_px: None,
+            unsized_deep_sky: false,
+            max_unsized_deep_sky: None,
             deep_sky_max_mag: None,
             max_named_stars: None,
             named_star_mag_limit: None,
@@ -1946,6 +1952,10 @@ impl AnnotationQuery {
                 .map_or(defaults.deep_sky_min_size_px, |size| {
                     size.clamp(0.0, 1_000.0)
                 }),
+            unsized_deep_sky: self.unsized_deep_sky,
+            max_unsized_deep_sky: self
+                .max_unsized_deep_sky
+                .map_or(defaults.max_unsized_deep_sky, |limit| limit.clamp(1, 5_000)),
             deep_sky_max_mag: self.deep_sky_max_mag.map(|mag| mag.clamp(-30.0, 30.0)),
             max_named_stars: self
                 .max_named_stars
@@ -3186,6 +3196,7 @@ mod tests {
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines: Vec::new(),
+            size_unknown: false,
         }
     }
 

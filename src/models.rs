@@ -471,6 +471,11 @@ pub struct OverlayObject {
     pub direction_angle_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outlines: Vec<OverlayOutline>,
+    /// No catalog gives this object's size, and it is returned only because
+    /// `unsized_deep_sky` asked for such objects; it is drawn as a marker
+    /// at the smallest size.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub size_unknown: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

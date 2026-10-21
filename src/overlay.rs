@@ -905,6 +905,7 @@ mod tests {
                 direction_pa_deg: None,
                 direction_angle_deg: None,
                 outlines: Vec::new(),
+                size_unknown: false,
             }],
             catalog_version: None,
             capture_time: None,
@@ -1078,6 +1079,7 @@ mod tests {
                     }],
                 },
             ],
+            size_unknown: false,
         }];
 
         let svg = render_svg(
