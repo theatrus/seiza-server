@@ -469,6 +469,59 @@ test('draws constellation figures with their credit and hides them on request', 
   await expect(credit).toHaveCount(0)
 })
 
+test('reads the sky position under the pointer and searches catalogs there', async ({ page }) => {
+  await mockSolution(page)
+  await page.goto(`/solutions/${publicId}`)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const image = page.locator('.sky-frame img')
+  await expect(page.locator('.sky-overlay')).toBeVisible()
+  const pointAt = async (x: number, y: number) => {
+    const box = (await image.boundingBox())!
+    return [box.x + (x + 0.5) / solution.image_width * box.width, box.y + (y + 0.5) / solution.image_height * box.height] as const
+  }
+
+  // The reference pixel is the solution's reference position.
+  await page.mouse.move(...await pointAt(512, 512))
+  const readout = page.locator('.sky-pointer-readout')
+  await expect(readout).toContainText('RA 00h 42m 4')
+  await expect(readout).toContainText('Dec +41° 16′')
+  await expect(readout).toContainText('Click to expand')
+  const pixel = (await readout.locator('.sky-pointer-pixel').innerText()).match(/x (\d+) · y (\d+)/)!
+  expect(Math.abs(Number(pixel[1]) - 512)).toBeLessThanOrEqual(1)
+  expect(Math.abs(Number(pixel[2]) - 512)).toBeLessThanOrEqual(1)
+  await page.mouse.move(5, 5)
+  await expect(readout).toHaveCount(0)
+
+  // The small view keeps its click to expand; only the expanded view pins.
+  await page.mouse.click(...await pointAt(512, 512))
+  await expect(page.locator('.image-stage')).toHaveClass(/expanded/)
+  await expect(page.locator('.sky-pointer-card')).toHaveCount(0)
+  await page.mouse.click(...await pointAt(812, 212))
+  const card = page.getByRole('dialog', { name: 'Sky position' })
+  await expect(card).toBeVisible()
+  await expect(page.locator('.image-stage')).toHaveClass(/expanded/)
+  const degrees = (await card.locator('dt:text("Degrees") + dd').innerText()).trim()
+  const [ra, dec] = degrees.split(' ').map(Number)
+  // East is left in this solution, so a point right of and above the centre
+  // lies at a lower RA and a higher Dec.
+  expect(ra).toBeLessThan(10.6847)
+  expect(dec).toBeGreaterThan(41.269)
+  const links = card.getByRole('link')
+  await expect(links).toHaveText(['SIMBAD', 'NED', 'VizieR', 'Aladin Lite', 'ESASky'])
+  const simbad = new URL((await links.first().getAttribute('href'))!)
+  expect(simbad.hostname).toBe('simbad.cds.unistra.fr')
+  expect(simbad.searchParams.get('Coord')).toBe(degrees)
+  await expect(links.first()).toHaveAttribute('target', '_blank')
+  await expect(links.first()).toHaveAttribute('rel', /noopener/)
+
+  // A click on the card leaves the pin where it is; Escape clears it.
+  await card.locator('dl').click()
+  await expect(card.locator('dt:text("Degrees") + dd')).toHaveText(degrees)
+  await page.keyboard.press('Escape')
+  await expect(card).toHaveCount(0)
+  await page.getByRole('button', { name: 'Close' }).click()
+})
+
 test('explains and disables catalog layers that are unavailable', async ({ page }) => {
   await mockSolution(page)
   await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({

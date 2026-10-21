@@ -60,7 +60,9 @@ disappears on a process restart.
   and derived visual previews expire after one day by default, while the job
   and its complete WCS and annotation
   metadata remain available. The React UI renders an interactive SVG layer over
-  the retained image preview.
+  the retained image preview, reads out the sky position under the pointer,
+  and in the expanded view pins a position and links to SIMBAD, NED,
+  VizieR, Aladin Lite and ESASky searches there.
 - Optional satellite tracks are predicted after a successful solve when the
   job has one shutter-open interval and an observer location. FITS and XISF may
   supply those values automatically; JPEG and other image uploads may supply the same

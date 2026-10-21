@@ -5,6 +5,15 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Show the sky position under the pointer on a solved image: RA and Dec,
+  and the image pixel, in a box beside the pointer. The conversion applies
+  the solution's SIP terms, as Seiza does. In the expanded view a click
+  pins the position and opens a card with the coordinates in sexagesimal
+  and decimal degrees, a button that copies the degrees, and searches of
+  SIMBAD, NED, VizieR, Aladin Lite and ESASky around it, in a new tab. The
+  search radius is eight screen pixels of sky, from 3″ to 30′. Escape or
+  the card's × clears the pin. The smaller view still expands on a click.
+
 - Move to Seiza 0.40.0, seiza-fits 0.5.0, seiza-image-io 0.10.0,
   seiza-satellites 0.22.0 and seiza-xisf 0.6.0. Blind solves run faster and
   match more stars: two 12 MP phone photos at 71″/px matched 214 and 244
