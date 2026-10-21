@@ -209,7 +209,7 @@ impl SatelliteEngine {
         let catalog = loaded.catalog.clone();
         let analyzed = match tokio::task::spawn_blocking(move || {
             let search = catalog.tracks_in_footprint(
-                &wcs,
+                |ra, dec| wcs.world_to_pixel(ra, dec),
                 dimensions,
                 &exposure,
                 &TrackOptions::default(),

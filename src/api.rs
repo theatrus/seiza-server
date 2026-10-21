@@ -3058,7 +3058,7 @@ mod tests {
 
     #[test]
     fn astrometry_width_scales_use_the_upright_image_width() {
-        use seiza::raster::test_support::{Tag, Value, field, jpeg_with_exif};
+        use seiza_image_io::raster::test_support::{Tag, Value, field, jpeg_with_exif};
         // Stored 40x10, displayed 10x40 after EXIF Orientation 6.
         let jpeg = jpeg_with_exif(
             &image::DynamicImage::ImageLuma8(image::GrayImage::new(40, 10)),

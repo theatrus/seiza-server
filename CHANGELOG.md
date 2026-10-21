@@ -5,6 +5,12 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Move to Seiza 0.40.0, seiza-fits 0.5.0, seiza-image-io 0.10.0,
+  seiza-satellites 0.22.0 and seiza-xisf 0.6.0. Blind solves run faster and
+  match more stars: two 12 MP phone photos at 71″/px matched 214 and 244
+  stars, where Seiza 0.27.0 matched 36 and 42. Photo decoding and EXIF orientation now come from `seiza-image-io`, and
+  satellite tracks take the WCS as a sky-to-pixel closure. The API is
+  unchanged.
 - Add PSF Guard to the home page's downloads: a full-width box under the
   three app cards, with a "Download PSF Guard" button that goes to
   psf-guard.com. On a phone it stacks like the other cards.
