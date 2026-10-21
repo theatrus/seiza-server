@@ -612,23 +612,26 @@ test('zooms the expanded image with the wheel, pans it with a drag, and fits it 
   const zoomed = (await image.boundingBox())!
   expect(zoomed.width / fitted.width).toBeCloseTo(4.48, 1)
   // A label holds a readable size and stays just above its star.
-  // Measured from where the star lies in the image: WebKit reports a
-  // misleading box for its dashed marker.
+  // Read from the label's own attributes, scaled to the overlay's size on
+  // screen: WebKit reports misleading boxes for SVG text and markers.
   const star = page.locator('[data-kind="star"]').filter({ hasText: 'Alpheratz' })
   const labelled = async () => {
-    const text = (await star.locator('text').boundingBox())!
-    const frame = (await image.boundingBox())!
-    const x = frame.x + 270 / solution.image_width * frame.width
-    const y = frame.y + 330 / solution.image_height * frame.height
+    const { size, x, y } = await star.locator('text').evaluate((text) => ({
+      size: Number(text.getAttribute('font-size')),
+      x: Number(text.getAttribute('x')),
+      y: Number(text.getAttribute('y')),
+    }))
+    const scale = (await page.locator('.sky-overlay').boundingBox())!.width / solution.image_width
     return {
-      height: text.height,
-      gap: y - (text.y + text.height),
-      offset: Math.abs(text.x + text.width / 2 - x),
+      height: size * scale,
+      // The label's baseline sits above the star at (270, 330).
+      gap: (330 - y) * scale,
+      offset: Math.abs(x - 270) * scale,
     }
   }
   const atZoom = await labelled()
   expect(atZoom.height).toBeGreaterThan(10)
-  expect(atZoom.height).toBeLessThan(24)
+  expect(atZoom.height).toBeLessThan(16)
   expect(atZoom.gap).toBeGreaterThan(0)
   expect(atZoom.gap).toBeLessThan(30)
   expect(atZoom.offset).toBeLessThan(2)
@@ -642,8 +645,13 @@ test('zooms the expanded image with the wheel, pans it with a drag, and fits it 
   expect(panned.y - zoomed.y).toBeCloseTo(-80, 0)
   await expect(page.locator('.sky-pointer-card')).toHaveCount(0)
   await page.mouse.click(640, 450)
-  await expect(page.getByRole('dialog', { name: 'Sky position' })).toBeVisible()
-  await page.keyboard.press('Escape')
+  const card = page.getByRole('dialog', { name: 'Sky position' })
+  await expect(card).toBeVisible()
+  // The card listens for Escape once it has rendered.
+  await expect(async () => {
+    await page.keyboard.press('Escape')
+    await expect(card).toHaveCount(0, { timeout: 500 })
+  }).toPass()
 
   // The buttons and keys zoom about the centre; Fit and 0 fit the image.
   await zoom.getByRole('button', { name: 'Zoom out' }).click()
@@ -661,7 +669,7 @@ test('zooms the expanded image with the wheel, pans it with a drag, and fits it 
 
   // Closing and reopening starts fitted.
   await page.keyboard.press('+')
-  await page.getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('button', { name: 'Close', exact: true }).click()
   await page.getByRole('button', { name: 'Expand image' }).click()
   await expect(page.getByRole('group', { name: 'Zoom' }).getByLabel('Magnification')).toHaveText('1.0×')
 })
