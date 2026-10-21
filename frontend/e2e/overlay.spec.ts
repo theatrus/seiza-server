@@ -611,10 +611,23 @@ test('zooms the expanded image with the wheel, pans it with a drag, and fits it 
   }).toBeLessThanOrEqual(1)
   const zoomed = (await image.boundingBox())!
   expect(zoomed.width / fitted.width).toBeCloseTo(4.48, 1)
-  // Labels keep their size as the image grows.
-  const label = page.locator('.seiza-overlay__label').first()
-  const labelHeight = (await label.boundingBox())!.height
-  expect(labelHeight).toBeLessThan(40)
+  // A label holds a readable size and stays just above its star.
+  const star = page.locator('[data-kind="star"]').filter({ hasText: 'Alpheratz' })
+  const labelled = async () => {
+    const text = (await star.locator('text').boundingBox())!
+    const marker = (await star.locator('.object-marker').boundingBox())!
+    return {
+      height: text.height,
+      gap: marker.y + marker.height / 2 - (text.y + text.height),
+      offset: Math.abs(text.x + text.width / 2 - (marker.x + marker.width / 2)),
+    }
+  }
+  const atZoom = await labelled()
+  expect(atZoom.height).toBeGreaterThan(10)
+  expect(atZoom.height).toBeLessThan(24)
+  expect(atZoom.gap).toBeGreaterThan(0)
+  expect(atZoom.gap).toBeLessThan(30)
+  expect(atZoom.offset).toBeLessThan(2)
 
   // A drag pans and pins nothing; a click pins.
   await page.mouse.down()

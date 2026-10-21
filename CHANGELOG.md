@@ -5,6 +5,14 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Keep labels beside their objects while zooming. Labels grew with the
+  zoomed image, so their gaps from their objects grew too, and the CSS
+  scale meant to hold their size shrank them toward the wrong point in
+  some browsers, so they drifted off to the top left. The overlay now takes
+  the zoom from `@seiza/astro-overlay` 0.7.0 and lays its labels out for
+  it: they grow with the image until they are 12 pixels tall on screen,
+  then keep that size and their place beside their objects.
+
 - Zoom the expanded image. The mouse wheel, or a trackpad pinch, zooms
   about the pointer, so the sky under it stays there; two fingers pinch on
   a touch screen, and a drag pans. Buttons at the top left zoom out and in

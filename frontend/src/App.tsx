@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
 import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, PixelCoordinates, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
@@ -7,7 +7,7 @@ import { SkyPointer } from './SkyPointer'
 import { useImageZoom, type ImageZoom } from './useImageZoom'
 import { DataSourcesPage } from './DataSources'
 import type { OverlayLayers } from './AstroOverlay'
-import type { SuggestedDeepSkyCatalogId as DeepSkyCatalogId } from '@seiza/astro-overlay'
+import { labelFontSize, type SuggestedDeepSkyCatalogId as DeepSkyCatalogId } from '@seiza/astro-overlay'
 
 const pending = new Set(['queued', 'solving'])
 const defaultOverlayLayers: OverlayLayers = {
@@ -851,8 +851,7 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
               top: '50%',
               maxWidth: 'none',
               transform: `translate(calc(-50% + ${imageZoom.offset.x}px), calc(-50% + ${imageZoom.offset.y}px))`,
-              '--sky-label-scale': String(1 / imageZoom.zoom),
-            } as CSSProperties : undefined}
+            } : undefined}
           >
             <img
               ref={imageRef}
@@ -867,7 +866,7 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
                 maxHeight: 'none',
               } : undefined}
             />
-            <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} constellations={currentAnnotations?.constellations ?? []} constellationAttribution={currentAnnotations?.constellation_attribution} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
+            <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} constellations={currentAnnotations?.constellations ?? []} constellationAttribution={currentAnnotations?.constellation_attribution} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} zoom={overlayZoom(imageZoom, solution.image_width)} />
             <SkyPointer key={expanded ? 'expanded' : 'framed'} solution={solution} frameRef={frameRef} pinnable={expanded} tapsFrom={stageRef} />
           </div>
         </div>
@@ -896,6 +895,21 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
       </details>}
     </>}
   </>
+}
+
+/** Screen pixels labels grow to while zooming, before they hold their size. */
+const ZOOMED_LABEL_PX = 12
+
+/**
+ * The zoom to tell the overlay, so its labels stay beside their objects as
+ * the image grows: they grow with it until they are ZOOMED_LABEL_PX tall on
+ * screen (or keep their fitted size, if that is larger), then hold.
+ */
+function overlayZoom(zoom: ImageZoom, imageWidth: number) {
+  if (zoom.zoom <= 1 || !zoom.fitted) return 1
+  const fittedLabelPx = labelFontSize(imageWidth) * zoom.fitted.width / imageWidth
+  const grown = fittedLabelPx * zoom.zoom
+  return grown / Math.min(grown, Math.max(fittedLabelPx, ZOOMED_LABEL_PX))
 }
 
 /** Zoom buttons for the expanded image: out, the magnification, in, and fit. */
