@@ -21,6 +21,7 @@ const defaultOverlayLayers: OverlayLayers = {
   historicalTransients: false,
   grid: true,
   constellations: true,
+  unsizedDeepSky: false,
 }
 
 type CaptureTimeZone = 'local' | 'utc'

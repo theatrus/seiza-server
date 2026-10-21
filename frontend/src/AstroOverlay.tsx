@@ -27,10 +27,13 @@ export interface OverlayLayers {
   historicalTransients: boolean
   grid: boolean
   constellations: boolean
+  /** Deep-sky objects no catalog gives a size, drawn as markers. */
+  unsizedDeepSky: boolean
 }
 
 const layerLabels: Array<[keyof OverlayLayers, string, string]> = [
   ['deepSky', 'Deep sky', 'deep_sky'],
+  ['unsizedDeepSky', 'Unknown size', 'unsized_deep_sky'],
   ['namedStars', 'Named stars', 'named_stars'],
   ['constellations', 'Constellations', 'constellations'],
   ['starIdentifiers', 'Star identifiers', 'star_identifiers'],
@@ -191,6 +194,7 @@ export function AstroOverlay({
 }) {
   const visibleObjects: PackageOverlayObject[] = [
     ...objects
+      .filter((object) => !object.size_unknown || (layers.unsizedDeepSky && layers.deepSky))
       .filter((object) => {
         const catalog = deepSkyCatalogForObject(object)
         return catalog == null || !hiddenCatalogs.includes(catalog)

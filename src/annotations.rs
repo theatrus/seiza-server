@@ -45,6 +45,12 @@ pub struct AnnotationOptions {
     /// Deep-sky objects whose catalog semi-major axis spans fewer image
     /// pixels than this are left out unless they have a common name.
     pub deep_sky_min_size_px: f64,
+    /// Also return deep-sky objects with no catalog size, which the
+    /// minimum size above would leave out, marked `unsized` and capped
+    /// apart so they never displace an object of known size.
+    pub unsized_deep_sky: bool,
+    /// Most unsized deep-sky objects to return when they are asked for.
+    pub max_unsized_deep_sky: usize,
     pub deep_sky_max_mag: Option<f32>,
     pub max_named_stars: usize,
     pub named_star_mag_limit: Option<f32>,
@@ -101,6 +107,8 @@ impl Default for AnnotationOptions {
             max_star_identifiers: 150,
             max_deep_sky: 200,
             deep_sky_min_size_px: 1.5,
+            unsized_deep_sky: false,
+            max_unsized_deep_sky: 100,
             deep_sky_max_mag: None,
             max_named_stars: 60,
             named_star_mag_limit: None,
@@ -305,7 +313,17 @@ impl AnnotationEngine {
             ("minor_bodies".into(), 0),
             ("satellite_tracks".into(), 0),
         ]);
+        if options.unsized_deep_sky {
+            available.insert("unsized_deep_sky".into(), available["deep_sky"]);
+            counts.insert("unsized_deep_sky".into(), 0);
+        }
         for object in &objects {
+            // Objects of unknown size have their own count, so the deep-sky
+            // count stays what a client shows by default.
+            if object.size_unknown {
+                *counts.entry("unsized_deep_sky".into()).or_insert(0) += 1;
+                continue;
+            }
             available.insert(layer_name(&object.kind).to_owned(), true);
             *counts
                 .entry(layer_name(&object.kind).to_owned())
@@ -560,8 +578,12 @@ fn append_object_catalog(
             DisplayGroup::DeepSky
         };
         *totals.entry(group.layer().into()).or_insert(0) += 1;
+        if group == DisplayGroup::DeepSky && is_unsized(&placed.object) {
+            *totals.entry("unsized_deep_sky".into()).or_insert(0) += 1;
+        }
         candidates.push(Candidate {
             requested: requested.matches(&placed.object),
+            size_unknown: false,
             group,
             placed,
             discovered,
@@ -575,6 +597,7 @@ fn append_object_catalog(
             discovered,
             near_capture,
             group,
+            size_unknown,
             ..
         } = candidate;
         let transient = group == DisplayGroup::Transient;
@@ -615,6 +638,7 @@ fn append_object_catalog(
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines,
+            size_unknown,
         });
     }
     totals
@@ -646,6 +670,8 @@ impl DisplayGroup {
 struct Candidate {
     group: DisplayGroup,
     requested: bool,
+    /// Kept only because unsized deep-sky objects were asked for.
+    size_unknown: bool,
     placed: seiza::objects::PlacedObject,
     discovered: Option<String>,
     near_capture: Option<bool>,
@@ -667,7 +693,8 @@ fn select_for_display(
     let transient_limit = options
         .transient_mag_limit
         .or(wide_field.then_some(WIDE_FIELD_TRANSIENT_MAG_LIMIT));
-    let mut groups: [Vec<(f64, Candidate)>; 3] = Default::default();
+    // Deep sky, named stars, transients, and deep sky of unknown size.
+    let mut groups: [Vec<(f64, Candidate)>; 4] = Default::default();
     let mut requested = Vec::new();
     for candidate in candidates {
         if candidate.requested {
@@ -683,12 +710,23 @@ fn select_for_display(
         let (slot, score) = match candidate.group {
             DisplayGroup::DeepSky => {
                 let named = !object.common_name.is_empty() || is_messier(object);
-                if !within(options.deep_sky_max_mag)
-                    || (candidate.placed.semi_major_px < options.deep_sky_min_size_px && !named)
-                {
+                if !within(options.deep_sky_max_mag) {
                     continue;
                 }
-                (0, deep_sky_score(&candidate.placed))
+                if candidate.placed.semi_major_px < options.deep_sky_min_size_px && !named {
+                    // An unknown size is not a small one: such objects come
+                    // back on request, in a group of their own.
+                    if !(options.unsized_deep_sky && is_unsized(object)) {
+                        continue;
+                    }
+                    let mut candidate = candidate;
+                    candidate.size_unknown = true;
+                    let score = deep_sky_score(&candidate.placed);
+                    groups[3].push((score, candidate));
+                    continue;
+                } else {
+                    (0, deep_sky_score(&candidate.placed))
+                }
             }
             DisplayGroup::NamedStar => {
                 if !within(options.named_star_mag_limit) {
@@ -714,6 +752,7 @@ fn select_for_display(
         options.max_deep_sky,
         options.max_named_stars,
         options.max_transients,
+        options.max_unsized_deep_sky,
     ];
     for (group, cap) in groups.iter_mut().zip(caps) {
         group.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -740,6 +779,11 @@ fn deep_sky_score(placed: &seiza::objects::PlacedObject) -> f64 {
     };
     let messier = if is_messier(object) { 4.0 } else { 0.0 };
     size + brightness + named + messier
+}
+
+/// No catalog gives the object's extent, so its placed size is zero.
+fn is_unsized(object: &SkyObject) -> bool {
+    object.major_arcmin.is_none_or(|major| major <= 0.0)
 }
 
 fn is_messier(object: &SkyObject) -> bool {
@@ -906,6 +950,7 @@ fn append_star_identifier_catalog(
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines: Vec::new(),
+            size_unknown: false,
         });
         added += 1;
         if added >= options.max_star_identifiers {
@@ -967,6 +1012,7 @@ fn append_field_stars(
             direction_pa_deg: None,
             direction_angle_deg: None,
             outlines: Vec::new(),
+            size_unknown: false,
         });
         field_count += 1;
         if field_count >= limit {
@@ -1023,6 +1069,7 @@ fn append_minor_bodies(
                 .direction_pa_deg
                 .and_then(|angle| direction_image_angle(wcs, placed.ra, placed.dec, angle)),
             outlines: Vec::new(),
+            size_unknown: false,
         });
     }
 }
@@ -1258,13 +1305,15 @@ mod tests {
         Candidate {
             group,
             requested: false,
+            size_unknown: false,
             placed: seiza::objects::PlacedObject {
                 object: SkyObject {
                     kind: ObjectKind::Galaxy,
                     ra: 10.0,
                     dec: 20.0,
                     mag,
-                    major_arcmin: None,
+                    // A placed size of zero stands for no catalog size.
+                    major_arcmin: (semi_major_px > 0.0).then_some(1.0),
                     minor_arcmin: None,
                     position_angle_deg: None,
                     name: name.into(),
@@ -1287,6 +1336,55 @@ mod tests {
             .iter()
             .map(|candidate| candidate.placed.object.name.as_str())
             .collect()
+    }
+
+    #[test]
+    fn objects_of_unknown_size_come_back_only_on_request_and_apart() {
+        let deep = |name: &str, size: f64| candidate(DisplayGroup::DeepSky, name, "", None, size);
+        let candidates = || {
+            vec![
+                deep("Big", 40.0),
+                deep("Medium", 10.0),
+                // Known to be smaller than a marker: always left out.
+                deep("Tiny", 0.5),
+                // No catalog size at all.
+                deep("Abell 56", 0.0),
+                deep("PN G036.0-01.4", 0.0),
+            ]
+        };
+        let defaults = AnnotationOptions {
+            max_deep_sky: 2,
+            ..AnnotationOptions::default()
+        };
+        let selected = select_for_display(candidates(), &defaults, false);
+        assert_eq!(names(&selected), ["Big", "Medium"]);
+        assert!(selected.iter().all(|candidate| !candidate.size_unknown));
+
+        let asked = AnnotationOptions {
+            unsized_deep_sky: true,
+            ..defaults.clone()
+        };
+        // Both full-size objects stay: the unsized have a cap of their own.
+        let selected = select_for_display(candidates(), &asked, false);
+        assert_eq!(
+            names(&selected),
+            ["Big", "Medium", "Abell 56", "PN G036.0-01.4"]
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|candidate| candidate.size_unknown)
+                .count(),
+            2
+        );
+        let capped = AnnotationOptions {
+            max_unsized_deep_sky: 1,
+            ..asked
+        };
+        assert_eq!(
+            names(&select_for_display(candidates(), &capped, false)),
+            ["Big", "Medium", "Abell 56"]
+        );
     }
 
     #[test]

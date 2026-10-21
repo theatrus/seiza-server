@@ -696,6 +696,47 @@ test('loads the full-resolution image once zooming outruns the preview', async (
   await expect(page.locator('.sky-frame img')).toHaveAttribute('src', /full=true/)
 })
 
+test('draws objects of unknown size as markers only when asked', async ({ page }) => {
+  await mockSolution(page)
+  const requested: string[] = []
+  await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => {
+    requested.push(route.request().url())
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        job_id: publicId,
+        catalog_version: 'objects:test;stars:test',
+        capture_time: '2026-07-13T04:05:06Z',
+        available: { deep_sky: true, unsized_deep_sky: true, grid: true },
+        counts: { deep_sky: 1, unsized_deep_sky: 1 },
+        objects: [
+          baseObjects[0],
+          {
+            stable_id: 'simbad:PNG037.9-03.4', name: 'Abell 56', common_name: '', kind: 'planetary-nebula',
+            mag: null, x: 300, y: 600, semi_major_px: 0, semi_minor_px: 0, angle_deg: null,
+            source: 'deep_sky', ra_deg: 10.8, dec_deg: 41.1, size_unknown: true,
+          },
+        ],
+      }),
+    })
+  })
+  await page.goto(`/solutions/${publicId}`)
+  await expect(page.locator('.sky-overlay')).toBeVisible()
+  expect(new URL(requested[0]).searchParams.get('unsized_deep_sky')).toBe('true')
+  const marker = page.locator('[data-stable-id="simbad:PNG037.9-03.4"]')
+  await expect(page.locator('[data-kind="galaxy"]').first()).toBeVisible()
+  await expect(marker).toHaveCount(0)
+  const toggle = page.locator('.overlay-options').getByRole('button', { name: /Unknown size/ })
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await expect(toggle).toContainText('1')
+  await toggle.click()
+  await expect(marker).toHaveCount(1)
+  await expect(marker).toContainText('Abell 56')
+  // Hiding deep sky hides them too.
+  await page.locator('.overlay-options').getByRole('button', { name: /Deep sky/ }).click()
+  await expect(marker).toHaveCount(0)
+})
+
 test('explains and disables catalog layers that are unavailable', async ({ page }) => {
   await mockSolution(page)
   await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({

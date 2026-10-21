@@ -95,6 +95,8 @@ export interface OverlayObject {
       points: Array<[number, number]>
     }>
   }>
+  /** No catalog size; drawn as a marker only when the unsized layer is on. */
+  size_unknown?: boolean
 }
 
 export interface Solution {
@@ -599,7 +601,7 @@ export async function getAnnotations(
     ? `&include_objects=${encodeURIComponent(requestedObjects.join(','))}`
     : ''
   return expectJson<Annotations>(await sessionFetch(
-    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150&satellite_tracks=${satelliteTracks}${objects}`,
+    `${url}${separator}field_stars=true&star_identifiers=true&historical_transients=true&field_star_mag_limit=10&max_field_stars=300&star_identifier_mag_limit=10&max_star_identifiers=150&unsized_deep_sky=true&satellite_tracks=${satelliteTracks}${objects}`,
   ))
 }
 
