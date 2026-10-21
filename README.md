@@ -5,8 +5,8 @@ Seiza Server is a queued web service for plate solving. It uses the
 [`seiza-fits`](https://crates.io/crates/seiza-fits), and
 [`seiza-xisf`](https://crates.io/crates/seiza-xisf) Rust
 crates directly—not a CLI subprocess—and includes a TypeScript/React frontend.
-Current versions are Seiza 0.23.0, seiza-fits 0.2.6, seiza-satellites 0.12.0,
-and seiza-xisf 0.3.1. The frontend uses `@seiza/astro-overlay` 0.6.0 for
+Current versions are Seiza 0.40.0, seiza-fits 0.5.0, seiza-image-io 0.10.0,
+seiza-satellites 0.22.0 and seiza-xisf 0.6.0. The frontend uses `@seiza/astro-overlay` 0.6.0 for
 risk- and alignment-aware rendering.
 
 The job queue is durable: local deployments use SQLx with SQLite on disk, and
@@ -35,7 +35,7 @@ disappears on a process restart.
   that frame. The solution's `pixel_coordinates` gives the stored size and the
   orientation applied.
 - Hinted solves when RA, Dec, and pixel scale are supplied; otherwise blind
-  solving with Seiza 0.12.0, including catalog-seeded matching for source
+  solving with Seiza, including catalog-seeded matching for source
   lists whose brightness ranking is unreliable. Optional SIP orders 2–5 fit
   forward and inverse optical-distortion polynomials after the accepted linear
   solution. The maintained G<=16 index is memory-mapped once per worker and

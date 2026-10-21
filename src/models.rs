@@ -517,8 +517,8 @@ pub struct PixelCoordinatesResponse {
     pub convention: String,
 }
 
-impl From<&seiza::raster::PixelCoordinates> for PixelCoordinatesResponse {
-    fn from(coordinates: &seiza::raster::PixelCoordinates) -> Self {
+impl From<&seiza_image_io::raster::PixelCoordinates> for PixelCoordinatesResponse {
+    fn from(coordinates: &seiza_image_io::raster::PixelCoordinates) -> Self {
         Self {
             original_dimensions: coordinates.original_dimensions.into(),
             oriented_dimensions: coordinates.oriented_dimensions.into(),

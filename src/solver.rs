@@ -10,9 +10,9 @@ use seiza::{
     blind::{BlindIndex, BlindParams, solve_blind},
     catalog::TileCatalog,
     detect_stars,
-    raster::{CaptureTimeSource, PhotoMetadata, PixelCoordinates, ScaleSearch},
     solve::{SolveHint, solve},
 };
+use seiza_image_io::raster::{CaptureTimeSource, PhotoMetadata, PixelCoordinates, ScaleSearch};
 use std::{
     collections::BTreeMap,
     io::{Cursor, Write},
@@ -1034,7 +1034,7 @@ fn decode_raster(bytes: &[u8], frame: PixelFrame) -> Result<DecodedImage> {
         "unsupported or corrupt image; submit FITS, XISF, PNG, JPEG, TIFF, or WebP";
     match frame {
         PixelFrame::Oriented => {
-            let raster = seiza::raster::decode_oriented(bytes)
+            let raster = seiza_image_io::raster::decode_oriented(bytes)
                 .map_err(|error| anyhow::anyhow!("{error}"))
                 .context(UNSUPPORTED)?;
             Ok(DecodedImage {
@@ -1227,24 +1227,24 @@ mod tests {
 
     /// A 32x16 grey JPEG, bright in its stored top-left 8x8 corner, with
     /// `fields` as EXIF.
-    fn exif_jpeg(fields: &[seiza::raster::test_support::Field]) -> Vec<u8> {
+    fn exif_jpeg(fields: &[seiza_image_io::raster::test_support::Field]) -> Vec<u8> {
         let pixels = image::GrayImage::from_fn(32, 16, |x, y| {
             image::Luma([if x < 8 && y < 8 { 250 } else { 10 }])
         });
-        seiza::raster::test_support::jpeg_with_exif(
+        seiza_image_io::raster::test_support::jpeg_with_exif(
             &image::DynamicImage::ImageLuma8(pixels),
             fields,
         )
     }
 
     fn rotated_jpeg() -> Vec<u8> {
-        use seiza::raster::test_support::{Tag, Value, field};
+        use seiza_image_io::raster::test_support::{Tag, Value, field};
         // Orientation 6: display the stored rows rotated 90° clockwise.
         exif_jpeg(&[field(Tag::Orientation, Value::Short(vec![6]))])
     }
 
-    fn phone_jpeg(extra: &[seiza::raster::test_support::Field]) -> Vec<u8> {
-        use seiza::raster::test_support::{Tag, Value, ascii, field, rationals};
+    fn phone_jpeg(extra: &[seiza_image_io::raster::test_support::Field]) -> Vec<u8> {
+        use seiza_image_io::raster::test_support::{Tag, Value, ascii, field, rationals};
         let mut fields = vec![
             ascii(Tag::DateTimeOriginal, "2026:10:03 19:08:11"),
             ascii(Tag::SubSecTimeOriginal, "026"),
@@ -1417,7 +1417,7 @@ mod tests {
 
     #[test]
     fn exif_gps_time_is_used_when_the_offset_is_missing() {
-        use seiza::raster::test_support::{Tag, ascii, field, rationals};
+        use seiza_image_io::raster::test_support::{Tag, ascii, field, rationals};
         let jpeg = exif_jpeg(&[
             ascii(Tag::DateTimeOriginal, "2026:10:03 19:08:11"),
             ascii(Tag::GPSDateStamp, "2026:10:04"),
