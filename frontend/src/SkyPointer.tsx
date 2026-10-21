@@ -1,5 +1,6 @@
 import { useEffect, useState, type MouseEvent, type RefObject } from 'react'
 import type { Solution } from './api'
+import { SKY_TAP_EVENT, type SkyTap } from './useImageZoom'
 import { catalogLookups, sexagesimalDec, sexagesimalRa, skyAtPixel } from './skyCoordinates'
 
 interface SkyPoint {
@@ -29,10 +30,13 @@ export function SkyPointer({
   solution,
   frameRef,
   pinnable,
+  tapsFrom,
 }: {
   solution: Solution
   frameRef: RefObject<HTMLDivElement | null>
   pinnable: boolean
+  /** Where taps arrive, as [`SKY_TAP_EVENT`]s: the zoomable stage. */
+  tapsFrom: RefObject<HTMLElement | null>
 }) {
   const [hover, setHover] = useState<SkyPoint | null>(null)
   const [pinned, setPinned] = useState<SkyPoint | null>(null)
@@ -40,7 +44,7 @@ export function SkyPointer({
   useEffect(() => {
     const frame = frameRef.current
     if (!frame) return
-    const pointAt = (event: globalThis.PointerEvent | globalThis.MouseEvent): SkyPoint | null => {
+    const pointAt = (event: { clientX: number, clientY: number }): SkyPoint | null => {
       const box = frame.getBoundingClientRect()
       if (box.width <= 0 || box.height <= 0) return null
       const left = (event.clientX - box.left) / box.width
@@ -69,19 +73,21 @@ export function SkyPointer({
       setHover(pointAt(event))
     }
     const leave = () => setHover(null)
-    const click = (event: globalThis.MouseEvent) => {
-      if (!pinnable || (event.target as Element | null)?.closest('.sky-pointer-card')) return
-      setPinned(pointAt(event))
+    const tap = (event: Event) => {
+      const { detail } = event as CustomEvent<SkyTap>
+      if ((detail.target as Element | null)?.closest?.('.sky-pointer-card')) return
+      setPinned(pointAt(detail))
     }
+    const stage = pinnable ? tapsFrom.current : null
     frame.addEventListener('pointermove', move)
     frame.addEventListener('pointerleave', leave)
-    frame.addEventListener('click', click)
+    stage?.addEventListener(SKY_TAP_EVENT, tap)
     return () => {
       frame.removeEventListener('pointermove', move)
       frame.removeEventListener('pointerleave', leave)
-      frame.removeEventListener('click', click)
+      stage?.removeEventListener(SKY_TAP_EVENT, tap)
     }
-  }, [frameRef, solution, pinnable])
+  }, [frameRef, tapsFrom, solution, pinnable])
 
   useEffect(() => {
     if (!pinned) return

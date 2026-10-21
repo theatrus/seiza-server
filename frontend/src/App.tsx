@@ -1,9 +1,10 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
 import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, PixelCoordinates, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { SkyPointer } from './SkyPointer'
+import { useImageZoom, type ImageZoom } from './useImageZoom'
 import { DataSourcesPage } from './DataSources'
 import type { OverlayLayers } from './AstroOverlay'
 import type { SuggestedDeepSkyCatalogId as DeepSkyCatalogId } from '@seiza/astro-overlay'
@@ -728,6 +729,11 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
   const [downloading, setDownloading] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const frameRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
+  const imageZoom = useImageZoom(stageRef, imageRef, job.solution?.image_width ?? 1, expanded)
+  const [previewWidth, setPreviewWidth] = useState(0)
+  const fullResolution = useFullResolution(job.preview_url, job.solution?.image_width, imageZoom, previewWidth)
   useEffect(() => {
     let active = true
     if (!job.annotations_url) {
@@ -820,6 +826,7 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
         {annotationError && <p className="overlay-warning">Live catalogs could not be refreshed: {annotationError}</p>}
         {exportError && <p className="overlay-warning">PNG rendering failed: {exportError}</p>}
         <div
+          ref={stageRef}
           className={`image-stage${expanded ? ' expanded' : ''}`}
           role={expanded ? 'dialog' : 'button'}
           tabIndex={expanded ? undefined : 0}
@@ -834,10 +841,34 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
           }}
         >
           {expanded && <button className="overlay-close" type="button" onClick={() => setExpanded(false)}>Close</button>}
-          <div className="sky-frame" ref={frameRef}>
-            <img src={job.preview_url} alt="Uploaded astronomical image" />
+          {expanded && <ZoomControls zoom={imageZoom} />}
+          <div
+            className={`sky-frame${imageZoom.zoom > 1 ? ' zoomed' : ''}`}
+            ref={frameRef}
+            style={imageZoom.zoom > 1 ? {
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              maxWidth: 'none',
+              transform: `translate(calc(-50% + ${imageZoom.offset.x}px), calc(-50% + ${imageZoom.offset.y}px))`,
+              '--sky-label-scale': String(1 / imageZoom.zoom),
+            } as CSSProperties : undefined}
+          >
+            <img
+              ref={imageRef}
+              src={fullResolution ?? job.preview_url}
+              alt="Uploaded astronomical image"
+              draggable={false}
+              onLoad={(event) => { if (!fullResolution) setPreviewWidth(event.currentTarget.naturalWidth) }}
+              style={imageZoom.zoom > 1 && imageZoom.fitted ? {
+                width: imageZoom.fitted.width * imageZoom.zoom,
+                height: imageZoom.fitted.height * imageZoom.zoom,
+                maxWidth: 'none',
+                maxHeight: 'none',
+              } : undefined}
+            />
             <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} constellations={currentAnnotations?.constellations ?? []} constellationAttribution={currentAnnotations?.constellation_attribution} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
-            <SkyPointer key={expanded ? 'expanded' : 'framed'} solution={solution} frameRef={frameRef} pinnable={expanded} />
+            <SkyPointer key={expanded ? 'expanded' : 'framed'} solution={solution} frameRef={frameRef} pinnable={expanded} tapsFrom={stageRef} />
           </div>
         </div>
         {(currentAnnotations?.satellite_tracks?.length ?? 0) > 0 && <SatelliteTrackDetails annotations={currentAnnotations!} />}
@@ -865,6 +896,44 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
       </details>}
     </>}
   </>
+}
+
+/** Zoom buttons for the expanded image: out, the magnification, in, and fit. */
+function ZoomControls({ zoom }: { zoom: ImageZoom }) {
+  const stop = (event: ReactMouseEvent) => event.stopPropagation()
+  return <div className="zoom-controls" role="group" aria-label="Zoom" onClick={stop}>
+    <button type="button" aria-label="Zoom out" disabled={zoom.zoom <= 1} onClick={() => zoom.zoomBy(1 / 1.5)}>−</button>
+    <output aria-label="Magnification">{zoom.zoom < 10 ? zoom.zoom.toFixed(1) : Math.round(zoom.zoom)}×</output>
+    <button type="button" aria-label="Zoom in" disabled={zoom.zoom >= zoom.maxZoom} onClick={() => zoom.zoomBy(1.5)}>+</button>
+    <button type="button" className="zoom-fit" disabled={zoom.zoom <= 1} onClick={zoom.reset}>Fit</button>
+  </div>
+}
+
+/**
+ * The full-resolution image, once zooming has magnified the preview past
+ * its own pixels: the preview is at most 1,800 pixels across. Until it
+ * loads, and for images no larger than their preview, the preview serves.
+ */
+function useFullResolution(
+  previewUrl: string | null | undefined,
+  imageWidth: number | undefined,
+  zoom: ImageZoom,
+  preview: number,
+) {
+  const [loaded, setLoaded] = useState<{ preview: string, url: string } | null>(null)
+  const needed = Boolean(previewUrl && imageWidth && zoom.fitted && preview > 0
+    && imageWidth > preview && zoom.fitted.width * zoom.zoom > preview * 1.1)
+  useEffect(() => {
+    if (!needed || !previewUrl || loaded?.preview === previewUrl) return
+    const separator = previewUrl.includes('?') ? '&' : '?'
+    const url = `${previewUrl}${separator}full=true`
+    const image = new Image()
+    let active = true
+    image.onload = () => { if (active) setLoaded({ preview: previewUrl, url }) }
+    image.src = url
+    return () => { active = false }
+  }, [needed, previewUrl, loaded])
+  return loaded && loaded.preview === previewUrl ? loaded.url : null
 }
 
 function JobMeta({ job }: { job: Job }) {

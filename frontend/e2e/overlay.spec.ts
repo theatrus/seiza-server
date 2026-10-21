@@ -581,6 +581,96 @@ test('keeps the overlay on the picture inside a screenshot\'s bars', async ({ pa
   expect(image.pictureRows).toBeGreaterThan(0)
 })
 
+test('zooms the expanded image with the wheel, pans it with a drag, and fits it again', async ({ page }) => {
+  await mockSolution(page)
+  await page.goto(`/solutions/${publicId}`)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await expect(page.locator('.sky-overlay')).toBeVisible()
+  await page.getByRole('button', { name: 'Expand image' }).click()
+  const zoom = page.getByRole('group', { name: 'Zoom' })
+  await expect(zoom.getByLabel('Magnification')).toHaveText('1.0×')
+  const image = page.locator('.sky-frame img')
+  const fitted = (await image.boundingBox())!
+  const readoutPixel = async () => {
+    const text = await page.locator('.sky-pointer-pixel').innerText()
+    const [, x, y] = text.match(/x (\d+) · y (\d+)/)!
+    return [Number(x), Number(y)]
+  }
+
+  // The wheel zooms about the pointer: the pixel under it stays there.
+  const point = [fitted.x + fitted.width * 0.3, fitted.y + fitted.height * 0.35] as const
+  await page.mouse.move(...point)
+  const before = await readoutPixel()
+  for (let step = 0; step < 5; step += 1) await page.mouse.wheel(0, -200)
+  await expect(zoom.getByLabel('Magnification')).toHaveText('4.5×')
+  await page.mouse.move(point[0] + 1, point[1])
+  await page.mouse.move(...point)
+  await expect.poll(async () => {
+    const after = await readoutPixel()
+    return Math.max(Math.abs(after[0] - before[0]), Math.abs(after[1] - before[1]))
+  }).toBeLessThanOrEqual(1)
+  const zoomed = (await image.boundingBox())!
+  expect(zoomed.width / fitted.width).toBeCloseTo(4.48, 1)
+  // Labels keep their size as the image grows.
+  const label = page.locator('.seiza-overlay__label').first()
+  const labelHeight = (await label.boundingBox())!.height
+  expect(labelHeight).toBeLessThan(40)
+
+  // A drag pans and pins nothing; a click pins.
+  await page.mouse.down()
+  await page.mouse.move(point[0] - 150, point[1] - 80, { steps: 6 })
+  await page.mouse.up()
+  const panned = (await image.boundingBox())!
+  expect(panned.x - zoomed.x).toBeCloseTo(-150, 0)
+  expect(panned.y - zoomed.y).toBeCloseTo(-80, 0)
+  await expect(page.locator('.sky-pointer-card')).toHaveCount(0)
+  await page.mouse.click(640, 450)
+  await expect(page.getByRole('dialog', { name: 'Sky position' })).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  // The buttons and keys zoom about the centre; Fit and 0 fit the image.
+  await zoom.getByRole('button', { name: 'Zoom out' }).click()
+  await expect(zoom.getByLabel('Magnification')).toHaveText('3.0×')
+  await zoom.getByRole('button', { name: 'Fit' }).click()
+  await expect(zoom.getByLabel('Magnification')).toHaveText('1.0×')
+  const refitted = (await image.boundingBox())!
+  expect(Math.abs(refitted.width - fitted.width)).toBeLessThan(1)
+  expect(Math.abs(refitted.x - fitted.x)).toBeLessThan(1)
+  await page.keyboard.press('+')
+  await expect(zoom.getByLabel('Magnification')).toHaveText('1.5×')
+  await page.keyboard.press('0')
+  await expect(zoom.getByLabel('Magnification')).toHaveText('1.0×')
+  await expect(zoom.getByRole('button', { name: 'Zoom out' })).toBeDisabled()
+
+  // Closing and reopening starts fitted.
+  await page.keyboard.press('+')
+  await page.getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('button', { name: 'Expand image' }).click()
+  await expect(page.getByRole('group', { name: 'Zoom' }).getByLabel('Magnification')).toHaveText('1.0×')
+})
+
+test('loads the full-resolution image once zooming outruns the preview', async ({ page }) => {
+  // A 4096-pixel image whose preview is the 1024-pixel test picture.
+  await mockSolution(page, true, { image_width: 4096, image_height: 4096, wcs: { ...solution.wcs, crpix: [2048, 2048] } })
+  const full: string[] = []
+  page.on('request', (request) => { if (request.url().includes('full=true')) full.push(request.url()) })
+  await page.goto(`/solutions/${publicId}`)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await expect(page.locator('.sky-overlay')).toBeVisible()
+  await page.getByRole('button', { name: 'Expand image' }).click()
+  const zoom = page.getByRole('group', { name: 'Zoom' })
+  // Fitted, the preview has pixels to spare; zoomed past them, the full
+  // image is fetched.
+  const fitted = (await page.locator('.sky-frame img').boundingBox())!
+  expect(fitted.width).toBeLessThan(1024)
+  await page.waitForTimeout(200)
+  expect(full).toHaveLength(0)
+  await zoom.getByRole('button', { name: 'Zoom in' }).click()
+  expect(fitted.width * 1.5).toBeGreaterThan(1024 * 1.1)
+  await expect.poll(() => full.length).toBe(1)
+  await expect(page.locator('.sky-frame img')).toHaveAttribute('src', /full=true/)
+})
+
 test('explains and disables catalog layers that are unavailable', async ({ page }) => {
   await mockSolution(page)
   await page.route(`**/api/v1/solves/${publicId}/annotations**`, async (route) => route.fulfill({
