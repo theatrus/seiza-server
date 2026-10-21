@@ -612,14 +612,18 @@ test('zooms the expanded image with the wheel, pans it with a drag, and fits it 
   const zoomed = (await image.boundingBox())!
   expect(zoomed.width / fitted.width).toBeCloseTo(4.48, 1)
   // A label holds a readable size and stays just above its star.
+  // Measured from where the star lies in the image: WebKit reports a
+  // misleading box for its dashed marker.
   const star = page.locator('[data-kind="star"]').filter({ hasText: 'Alpheratz' })
   const labelled = async () => {
     const text = (await star.locator('text').boundingBox())!
-    const marker = (await star.locator('.object-marker').boundingBox())!
+    const frame = (await image.boundingBox())!
+    const x = frame.x + 270 / solution.image_width * frame.width
+    const y = frame.y + 330 / solution.image_height * frame.height
     return {
       height: text.height,
-      gap: marker.y + marker.height / 2 - (text.y + text.height),
-      offset: Math.abs(text.x + text.width / 2 - (marker.x + marker.width / 2)),
+      gap: y - (text.y + text.height),
+      offset: Math.abs(text.x + text.width / 2 - x),
     }
   }
   const atZoom = await labelled()
