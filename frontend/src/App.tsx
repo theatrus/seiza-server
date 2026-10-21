@@ -3,6 +3,7 @@ import { downloadBlob, renderOverlayPng } from '@seiza/astro-overlay/export'
 import { AccountDetails, AccountSolve, Annotations, ApiError, Health, Job, OverlayObject, PixelCoordinates, SolveOptions, completeEmailSignIn, createApiKey, donateValidationImage, getAccount, getAccountSolves, getAnnotations, getHealth, getSolve, logout, registerPasskey, resolveSolve, revokeApiKey, revokePasskey, revokeSession, signInWithPasskey, startEmailSignIn, submitSolve } from './api'
 import { ApiDocsPage } from './ApiDocs'
 import { AstroOverlay, OverlayControls } from './AstroOverlay'
+import { SkyPointer } from './SkyPointer'
 import { DataSourcesPage } from './DataSources'
 import type { OverlayLayers } from './AstroOverlay'
 import type { SuggestedDeepSkyCatalogId as DeepSkyCatalogId } from '@seiza/astro-overlay'
@@ -836,6 +837,7 @@ function SolutionContent({ job, satelliteTracksRequested, requestedObjects, onRe
           <div className="sky-frame" ref={frameRef}>
             <img src={job.preview_url} alt="Uploaded astronomical image" />
             <AstroOverlay solution={solution} objects={overlayObjects} satelliteTracks={currentAnnotations?.satellite_tracks ?? []} constellations={currentAnnotations?.constellations ?? []} constellationAttribution={currentAnnotations?.constellation_attribution} layers={layers} hiddenCatalogs={hiddenCatalogs} showCatalogOutlines={showCatalogOutlines} />
+            <SkyPointer key={expanded ? 'expanded' : 'framed'} solution={solution} frameRef={frameRef} pinnable={expanded} />
           </div>
         </div>
         {(currentAnnotations?.satellite_tracks?.length ?? 0) > 0 && <SatelliteTrackDetails annotations={currentAnnotations!} />}

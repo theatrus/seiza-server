@@ -264,6 +264,25 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
   height: 100%;
   pointer-events: none;
 }
+.sky-frame:has(.sky-pointer-readout) { cursor: crosshair; }
+.sky-pointer-readout { position: absolute; z-index: 3; display: grid; gap: .1rem; padding: .4rem .55rem; border: 1px solid #31515b; border-radius: 4px; color: #e4f1f3; background: rgb(4 12 18 / 86%); font-family: ui-monospace, monospace; font-size: .72rem; line-height: 1.4; white-space: nowrap; pointer-events: none; }
+.sky-pointer-pixel { color: #8fa9b1; }
+.sky-pointer-hint { color: #d7b65f; font-family: ui-sans-serif, system-ui, sans-serif; font-size: .66rem; }
+.sky-pointer-pin { position: absolute; z-index: 2; width: 18px; height: 18px; margin: -9px 0 0 -9px; border: 2px solid #e9c46a; border-radius: 50%; box-shadow: 0 0 0 1px rgb(4 12 18 / 80%); pointer-events: none; }
+.sky-pointer-card { position: absolute; z-index: 4; display: grid; gap: .55rem; width: max-content; max-width: min(19rem, 80vw); padding: .75rem .85rem; border: 1px solid #45646e; border-radius: 6px; color: #e4f1f3; background: rgb(6 17 23 / 96%); font-size: .78rem; line-height: 1.45; cursor: auto; }
+.sky-pointer-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.sky-pointer-card-heading strong { font-size: .82rem; }
+.sky-pointer-close { padding: 0 .3rem; border: 0; color: #9db7bf; background: none; font: inherit; font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.sky-pointer-close:hover { color: #edf7f8; }
+.sky-pointer-card dl { display: grid; gap: .2rem; margin: 0; }
+.sky-pointer-card dl > div { display: grid; grid-template-columns: 4.2rem 1fr; gap: .5rem; }
+.sky-pointer-card dt { margin: 0; font-size: .64rem; }
+.sky-pointer-card dd { font-size: .76rem; }
+.sky-pointer-copy { justify-self: start; }
+.sky-pointer-lookup-heading { margin: 0; color: #8fa9b1; font-size: .7rem; }
+.sky-pointer-lookups { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+.sky-pointer-lookups a { display: inline-block; padding: .3rem .5rem; border: 1px solid #31515b; border-radius: 4px; color: #c9f4f3; background: #0a1c23; font-size: .74rem; font-weight: 700; text-decoration: none; }
+.sky-pointer-lookups a:hover { border-color: #75d7e2; color: #f3f8f9; }
 .overlay-warning { margin: 1rem 0 0; color: #ffcf8b; font-size: .8rem; }
 .satellite-track-details { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #25414a; }
 .satellite-track-details > summary { color: #f0ded8; font-size: .84rem; font-weight: 750; cursor: pointer; }
