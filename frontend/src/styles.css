@@ -252,8 +252,19 @@ details { color: #c8d7da; } summary { cursor: pointer; font-weight: 750; } detai
 .image-stage:not(.expanded):hover { border-color: #45646e; box-shadow: 0 0 0 1px rgb(117 215 226 / 12%); }
 .image-stage:not(.expanded):focus-visible { outline: 2px solid #e9c46a; outline-offset: 3px; }
 .image-stage img { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
-.image-stage.expanded { position: fixed; inset: 0; z-index: 100; margin: 0; padding: 2rem; border: 0; min-height: 100vh; background: rgb(1 5 8 / 97%); }
+.image-stage.expanded { position: fixed; inset: 0; z-index: 100; margin: 0; padding: 2rem; border: 0; min-height: 100vh; background: rgb(1 5 8 / 97%); overscroll-behavior: contain; touch-action: none; user-select: none; }
 .image-stage.expanded img { max-height: calc(100vh - 4rem); }
+.zoom-controls { position: fixed; top: 1rem; left: 1rem; z-index: 102; display: flex; align-items: center; gap: 1px; overflow: hidden; border: 1px solid #63808a; border-radius: 4px; background: #63808a; }
+.zoom-controls button, .zoom-controls output { min-width: 2.4rem; padding: .55rem .7rem; border: 0; color: #edf7f8; background: #10252d; font: inherit; font-size: .8rem; font-weight: 850; text-align: center; }
+.zoom-controls button { cursor: pointer; }
+.zoom-controls button:disabled { color: #59727a; cursor: default; }
+.zoom-controls output { min-width: 3.4rem; font-family: ui-monospace, monospace; font-weight: 600; }
+.sky-frame.zoomed { cursor: grab; }
+
+.sky-frame.zoomed:active { cursor: grabbing; }
+
+/* Zooming enlarges the overlay with the image; its text keeps its size. */
+.sky-frame.zoomed .sky-overlay text { transform-box: fill-box; transform-origin: center; scale: var(--sky-label-scale, 1); }
 .overlay-close { position: fixed; top: 1rem; right: 1rem; z-index: 102; padding: .65rem .85rem; border: 1px solid #63808a; border-radius: 4px; color: #edf7f8; background: #10252d; font: inherit; font-size: .8rem; font-weight: 850; cursor: pointer; }
 .sky-frame { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
 

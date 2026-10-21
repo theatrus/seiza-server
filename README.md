@@ -68,7 +68,9 @@ disappears on a process restart.
   metadata remain available. The React UI renders an interactive SVG layer over
   the retained image preview, reads out the sky position under the pointer,
   and in the expanded view pins a position and links to SIMBAD, NED,
-  VizieR, Aladin Lite and ESASky searches there.
+  VizieR, Aladin Lite and ESASky searches there. The expanded view zooms
+  with the wheel, a trackpad or touch pinch, or its buttons, and pans with
+  a drag, loading the full-resolution image when the preview runs out.
 - Optional satellite tracks are predicted after a successful solve when the
   job has one shutter-open interval and an observer location. FITS and XISF may
   supply those values automatically; JPEG and other image uploads may supply the same

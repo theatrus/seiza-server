@@ -5,6 +5,17 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Zoom the expanded image. The mouse wheel, or a trackpad pinch, zooms
+  about the pointer, so the sky under it stays there; two fingers pinch on
+  a touch screen, and a drag pans. Buttons at the top left zoom out and in
+  by half again and fit the image, and show the magnification; the keys +,
+  − and 0 do the same. The most zoom puts four screen pixels on each image
+  pixel. Once zooming outruns the 1,800-pixel preview, the full-resolution
+  image is fetched and replaces it. Overlay lines keep their width, and
+  labels their size. A press that ends where it began still pins a sky
+  position; a drag or a pinch doesn't. Closing the view fits the image
+  again.
+
 - Keep overlays on the picture when flat bands border it. A phone
   screenshot of a photo carries the phone's black bars, and the solution's
   WCS ran on across them, so constellation lines, catalog outlines, labels
