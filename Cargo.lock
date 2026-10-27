@@ -3549,9 +3549,9 @@ dependencies = [
 
 [[package]]
 name = "seiza"
-version = "0.40.0"
+version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1af79c14ecd236e098f99a0f9b0f6d4f1ea0c647b1b4b10662e37f20e9a5d046"
+checksum = "fa5db40cf5059625322de4a8206cf08e997ec64a8fe3318be43ebb7b49d58789"
 dependencies = [
  "directories",
  "image",
@@ -3562,8 +3562,8 @@ dependencies = [
  "rustc-hash",
  "seiza-calibration",
  "seiza-core",
- "seiza-fits",
- "seiza-image-io",
+ "seiza-fits 0.5.1",
+ "seiza-image-io 0.10.0",
  "seiza-stats",
  "serde",
  "serde_json",
@@ -3612,9 +3612,23 @@ dependencies = [
 
 [[package]]
 name = "seiza-fits"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "814d26edf76b5e251da41f6e498bfc28900131b023ad42f4b83352deda20a29a"
+checksum = "86d0e4376ba609d5116edbb99ccf48ce8141c09847bfa3581ea3b9cf55ba43ef"
+dependencies = [
+ "flate2",
+ "memmap2",
+ "multiversion",
+ "rayon",
+ "seiza-stretch",
+ "tempfile",
+]
+
+[[package]]
+name = "seiza-fits"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fc67df8f27c1c50bb080fbb978b9176a943c118aec380a03e30239373a68adc"
 dependencies = [
  "flate2",
  "memmap2",
@@ -3634,8 +3648,25 @@ dependencies = [
  "image",
  "kamadak-exif",
  "seiza-core",
- "seiza-fits",
- "seiza-xisf",
+ "seiza-fits 0.5.1",
+ "seiza-xisf 0.6.1",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "seiza-image-io"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77fdd33ec82b3c044ac5c682110bf0fdd0844a6cb13d8aae10d307c442314f39"
+dependencies = [
+ "chrono",
+ "image",
+ "kamadak-exif",
+ "seiza-core",
+ "seiza-fits 0.6.0",
+ "seiza-xisf 0.7.0",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -3691,10 +3722,10 @@ dependencies = [
  "resvg",
  "rustls",
  "seiza",
- "seiza-fits",
- "seiza-image-io",
+ "seiza-fits 0.6.0",
+ "seiza-image-io 0.11.0",
  "seiza-satellites",
- "seiza-xisf",
+ "seiza-xisf 0.7.0",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3721,9 +3752,9 @@ checksum = "02427eea0eebef160eba79502519b73272924ccea855462292006af2320ef9e2"
 
 [[package]]
 name = "seiza-stretch"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8c88476537f1bab82f629dd0256abe545c9cc52d2a9b055626706b7b53c84e0"
+checksum = "3a1f98d4c8a11bff8c04b8f684967336f5f07f4f94df86b507a4a2f148a08b69"
 dependencies = [
  "rayon",
  "seiza-stats",
@@ -3733,15 +3764,34 @@ dependencies = [
 
 [[package]]
 name = "seiza-xisf"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44109ae6d8cb53e5d82fb265f924bce268f7d652a2b04b60777455a2bea53c96"
+checksum = "14750a5f2b75cba812e47cef157f4f08bd4a4107c1c7f126de186c5deeecbff0"
 dependencies = [
  "flate2",
  "lz4_flex",
  "quick-xml",
  "rayon",
- "seiza-fits",
+ "seiza-fits 0.5.1",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
+ "sha3",
+ "tempfile",
+ "thiserror 2.0.21",
+ "zstd 0.14.0",
+]
+
+[[package]]
+name = "seiza-xisf"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee46fc96cadcd3c3cef96454729f50f5ad636c982b9db74522b12e9c4d22d82e"
+dependencies = [
+ "flate2",
+ "lz4_flex",
+ "quick-xml",
+ "rayon",
+ "seiza-fits 0.6.0",
  "sha1 0.11.0",
  "sha2 0.11.1",
  "sha3",
@@ -4465,9 +4515,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.3"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",
@@ -4787,9 +4837,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
