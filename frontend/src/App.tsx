@@ -322,6 +322,9 @@ function SiteHeader({ accountsEnabled, account, solveEnabled }: { accountsEnable
     </Link>
     <div className="nav-links">
       <Link to="/">About</Link>
+      <a href="/#downloads">Downloads</a>
+      <Link to="/models">AI models</Link>
+      <Link to="/data-sources">Data sources</Link>
       <Link to="/docs/api">API</Link>
       {accountsEnabled && <Link to={account ? '/account' : '/signin'}>{account ? 'Account' : 'Sign in'}</Link>}
       {solveEnabled && <Link to="/solve" className="button small">Plate-solve an image</Link>}
@@ -424,6 +427,11 @@ function TourBackdrop({ ready }: { ready: boolean }) {
 function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
   const tour = useParallaxTour()
   const backdrop = tour !== 'missing'
+  const downloads = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (window.location.hash === '#downloads') downloads.current?.scrollIntoView()
+  }, [])
+
   return <main>
     <section className={backdrop ? 'hero hero-tour' : 'hero'}>
       {backdrop && <TourBackdrop ready={tour === 'ready'} />}
@@ -449,7 +457,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
       </div>}
     </section>
 
-    <section className="desktop-apps" id="downloads" aria-labelledby="desktop-apps-heading">
+    <section ref={downloads} className="desktop-apps" id="downloads" aria-labelledby="desktop-apps-heading">
       <div className="desktop-apps-intro">
         <p className="eyebrow">DESKTOP APPS &amp; PLUGINS</p>
         <h2 id="desktop-apps-heading">Browse, solve, and edit on your own computer.</h2>

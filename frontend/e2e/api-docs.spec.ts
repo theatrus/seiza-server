@@ -5,6 +5,26 @@ test.beforeEach(async ({ page }) => {
   await mockHealth(page)
 })
 
+test('keeps primary navigation visible on a phone and opens downloads from a subpage', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 })
+  await page.goto('/docs/api')
+
+  const nav = page.getByRole('navigation', { name: 'Primary navigation' })
+  await expect(nav.getByRole('link', { name: 'About', exact: true })).toBeVisible()
+  await expect(nav.getByRole('link', { name: 'AI models', exact: true })).toHaveAttribute('href', '/models')
+  await expect(nav.getByRole('link', { name: 'Data sources', exact: true })).toHaveAttribute('href', '/data-sources')
+  await expect(nav.getByRole('link', { name: 'API', exact: true })).toBeVisible()
+  await expect(nav.getByRole('link', { name: 'Plate-solve an image', exact: true })).toBeVisible()
+  expect(await nav.getByRole('link').evaluateAll((links) => links.every((link) => {
+    const { left, right } = link.getBoundingClientRect()
+    return left >= 0 && right <= document.documentElement.clientWidth
+  }))).toBe(true)
+
+  await nav.getByRole('link', { name: 'Downloads', exact: true }).click()
+  await expect(page).toHaveURL('/#downloads')
+  await expect(page.getByRole('heading', { name: 'Browse, solve, and edit on your own computer.' })).toBeInViewport()
+})
+
 test('advertises desktop downloads, PSF Guard, Python, N.I.N.A., and Siril on the home page', async ({ page }) => {
   await page.goto('/')
 
