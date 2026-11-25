@@ -34,7 +34,7 @@ http = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
 lettre = { version = "0.11", default-features = false, features = ["aws-lc-rs", "builder", "smtp-transport", "tokio1-rustls", "webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots-no-provider"] }
-resvg = "0.48"
+resvg = "0.50"
 # Give server-owned Rustls clients an AWS-LC provider. Seiza may also enable
 # Ring for its reqwest clients; the AWS SDK selects `rustls-aws-lc` directly.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
