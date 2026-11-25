@@ -74,6 +74,20 @@ test('links the data-source acknowledgements from the home hero and about sectio
   await expect(page.getByRole('link', { name: 'Data sources & acknowledgements' })).toHaveAttribute('href', '/data-sources')
 })
 
+test('links published denoising and experimental sharpening from the home page', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('link', { name: 'AI denoise and sharpen' }).click()
+
+  await expect(page).toHaveURL('/models')
+  await expect(page.getByRole('heading', { name: 'AI denoise and sharpen', level: 1 })).toBeVisible()
+  const denoise = page.getByRole('region', { name: 'AI denoise', exact: true })
+  await expect(denoise.getByText('Published model · noise-v1-d33')).toBeVisible()
+  await expect(denoise.getByRole('link', { name: 'Published model manifest' })).toHaveAttribute('href', 'https://downloads.seiza.fyi/models/v1/manifest.json')
+  const sharpen = page.getByRole('region', { name: 'AI sharpen', exact: true })
+  await expect(sharpen.getByText('In development')).toBeVisible()
+  await expect(sharpen.getByRole('link', { name: 'Sharpen development guide' })).toHaveAttribute('href', 'https://github.com/theatrus/seiza/blob/sharpen-runtime/seiza-cli/README.md#learned-models-experimental')
+})
+
 test('publishes only indexable public pages in the sitemap', async ({ request }) => {
   const response = await request.get('/sitemap.xml')
   expect(response.ok()).toBe(true)
@@ -83,6 +97,7 @@ test('publishes only indexable public pages in the sitemap', async ({ request })
   expect(sitemap).toContain('<loc>https://seiza.fyi/solve</loc>')
   expect(sitemap).toContain('<loc>https://seiza.fyi/docs/api</loc>')
   expect(sitemap).toContain('<loc>https://seiza.fyi/data-sources</loc>')
+  expect(sitemap).toContain('<loc>https://seiza.fyi/models</loc>')
   expect(sitemap).not.toContain('/solutions/')
 })
 

@@ -25,13 +25,14 @@ test.describe('acquisition time zone', () => {
   test.use({ timezoneId: 'America/Los_Angeles' })
 
   test('labels local time explicitly and preserves the instant when switching to UTC', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-01-16T20:30:00Z'))
     await page.goto('/solve')
     const captureTime = page.getByLabel('Date and time')
     const timeZone = page.getByLabel('Time zone')
     const note = page.locator('.capture-time-note')
 
     await expect(timeZone).toHaveValue('local')
-    await expect(note).toContainText('this browser will interpret the value as America/Los_Angeles (UTC-07:00)')
+    await expect(note).toContainText('this browser will interpret the value as America/Los_Angeles (UTC-08:00)')
     await captureTime.fill('2026-07-16 12:30')
     await expect(timeZone.locator('option:checked')).toContainText('America/Los_Angeles (UTC-07:00)')
     await expect(note).toContainText('2026-07-16 12:30:00 in America/Los_Angeles (UTC-07:00), which is 2026-07-16T19:30:00Z')

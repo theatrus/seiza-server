@@ -5,6 +5,11 @@ All notable changes to Seiza Server are documented here. Versions follow
 
 ## Unreleased
 
+- Add a model reference page at `/models` with Seiza’s published AI denoise
+  model and the development guide for AI sharpen.
+- Update to Seiza 0.56.0, seiza-fits 0.8.1, seiza-image-io 0.13.1,
+  seiza-satellites 0.26.0 and seiza-xisf 0.9.1.
+
 - Draw deep-sky objects of unknown size on request. Annotations left out
   unnamed objects smaller than the minimum marker size, and counted an
   unknown size as zero, so planetary nebulae such as Abell 56, which

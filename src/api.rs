@@ -859,6 +859,7 @@ pub fn router(state: AppState) -> Router {
         .route("/solve", get(get_frontend_document))
         .route("/docs/api", get(get_frontend_document))
         .route("/data-sources", get(get_frontend_document))
+        .route("/models", get(get_frontend_document))
         .route("/signin", get(get_frontend_document))
         .route("/account", get(get_frontend_document))
         .route("/solutions/{job_id}", get(get_solution_page));
@@ -3226,6 +3227,7 @@ mod tests {
             "/solve",
             "/docs/api",
             "/data-sources",
+            "/models",
             "/solutions/550e8400-e29b-41d4-a716-446655440000",
         ] {
             let response = app
@@ -3350,6 +3352,7 @@ mod tests {
             ("/solve", StatusCode::OK),
             ("/docs/api", StatusCode::OK),
             ("/data-sources", StatusCode::OK),
+            ("/models", StatusCode::OK),
             ("/signin", StatusCode::OK),
             ("/account", StatusCode::OK),
             (
