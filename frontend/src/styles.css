@@ -6,13 +6,14 @@ a { color: #8fdae7; text-decoration: none; }
 a:hover { color: #d5f6f9; }
 .site-shell { min-height: 100vh; overflow-x: clip; }
 .site-nav, main, footer { width: min(1160px, calc(100% - 2rem)); margin-inline: auto; }
-.site-nav { display: flex; align-items: center; justify-content: space-between; min-height: 86px; border-bottom: 1px solid rgb(128 177 191 / 20%); }
+.site-nav { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; min-height: 86px; border-bottom: 1px solid rgb(128 177 191 / 20%); }
 .brand-link { display: flex; align-items: center; gap: .65rem; color: #f8fbfc; }
 .brand-link img { object-fit: contain; }
 .brand-link span { display: grid; line-height: 1; }
 .brand-link strong { font-family: Georgia, serif; font-size: 1.28rem; letter-spacing: .02em; }
 .brand-link small { margin-top: .38rem; color: #7fa3ad; font-size: .64rem; letter-spacing: .13em; }
-.nav-links { display: flex; align-items: center; gap: 1.2rem; font-size: .88rem; font-weight: 750; }
+.nav-links { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .35rem 1.2rem; font-size: .88rem; font-weight: 750; }
+.nav-links > a { white-space: nowrap; }
 main { padding-block: 3.5rem 6rem; }
 .hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, .65fr); align-items: center; min-height: 500px; gap: clamp(3rem, 8vw, 8rem); }
 h1, h2, h3, p { margin-top: 0; }
@@ -447,6 +448,9 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
 .footer-links a:hover { color: #d5f6f9; }
 
 @media (width <= 800px) {
+  .site-nav { flex-direction: column; align-items: flex-start; justify-content: center; gap: .6rem; padding-block: .8rem; }
+  .nav-links { justify-content: flex-start; gap: .25rem .9rem; }
+  .nav-links > a:not(.button) { padding-block: .45rem; }
   .desktop-app-grid { grid-template-columns: 1fr; }
   .desktop-app-strip { grid-template-columns: 1fr; align-items: start; padding-block: 1.5rem; }
   .desktop-app-strip-action { justify-items: start; }
@@ -483,8 +487,6 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding-block
 }
 
 @media (width <= 600px) {
-  .site-nav { min-height: 74px; }
-  .nav-links > a:first-child { display: none; }
   main { padding-block: 3rem 5rem; }
   .solve-page, .solution-page-settled { padding-top: 2rem; }
   .solve-page .page-heading { margin-bottom: 1.25rem; }
