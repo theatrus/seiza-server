@@ -6,6 +6,7 @@ import { AstroOverlay, OverlayControls } from './AstroOverlay'
 import { SkyPointer } from './SkyPointer'
 import { useImageZoom, type ImageZoom } from './useImageZoom'
 import { DataSourcesPage } from './DataSources'
+import { ModelReferencesPage } from './ModelReferences'
 import type { OverlayLayers } from './AstroOverlay'
 import { labelFontSize, type SuggestedDeepSkyCatalogId as DeepSkyCatalogId } from '@seiza/astro-overlay'
 
@@ -299,6 +300,7 @@ export default function App() {
     {path === '/solve' && <SolvePage accountsEnabled={authMode === 'accounts'} account={account} accessChecked={publicSolveAccess !== null} publicUiSolves={publicUiSolves} publicApiSolves={publicApiSolves} />}
     {path === '/docs/api' && <ApiDocsPage />}
     {path === '/data-sources' && <DataSourcesPage />}
+    {path === '/models' && <ModelReferencesPage />}
     {path === '/signin' && <SignInPage accountsEnabled={authMode === 'accounts'} account={account} solveEnabled={solveUiEnabled} publicApiSolves={publicApiSolves} onAuthenticated={refreshAccount} />}
     {path === '/account' && <AccountPage accountsEnabled={authMode === 'accounts'} account={account} accountChecked={accountChecked} onAccountChanged={refreshAccount} />}
     {solutionMatch && <SolutionPage
@@ -307,7 +309,7 @@ export default function App() {
       satelliteTracksRequested={new URLSearchParams(search).get('satellite_tracks') === 'true'}
       requestedObjects={new URLSearchParams(search).get('include_objects') ?? ''}
     />}
-    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage solveEnabled={solveUiEnabled} />}
+    {path !== '/' && path !== '/solve' && path !== '/docs/api' && path !== '/data-sources' && path !== '/models' && path !== '/signin' && path !== '/account' && !solutionMatch && <NotFoundPage solveEnabled={solveUiEnabled} />}
     <SiteFooter />
   </div>
 }
@@ -437,6 +439,7 @@ function HomePage({ solveEnabled }: { solveEnabled: boolean }) {
         <div className="text-links hero-links">
           <a href="https://github.com/theatrus/seiza">Explore the source <span aria-hidden="true">↗</span></a>
           <Link to="/data-sources">See our data sources <span aria-hidden="true">→</span></Link>
+          <a href="/models">AI denoise and sharpen <span aria-hidden="true">→</span></a>
         </div>
       </div>
       {!backdrop && <div className="hero-mark" aria-hidden="true">
@@ -1695,6 +1698,7 @@ function SiteFooter() {
     <nav className="footer-links" aria-label="Project links">
       <span>Apache-2.0</span>
       <Link to="/data-sources">Data sources</Link>
+      <a href="/models">AI models</a>
       <a href="https://theatr.us">Built by Yann Ramin</a>
       <a href="https://github.com/theatrus/seiza">Seiza GitHub <span aria-hidden="true">↗</span></a>
       <a href="https://github.com/theatrus/seiza-server">Server GitHub <span aria-hidden="true">↗</span></a>

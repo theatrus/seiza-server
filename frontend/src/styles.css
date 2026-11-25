@@ -417,6 +417,9 @@ dd { margin: 0; color: #d8e6e8; font-family: ui-monospace, monospace; font-size:
 .source-copy .formal-credit { color: #b9d6da; font-weight: 750; }
 .source-links { display: flex; flex-wrap: wrap; gap: .7rem 1.2rem; margin-top: auto; padding-top: 1.4rem; font-size: .76rem; font-weight: 800; }
 .source-links a { overflow-wrap: anywhere; }
+.model-grid { margin-top: 2.5rem; }
+.models-page .source-card h2 { font-size: clamp(1.65rem, 3vw, 2.3rem); }
+.models-page .source-copy pre { margin-bottom: 0; padding: .75rem; border: 1px solid #294851; color: #bfe9e7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .source-list { border-top: 1px solid #294851; }
 .source-list > a { display: grid; grid-template-columns: minmax(240px, .65fr) minmax(0, 1.35fr); gap: 1.5rem; padding: 1.2rem 0; border-bottom: 1px solid #294851; }
 .source-list strong { color: #bcebee; font-size: .84rem; }
